@@ -17,6 +17,14 @@ bun = "1.4.0"
 # repo's own `mulch` binary replaces it at the self-hosting cutover.
 "npm:@os-eco/mulch-cli" = "0.10.7"
 
+# GitButler CLI (but) — pinned via http backend (no registry entry: GitHub
+# releases carry no assets; the artifact comes from releases.gitbutler.com,
+# see app.gitbutler.com/releases/version/<v>). 0.22.3-3234 is the build the
+# fabro GitButler experiment validated (2026-10-03). Same pin as the
+# global ~/.config/mise/config.toml entry; the per-repo pin makes the
+# dependency explicit for this checkout.
+"http:but" = { version = "0.22.3", url = "https://releases.gitbutler.com/releases/release/0.22.3-3234/linux/x86_64/but" }
+
 [settings.npm]
 # Non-TTY installs abort on the default backend's interactive approval
 # prompt; bun is the verified path for these script-less CLIs.
