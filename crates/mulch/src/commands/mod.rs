@@ -3,6 +3,7 @@
 mod doctor;
 mod init;
 pub(crate) mod schema;
+pub(crate) mod stale;
 mod status;
 mod validate;
 

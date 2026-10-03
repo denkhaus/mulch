@@ -47,6 +47,19 @@ impl Failure {
     }
 }
 
+/// Renders an error with its source chain (`local: cause: cause…`),
+/// preserving typed causes until this rendering boundary.
+pub(crate) fn chain_message(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
 /// Renders a failure: JSON envelope or the plain stderr line.
 pub(crate) fn render_failure(failure: &Failure, json: bool, envelope_to_stderr: bool) {
     if failure.rendered {

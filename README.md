@@ -46,11 +46,12 @@ expectation (the parity rule: never silently):
   registry; the `upgrade` check reports pass with a cargo hint.
   Expectation: check name and order stay, status does not.
 - **`--version` reports this binary's version**, not the reference's.
-- **`doctor --fix` does not repair malformed JSONL lines** (the
-  reference crashes on them before fixing anything); it implements the
-  probed fixes only: stale records are pruned, schema-invalid records
-  removed — both hard-deleted, the domain file left empty, the domain
-  stays registered.
+- **`doctor --fix` removes malformed JSONL lines** instead of crashing
+  (the reference crashes on them before fixing anything); stale records
+  are pruned, schema-invalid and malformed records removed — all
+  hard-deleted, the domain file left empty, the domain stays
+  registered. Expectation: fixes print as `Pruned`/`Removed` lines and
+  the exit code stays the PRE-fix check result.
 
 ## Status
 

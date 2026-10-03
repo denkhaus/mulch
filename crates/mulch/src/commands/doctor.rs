@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
 use crate::commands::schema::schema_error;
+use crate::commands::stale::StaleRule;
 use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, domain_file, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -70,11 +71,17 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
             return Err(failure);
         }
         Ok(StoreLocation::Open(store)) => store,
-        Err(source) => return Err(Failure::handled("doctor", source.to_string())),
+        Err(source) => {
+            return Err(Failure::handled(
+                "doctor",
+                crate::output::chain_message(&source),
+            ));
+        }
     };
 
     let domains = read_domains(&store);
-    let checks = run_checks(&store, &domains);
+    let rule = StaleRule::from_config(store.config.shelf_life().ok().flatten().as_ref());
+    let checks = run_checks(&rule, &domains);
 
     let pass = checks
         .iter()
@@ -124,7 +131,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
         print_line(false, &text);
 
         if fix {
-            let fixes = apply_fixes(&store, &domains);
+            let fixes = apply_fixes(&store, &rule, &domains)?;
             if !fixes.is_empty() {
                 let mut fixed = String::from("Fixed:");
                 for fix_line in fixes {
@@ -174,7 +181,7 @@ fn read_domains(store: &crate::commands::ConfigStore) -> Vec<DomainLines> {
 }
 
 /// Runs the 17 checks in the reference's fixed order.
-fn run_checks(_store: &crate::commands::ConfigStore, domains: &[DomainLines]) -> Vec<Check> {
+fn run_checks(rule: &StaleRule, domains: &[DomainLines]) -> Vec<Check> {
     vec![
         Check {
             name:    "config",
@@ -203,7 +210,7 @@ fn run_checks(_store: &crate::commands::ConfigStore, domains: &[DomainLines]) ->
             fixable: false,
             details: Vec::new(),
         },
-        stale_records(domains),
+        stale_records(rule, domains),
         Check {
             name:    "orphaned-domains",
             status:  Status::Pass,
@@ -442,7 +449,7 @@ fn domain_conformance(domains: &[DomainLines]) -> Check {
 
 /// Staleness: tactical expires after 14 days, observational after 30
 /// (reference defaults); foundational does not decay.
-fn stale_records(domains: &[DomainLines]) -> Check {
+fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
     let now = Timestamp::now();
     let mut details = Vec::new();
     for domain in domains {
@@ -454,11 +461,6 @@ fn stale_records(domains: &[DomainLines]) -> Check {
                 .get("classification")
                 .and_then(Value::as_str)
                 .unwrap_or("tactical");
-            let shelf_days: i64 = match classification {
-                "tactical" => 14,
-                "observational" => 30,
-                _ => continue,
-            };
             let Some(recorded) = record
                 .get("recorded_at")
                 .and_then(Value::as_str)
@@ -466,8 +468,7 @@ fn stale_records(domains: &[DomainLines]) -> Check {
             else {
                 continue;
             };
-            let expiry = recorded + jiff::Span::new().hours(shelf_days * 24);
-            if now >= expiry {
+            if rule.is_stale(classification, recorded, now) {
                 let kind = record
                     .get("type")
                     .and_then(Value::as_str)
@@ -499,56 +500,66 @@ fn stale_records(domains: &[DomainLines]) -> Check {
 }
 
 /// Applies the probed `--fix` semantics: stale records are pruned and
-/// schema-invalid records removed — both HARD-deleted, the domain file
-/// left as an empty file, the domain stays registered.
-fn apply_fixes(store: &crate::commands::ConfigStore, domains: &[DomainLines]) -> Vec<String> {
+/// schema-invalid or malformed records removed — all hard-deleted, the
+/// domain file left as an empty file, the domain stays registered. A
+/// failed repair write aborts with a failure instead of reporting a
+/// successful repair.
+fn apply_fixes(
+    store: &crate::commands::ConfigStore,
+    rule: &StaleRule,
+    domains: &[DomainLines],
+) -> Result<Vec<String>, Failure> {
     let now = Timestamp::now();
     let mut fixes = Vec::new();
     for domain in domains {
+        let file = domain_file(&store.root, &domain.domain);
+        let text = std::fs::read_to_string(&file).unwrap_or_default();
+        let live: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+
         let mut stale_pruned = 0usize;
         let mut invalid_removed = 0usize;
-        let survivors: Vec<&str> = domain
-            .lines
-            .iter()
-            .filter(|(_, parsed)| match parsed {
-                Err(()) => {
-                    invalid_removed += 1;
-                    false
-                }
+        let mut kept: Vec<&str> = Vec::new();
+        for line in &live {
+            let verdict = match serde_json::from_str::<Value>(line) {
                 Ok(record) => {
-                    if schema_error(record).is_some() {
-                        invalid_removed += 1;
-                        return false;
+                    let classification = record
+                        .as_object()
+                        .and_then(|o| o.get("classification"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("tactical");
+                    let recorded = record
+                        .as_object()
+                        .and_then(|o| o.get("recorded_at"))
+                        .and_then(Value::as_str)
+                        .and_then(|raw| raw.parse::<Timestamp>().ok());
+                    match recorded {
+                        // A record without a parsable timestamp is never
+                        // stale; schema errors catch it instead.
+                        Some(recorded) if rule.is_stale(classification, recorded, now) => {
+                            Verdict::Stale
+                        }
+                        _ if schema_error(&record).is_some() => Verdict::Invalid,
+                        _ => Verdict::Keep,
                     }
-                    if is_stale(record, now) {
-                        stale_pruned += 1;
-                        return false;
-                    }
-                    true
                 }
-            })
-            .map(|_| "")
-            .collect();
-        // Survivors are rebuilt from the parsed values' original lines.
-        let _ = survivors;
-        let text =
-            std::fs::read_to_string(domain_file(&store.root, &domain.domain)).unwrap_or_default();
-        let kept: Vec<&str> = text
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .filter(|l| {
-                serde_json::from_str::<Value>(l)
-                    .is_ok_and(|record| schema_error(&record).is_none() && !is_stale(&record, now))
-            })
-            .collect();
-        if kept.len() != text.lines().filter(|l| !l.trim().is_empty()).count() {
-            let file = domain_file(&store.root, &domain.domain);
+                Err(_) => Verdict::Invalid,
+            };
+            match verdict {
+                Verdict::Keep => kept.push(line),
+                Verdict::Stale => stale_pruned += 1,
+                Verdict::Invalid => invalid_removed += 1,
+            }
+        }
+
+        if kept.len() != live.len() {
             let empty = if kept.is_empty() {
                 String::new()
             } else {
                 format!("{}\n", kept.join("\n"))
             };
-            let _ = std::fs::write(file, empty);
+            std::fs::write(&file, empty).map_err(|source| {
+                Failure::handled("doctor", format!("writing {}: {source}", file.display()))
+            })?;
             if stale_pruned > 0 {
                 fixes.push(format!(
                     "Pruned {stale_pruned} stale record(s) from {}",
@@ -563,28 +574,14 @@ fn apply_fixes(store: &crate::commands::ConfigStore, domains: &[DomainLines]) ->
             }
         }
     }
-    fixes
+    Ok(fixes)
 }
 
-/// Staleness predicate shared with the check.
-fn is_stale(record: &Value, now: Timestamp) -> bool {
-    let Some(object) = record.as_object() else {
-        return false;
-    };
-    let classification = object
-        .get("classification")
-        .and_then(Value::as_str)
-        .unwrap_or("tactical");
-    let shelf_days: i64 = match classification {
-        "tactical" => 14,
-        "observational" => 30,
-        _ => return false,
-    };
-    object
-        .get("recorded_at")
-        .and_then(Value::as_str)
-        .and_then(|raw| raw.parse::<Timestamp>().ok())
-        .is_some_and(|recorded| now >= recorded + jiff::Span::new().hours(shelf_days * 24))
+/// One line's keep/prune verdict during `--fix`.
+enum Verdict {
+    Keep,
+    Stale,
+    Invalid,
 }
 
 /// The `--json` shape of one check.

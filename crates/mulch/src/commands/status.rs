@@ -9,6 +9,7 @@ use mulch::Record;
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
+use crate::commands::stale::StaleRule;
 use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, domain_file, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -38,22 +39,26 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
         }
         Ok(StoreLocation::Open(store)) => store,
         Err(source) => {
-            return Err(Failure::handled("status", source.to_string()));
+            return Err(Failure::handled(
+                "status",
+                crate::output::chain_message(&source),
+            ));
         }
     };
 
     let governance = store.config.governance().ok().flatten();
     let shelf_life = store.config.shelf_life().ok().flatten();
     let now = Timestamp::now();
+    let rule = StaleRule::from_config(shelf_life.as_ref());
 
     let mut domain_lines = Vec::new();
     let mut domains_json = Vec::new();
     for domain in store.domains() {
         let file = domain_file(&store.root, &domain);
         let (records, mtime) = read_domain(&file);
-        let status = DomainStatus::compute(&domain, &records, mtime, now);
+        let status = DomainStatus::compute(&domain, &records, mtime, now, &rule);
 
-        domain_lines.push(status.plain_line());
+        domain_lines.push(status.plain_line(now));
         domains_json.push(status.into_json());
     }
 
@@ -90,7 +95,13 @@ struct DomainStatus {
 }
 
 impl DomainStatus {
-    fn compute(domain: &str, records: &[Record], mtime: Option<Timestamp>, now: Timestamp) -> Self {
+    fn compute(
+        domain: &str,
+        records: &[Record],
+        mtime: Option<Timestamp>,
+        now: Timestamp,
+        rule: &StaleRule,
+    ) -> Self {
         let mut type_counts = BTreeMap::new();
         let mut classification_counts = BTreeMap::new();
         let mut oldest_recorded = None;
@@ -117,7 +128,7 @@ impl DomainStatus {
                 if newest_recorded.is_none_or(|n| recorded > n) {
                     newest_recorded = Some(recorded);
                 }
-                if is_stale(classification_of(record), recorded, now) {
+                if rule.is_stale(classification_of(record), recorded, now) {
                     stale_count += 1;
                 }
             }
@@ -136,15 +147,16 @@ impl DomainStatus {
     }
 
     /// The plain one-line summary (relative times like the reference).
-    fn plain_line(&self) -> String {
+    fn plain_line(&self, now: Timestamp) -> String {
         let mut line = format!(
             "  {}: {} records (updated {})",
             self.domain,
             self.count,
-            self.last_updated.map_or_else(|| "unknown".into(), relative)
+            self.last_updated
+                .map_or_else(|| "unknown".into(), |t| relative(t, now))
         );
         if let Some(newest) = self.newest_recorded {
-            let _ = write!(line, " — recorded {}", relative(newest));
+            let _ = write!(line, " — recorded {}", relative(newest, now));
         }
         line
     }
@@ -209,18 +221,6 @@ fn read_domain(file: &Path) -> (Vec<Record>, Option<Timestamp>) {
     (records, mtime)
 }
 
-/// Shelf-life expiry per classification (tactical 14d, observational
-/// 30d, foundational does not decay — reference defaults).
-fn is_stale(classification: &str, recorded: Timestamp, now: Timestamp) -> bool {
-    let days = match classification {
-        "tactical" => 14,
-        "observational" => 30,
-        _ => return false,
-    };
-    let expiry = recorded + jiff::Span::new().hours(days * 24);
-    now >= expiry
-}
-
 /// The record's classification, defaulting like the reference writer.
 fn classification_of(record: &Record) -> &str {
     record.classification().unwrap_or("tactical")
@@ -235,8 +235,7 @@ fn parse_timestamp(raw: Option<&str>) -> Result<Option<Timestamp>, jiff::Error> 
 }
 
 /// Relative-time rendering ("just now", "2m ago", "3h ago", "4d ago").
-fn relative(then: Timestamp) -> String {
-    let now = Timestamp::now();
+fn relative(then: Timestamp, now: Timestamp) -> String {
     let seconds = now.as_second() - then.as_second();
     if seconds < 60 {
         "just now".into()

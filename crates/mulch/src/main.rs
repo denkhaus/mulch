@@ -30,9 +30,6 @@ fn main() -> ExitCode {
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => {
-            if timing {
-                report_timing(started);
-            }
             output::render_failure(&failure, cli.opts.json, failure.envelope_to_stderr);
             ExitCode::from(failure.code)
         }

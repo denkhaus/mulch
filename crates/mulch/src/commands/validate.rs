@@ -31,7 +31,12 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
             return Err(failure);
         }
         Ok(StoreLocation::Open(store)) => store,
-        Err(source) => return Err(Failure::handled("validate", source.to_string())),
+        Err(source) => {
+            return Err(Failure::handled(
+                "validate",
+                crate::output::chain_message(&source),
+            ));
+        }
     };
 
     let mut findings = Vec::new();
@@ -113,11 +118,9 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
         Ok(())
     } else {
         // Plain mode already printed summary + details; the failure
-        // carries only the exit code (and the JSON envelope is unused —
-        // the envelope printed above came from the command itself).
+        // carries only the exit code (the JSON envelope printed above
+        // came from the command itself).
         let mut failure = Failure::handled("validate", "");
-        failure.message.clear();
-        failure.code = 1;
         failure.rendered = true;
         Err(failure)
     }
