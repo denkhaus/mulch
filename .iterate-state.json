@@ -1,0 +1,9 @@
+{
+ "sprints_completed": 0,
+ "sprints_reflected": 0,
+ "last_arch_review_at_sprint": null,
+ "last_reflection": "2026-10-03",
+ "notes": [
+  "sprint system established 2026-10-03 (user directive): ported from nu-agent's iterate skill, adapted to this GitButler workspace (but instead of git, local-only, strictly separate from the fabro develop line)"
+ ]
+}
