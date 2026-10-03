@@ -1,7 +1,12 @@
 //! Command implementations, one module per parity-slice command.
 
+mod add;
 mod doctor;
+mod edit;
+pub(crate) mod ids;
 mod init;
+mod outcome;
+mod record;
 pub(crate) mod schema;
 pub(crate) mod stale;
 mod status;
@@ -44,6 +49,23 @@ impl ConfigStore {
             .into_iter()
             .map(String::from)
             .collect()
+    }
+
+    /// Registers a domain: canonical (comment-free) config rewrite plus
+    /// an empty expertise file (reference `add`/auto-create behavior).
+    pub(crate) fn add_domain(&mut self, domain: &str) -> Result<(), Error> {
+        self.config.add_domain(domain);
+        std::fs::write(self.root.join("mulch.config.yaml"), self.config.to_yaml()).map_err(
+            |source| Error::Write {
+                path: self.root.join("mulch.config.yaml"),
+                source,
+            },
+        )?;
+        let file = domain_file(&self.root, domain);
+        if !file.is_file() {
+            std::fs::write(&file, "").map_err(|source| Error::Write { path: file, source })?;
+        }
+        Ok(())
     }
 }
 
@@ -91,5 +113,21 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
         Command::Status => status::run(&cli.opts),
         Command::Validate => validate::run(&cli.opts),
         Command::Doctor { fix } => doctor::run(&cli.opts, *fix),
+        Command::Add { domain } => add::run(&cli.opts, domain.clone()),
+        Command::Record(args) => record::run(&cli.opts, args),
+        Command::Edit(args) => edit::run(&cli.opts, args),
+        Command::Outcome {
+            domain,
+            id,
+            outcome,
+        } => outcome::run(&cli.opts, domain, id, outcome),
     }
+}
+
+/// The current instant as reference-format `recorded_at`
+/// (ISO-8601, millisecond precision, `Z`).
+pub(crate) fn now_iso() -> String {
+    jiff::Timestamp::now()
+        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
