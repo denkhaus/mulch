@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
 use crate::commands::stale::StaleRule;
-use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, domain_file, locate};
+use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Record types in the reference's fixed distribution order.
@@ -46,15 +46,15 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
         }
     };
 
-    let governance = store.config.governance().ok().flatten();
-    let shelf_life = store.config.shelf_life().ok().flatten();
+    let governance = store.config().governance().ok().flatten();
+    let shelf_life = store.config().shelf_life().ok().flatten();
     let now = Timestamp::now();
     let rule = StaleRule::from_config(shelf_life.as_ref());
 
     let mut domain_lines = Vec::new();
     let mut domains_json = Vec::new();
     for domain in store.domains() {
-        let file = domain_file(&store.root, &domain);
+        let file = store.domain_path(&domain);
         let (records, mtime) = read_domain(&file);
         let status = DomainStatus::compute(&domain, &records, mtime, now, &rule);
 

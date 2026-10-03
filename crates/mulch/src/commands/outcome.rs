@@ -1,12 +1,10 @@
 //! `mulch outcome <domain> <id>` — append an outcome entry.
 
+use mulch::ReadPolicy;
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, OutcomeFlags};
-use crate::commands::{
-    NO_STORE_MESSAGE, StoreLocation, find_by_id, locate, now_iso, read_domain_lines,
-    record_not_found, write_domain_lines,
-};
+use crate::commands::{NO_STORE_MESSAGE, StoreLocation, locate, now_iso};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `outcome`: appends `{status, recorded_at, duration?, agent?,
@@ -44,16 +42,28 @@ pub(super) fn run(
         ));
     }
 
-    let mut lines = read_domain_lines(&store.root, domain)
-        .map_err(|source| Failure::handled("outcome", format!("reading domain file: {source}")))?;
-    let Some(position) = find_by_id(&lines, id) else {
-        let mut failure = record_not_found("outcome", id);
-        failure.envelope_to_stderr = true;
-        return Err(failure);
+    // Strict read (reference `readExpertiseFile`): malformed lines and
+    // unregistered types abort before the rewrite.
+    let mut records = store
+        .read_records(domain, ReadPolicy::Strict)
+        .map_err(|source| {
+            Failure::handled_on_stderr("outcome", crate::commands::render_core_error(&source))
+        })?;
+    let Some(position) = records.iter().position(|line| line.id() == Some(id)) else {
+        return Err(Failure::handled_on_stderr(
+            "outcome",
+            crate::commands::record_not_found_text(id),
+        ));
     };
-
-    let mut record: Map<String, Value> = serde_json::from_str(&lines[position])
-        .map_err(|source| Failure::handled("outcome", format!("parsing record {id}: {source}")))?;
+    let mut record: Map<String, Value> = match records[position].record.as_object().cloned() {
+        Some(object) => object,
+        None => {
+            return Err(Failure::handled_on_stderr(
+                "outcome",
+                format!("Error: Record \"{id}\" is not a JSON object."),
+            ));
+        }
+    };
     let mut outcome = Map::new();
     if let Some(status) = &flags.status {
         outcome.insert("status".into(), Value::String(status.clone()));
@@ -85,9 +95,11 @@ pub(super) fn run(
         array.push(Value::Object(outcome.clone()));
         array.len()
     };
-    lines[position] = Value::Object(record).to_string();
-    write_domain_lines(&store.root, domain, &lines)
-        .map_err(|source| Failure::handled("outcome", format!("writing domain file: {source}")))?;
+    records[position].record = Value::Object(record);
+    let payload: Vec<Value> = records.iter().map(|line| line.record.clone()).collect();
+    store
+        .rewrite_domain(domain, &payload)
+        .map_err(|source| Failure::handled("outcome", crate::output::chain_message(&source)))?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();

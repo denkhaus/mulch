@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use crate::cli::GlobalOpts;
 use crate::commands::schema::doctor_detail;
 use crate::commands::stale::StaleRule;
-use crate::commands::{StoreLocation, domain_file, locate};
+use crate::commands::{StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One check result.
@@ -73,7 +73,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     };
 
     let domains = read_domains(&store);
-    let rule = StaleRule::from_config(store.config.shelf_life().ok().flatten().as_ref());
+    let rule = StaleRule::from_config(store.config().shelf_life().ok().flatten().as_ref());
     let checks = run_checks(opts, &rule, &domains);
 
     let pass = checks
@@ -156,13 +156,12 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
 /// Reads every live domain file, per line, in config order; parse
 /// failures are carried as `Err` (doctor reports them instead of
 /// crashing like the reference — README DEVIATIONS).
-fn read_domains(store: &crate::commands::ConfigStore) -> Vec<DomainLines> {
+fn read_domains(store: &mulch::StoreFiles) -> Vec<DomainLines> {
     store
         .domains()
         .into_iter()
         .map(|domain| {
-            let text =
-                std::fs::read_to_string(domain_file(&store.root, &domain)).unwrap_or_default();
+            let text = std::fs::read_to_string(store.domain_path(&domain)).unwrap_or_default();
             let lines = text
                 .lines()
                 .filter(|l| !l.trim().is_empty())
@@ -506,14 +505,14 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
 /// failed repair write aborts with a failure instead of reporting a
 /// successful repair.
 fn apply_fixes(
-    store: &crate::commands::ConfigStore,
+    store: &mulch::StoreFiles,
     rule: &StaleRule,
     domains: &[DomainLines],
 ) -> Result<Vec<String>, Failure> {
     let now = Timestamp::now();
     let mut fixes = Vec::new();
     for domain in domains {
-        let file = domain_file(&store.root, &domain.domain);
+        let file = store.domain_path(&domain.domain);
         let text = std::fs::read_to_string(&file).unwrap_or_default();
         let live: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
 

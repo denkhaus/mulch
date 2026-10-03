@@ -1,12 +1,10 @@
 //! `mulch edit <domain> <id>` — in-place field updates.
 
+use mulch::ReadPolicy;
 use serde_json::{Map, Value};
 
 use crate::cli::{EditArgs, GlobalOpts};
-use crate::commands::{
-    NO_STORE_MESSAGE, StoreLocation, domain_not_found, find_by_id, locate, read_domain_lines,
-    record_not_found,
-};
+use crate::commands::{NO_STORE_MESSAGE, StoreLocation, domain_not_found, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `edit`: updates fields in place (key positions preserved),
@@ -37,18 +35,31 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
         return Err(failure);
     }
 
-    let mut lines = read_domain_lines(&store.root, &args.domain)
-        .map_err(|source| Failure::handled("edit", format!("reading domain file: {source}")))?;
-    let Some(position) = find_by_id(&lines, &args.id) else {
-        let mut failure = record_not_found("edit", &args.id);
-        failure.envelope_to_stderr = true;
-        return Err(failure);
-    };
-
-    let mut record: Map<String, Value> =
-        serde_json::from_str(&lines[position]).map_err(|source| {
-            Failure::handled("edit", format!("parsing record {}: {source}", args.id))
+    // Strict read (reference `readExpertiseFile`): malformed lines and
+    // unregistered types abort before the rewrite.
+    let mut records = store
+        .read_records(&args.domain, ReadPolicy::Strict)
+        .map_err(|source| {
+            Failure::handled_on_stderr("edit", crate::commands::render_core_error(&source))
         })?;
+    let Some(position) = records
+        .iter()
+        .position(|line| line.id() == Some(args.id.as_str()))
+    else {
+        return Err(Failure::handled_on_stderr(
+            "edit",
+            crate::commands::record_not_found_text(&args.id),
+        ));
+    };
+    let mut record: Map<String, Value> = match records[position].record.as_object().cloned() {
+        Some(object) => object,
+        None => {
+            return Err(Failure::handled_on_stderr(
+                "edit",
+                format!("Error: Record \"{}\" is not a JSON object.", args.id),
+            ));
+        }
+    };
     let record_type = record
         .get("type")
         .and_then(Value::as_str)
@@ -91,9 +102,11 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     set_end_list(&mut record, "supersedes", args.supersedes.as_deref());
     set_end_list(&mut record, "files", args.files.as_deref());
 
-    lines[position] = Value::Object(record.clone()).to_string();
-    crate::commands::write_domain_lines(&store.root, &args.domain, &lines)
-        .map_err(|source| Failure::handled("edit", format!("writing domain file: {source}")))?;
+    records[position].record = Value::Object(record.clone());
+    let payload: Vec<Value> = records.iter().map(|line| line.record.clone()).collect();
+    store
+        .rewrite_domain(&args.domain, &payload)
+        .map_err(|source| Failure::handled("edit", crate::output::chain_message(&source)))?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();

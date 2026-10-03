@@ -33,7 +33,7 @@ pub(super) fn run(opts: &GlobalOpts, domain: String) -> Result<(), Failure> {
 
     let mut store = store;
     store
-        .add_domain(&domain)
+        .register_domain(&domain)
         .map_err(|source| Failure::handled("add", crate::output::chain_message(&source)))?;
 
     if opts.json {

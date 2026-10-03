@@ -117,9 +117,10 @@ pub(super) fn run(
         return Err(domain_failure(opts, "delete", domain, &domains));
     }
 
-    let file = crate::commands::domain_file(&store.root, domain);
-    let lines = read_strict(&file, opts.allow_unknown_types)
-        .map_err(|source| Failure::handled_on_stderr("delete", render_error(&source)))?;
+    let file = store.domain_path(domain);
+    let lines = read_strict(&file, opts.allow_unknown_types).map_err(|source| {
+        Failure::handled_on_stderr("delete", crate::commands::render_core_error(&source))
+    })?;
 
     // Resolve every target (missing/ambiguous ids abort before any write).
     let mut removal_indices: Vec<usize> = Vec::new();
@@ -279,36 +280,6 @@ fn domain_failure(opts: &GlobalOpts, command: &str, domain: &str, available: &[S
             command,
             format!("Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}"),
         )
-    }
-}
-
-/// Renders a format-core error the way the reference does.
-fn render_error(error: &mulch::Error) -> String {
-    match error {
-        mulch::Error::MalformedLine {
-            path,
-            line,
-            preview,
-            reason,
-        } => format!(
-            "Error: Malformed JSONL at {}:{line}: {reason}. Line: {preview}",
-            path.display()
-        ),
-        mulch::Error::UnknownRecordType {
-            path,
-            line,
-            id,
-            record_type,
-        } => {
-            let id_part = id
-                .as_ref()
-                .map_or_else(String::new, |id| format!(" (id={id})"));
-            format!(
-                "Error: Unknown record type \"{record_type}\" at {}:{line}{id_part}. Register it under custom_types in mulch.config.yaml, remove the record, or pass --allow-unknown-types to bypass.",
-                path.display()
-            )
-        }
-        other => format!("Error: {other}"),
     }
 }
 

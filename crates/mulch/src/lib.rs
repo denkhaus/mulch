@@ -16,6 +16,7 @@ mod ids;
 mod record;
 mod records;
 mod store;
+mod store_files;
 
 pub use config::{Config, Governance, Prime, SUPPORTED_VERSION, Search, ShelfLife, TierWeights};
 pub use error::{Error, Result};
@@ -26,6 +27,7 @@ pub use records::{
     write_records,
 };
 pub use store::Store;
+pub use store_files::{Located, ReadPolicy, StoreFiles};
 
 /// The reference implementation this crate is read+write compatible with
 /// (README format-compatibility promise; ADR-0023 in denkhaus/fabro).

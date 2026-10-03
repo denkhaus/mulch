@@ -41,9 +41,10 @@ pub(super) fn run(
     }
 
     // Strict read: malformed lines abort before anything is deleted.
-    let file = crate::commands::domain_file(&store.root, domain);
-    let records = mulch::read_strict(&file, opts.allow_unknown_types)
-        .map_err(|source| Failure::handled_on_stderr("delete-domain", render_error(&source)))?;
+    let file = store.domain_path(domain);
+    let records = mulch::read_strict(&file, opts.allow_unknown_types).map_err(|source| {
+        Failure::handled_on_stderr("delete-domain", crate::commands::render_core_error(&source))
+    })?;
     let record_count = records.len();
     let plural = if record_count == 1 {
         "record"
@@ -130,36 +131,6 @@ fn not_in_config(opts: &GlobalOpts, domain: &str, available: &[String]) -> Failu
         )
     };
     Failure::handled_on_stderr("delete-domain", message)
-}
-
-/// Renders a format-core error the way the reference does.
-fn render_error(error: &mulch::Error) -> String {
-    match error {
-        mulch::Error::MalformedLine {
-            path,
-            line,
-            preview,
-            reason,
-        } => format!(
-            "Error: Malformed JSONL at {}:{line}: {reason}. Line: {preview}",
-            path.display()
-        ),
-        mulch::Error::UnknownRecordType {
-            path,
-            line,
-            id,
-            record_type,
-        } => {
-            let id_part = id
-                .as_ref()
-                .map_or_else(String::new, |id| format!(" (id={id})"));
-            format!(
-                "Error: Unknown record type \"{record_type}\" at {}:{line}{id_part}. Register it under custom_types in mulch.config.yaml, remove the record, or pass --allow-unknown-types to bypass.",
-                path.display()
-            )
-        }
-        other => format!("Error: {other}"),
-    }
 }
 
 /// A `serde_json::Map` from a `json!` macro result.

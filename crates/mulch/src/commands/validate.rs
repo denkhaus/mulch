@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
 use crate::commands::schema::{plain_detail_lines, validate_message};
-use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, domain_file, locate};
+use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One validation finding (`domain:line` addressed).
@@ -42,7 +42,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let mut findings = Vec::new();
     let mut total_records = 0;
     for domain in store.domains() {
-        let text = std::fs::read_to_string(domain_file(&store.root, &domain)).unwrap_or_default();
+        let text = std::fs::read_to_string(store.domain_path(&domain)).unwrap_or_default();
         // Physical 1-based line numbers: blank lines are skipped as
         // records but still counted by position (reference addressing).
         for (index, line) in text.lines().enumerate() {

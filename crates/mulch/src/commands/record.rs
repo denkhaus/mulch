@@ -4,13 +4,11 @@
 use std::fmt::Write as _;
 use std::io::Read as _;
 
-use mulch::{id_key_field, record_id};
+use mulch::{ReadPolicy, id_key_field, record_id};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, RecordArgs};
-use crate::commands::{
-    NO_STORE_MESSAGE, StoreLocation, find_by_id, locate, now_iso, read_domain_lines,
-};
+use crate::commands::{NO_STORE_MESSAGE, StoreLocation, locate, now_iso};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Builds the canonical JSONL object for the flag path (field order
@@ -272,7 +270,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     let known = store.domains().iter().any(|d| d == &args.domain);
     if !known {
         store
-            .add_domain(&args.domain)
+            .register_domain(&args.domain)
             .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
         // The auto-create line hits stdout even in --json mode; it is
         // quiet-gated (spec review).
@@ -305,10 +303,17 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
         }
     };
 
-    // Duplicate detection: same id already in the domain.
-    let lines = read_domain_lines(&store.root, &args.domain)
-        .map_err(|source| Failure::handled("record", format!("reading domain file: {source}")))?;
-    let duplicate_position = find_by_id(&lines, &id);
+    // Duplicate detection over the STRICT read (reference
+    // `readExpertiseFile`): malformed lines and unregistered types abort
+    // before the write.
+    let existing = store
+        .read_records(&args.domain, ReadPolicy::Strict)
+        .map_err(|source| {
+            Failure::handled_on_stderr("record", crate::commands::render_core_error(&source))
+        })?;
+    let duplicate_position = existing
+        .iter()
+        .position(|line| line.id() == Some(id.as_str()));
     if let Some(position) = duplicate_position
         && !args.force
     {
@@ -371,10 +376,9 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     }
 
     let line = Value::Object(record.clone()).to_string();
-    let mut lines = lines;
-    lines.push(line);
-    crate::commands::write_domain_lines(&store.root, &args.domain, &lines)
-        .map_err(|source| Failure::handled("record", format!("writing domain file: {source}")))?;
+    store
+        .append_domain_line(&args.domain, &line)
+        .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();
@@ -410,7 +414,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
 fn stdin_batch(
     opts: &GlobalOpts,
     args: &RecordArgs,
-    store: &crate::commands::ConfigStore,
+    store: &mulch::StoreFiles,
 ) -> Result<(), Failure> {
     let raw = if args.stdin {
         let mut buffer = String::new();
@@ -433,9 +437,16 @@ fn stdin_batch(
         single => vec![single],
     };
 
-    let mut lines = read_domain_lines(&store.root, &args.domain)
-        .map_err(|source| Failure::handled("record", format!("reading domain file: {source}")))?;
-    let mut new_lines: Vec<String> = Vec::new();
+    let existing = store
+        .read_records(&args.domain, ReadPolicy::Strict)
+        .map_err(|source| {
+            Failure::handled_on_stderr("record", crate::commands::render_core_error(&source))
+        })?;
+    let mut existing_ids: Vec<String> = existing
+        .iter()
+        .filter_map(|line| line.id().map(str::to_string))
+        .collect();
+    let mut pending: Vec<String> = Vec::new();
     let mut created = 0usize;
     let mut skipped = 0usize;
     let mut errors: Vec<Value> = Vec::new();
@@ -470,18 +481,18 @@ fn stdin_batch(
 
         // Duplicate dedupe: existing ids and earlier batch ids skip
         // unless --force (reference §3i semantics).
-        let existing = find_by_id(&lines, &id).is_some() || find_by_id(&new_lines, &id).is_some();
-        if existing && !args.force {
+        if existing_ids.iter().any(|known| known == &id) && !args.force {
             skipped += 1;
             continue;
         }
+        existing_ids.push(id.clone());
 
         let mut line = object;
         line.insert("recorded_at".into(), Value::String(now_iso()));
         line.entry("classification")
             .or_insert_with(|| Value::String("tactical".into()));
         line.insert("id".into(), Value::String(id));
-        new_lines.push(Value::Object(line).to_string());
+        pending.push(Value::Object(line).to_string());
         created += 1;
     }
 
@@ -547,9 +558,11 @@ fn stdin_batch(
         return Err(failure);
     }
 
-    lines.extend(new_lines);
-    crate::commands::write_domain_lines(&store.root, &args.domain, &lines)
-        .map_err(|source| Failure::handled("record", format!("writing domain file: {source}")))?;
+    for line in &pending {
+        store
+            .append_domain_line(&args.domain, line)
+            .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
+    }
 
     if opts.json {
         let mut fields = serde_json::Map::new();

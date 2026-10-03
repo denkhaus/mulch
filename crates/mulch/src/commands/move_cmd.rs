@@ -13,7 +13,7 @@ use mulch::{ResolveError, read_strict, record_summary, resolve_record_id, write_
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{NO_STORE_CONFIG_MESSAGE, StoreLocation, domain_file, locate};
+use crate::commands::{NO_STORE_CONFIG_MESSAGE, StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `move`.
@@ -52,10 +52,11 @@ pub(super) fn run(
         }
     }
 
-    let source_file = domain_file(&store.root, source);
-    let target_file = domain_file(&store.root, target);
-    let lines = read_strict(&source_file, opts.allow_unknown_types)
-        .map_err(|source_err| Failure::handled_on_stderr("move", render_error(&source_err)))?;
+    let source_file = store.domain_path(source);
+    let target_file = store.domain_path(target);
+    let lines = read_strict(&source_file, opts.allow_unknown_types).map_err(|source_err| {
+        Failure::handled_on_stderr("move", crate::commands::render_core_error(&source_err))
+    })?;
     let index = match resolve_record_id(&lines, id) {
         Ok(index) => index,
         Err(ResolveError::NotFound(identifier)) => {
@@ -104,7 +105,7 @@ pub(super) fn run(
     }
 
     // Target allowed_types gate (--force bypasses it only).
-    let allowed = store.config.allowed_types(target).map_err(|source_err| {
+    let allowed = store.config().allowed_types(target).map_err(|source_err| {
         Failure::handled("move", crate::output::chain_message(&source_err))
     })?;
     if let Some(allowed) = allowed
@@ -121,9 +122,12 @@ pub(super) fn run(
     }
 
     // Target required_fields gate (enforced even with --force).
-    let required = store.config.required_fields(target).map_err(|source_err| {
-        Failure::handled("move", crate::output::chain_message(&source_err))
-    })?;
+    let required = store
+        .config()
+        .required_fields(target)
+        .map_err(|source_err| {
+            Failure::handled("move", crate::output::chain_message(&source_err))
+        })?;
     if let Some(required) = required {
         let missing: Vec<String> = required
             .into_iter()
@@ -147,7 +151,7 @@ pub(super) fn run(
 
     let summary = record_summary(&record);
     let incoming = incoming_references(
-        &store.root,
+        store.root(),
         &source_file,
         &target_file,
         record_id.as_deref(),
@@ -325,34 +329,4 @@ fn move_domain_failure(domain: &str, available: &[String]) -> Failure {
         "move",
         format!("Error: Domain \"{domain}\" not found in config. Available domains: {list}"),
     )
-}
-
-/// Renders a format-core error the way the reference does.
-fn render_error(error: &mulch::Error) -> String {
-    match error {
-        mulch::Error::MalformedLine {
-            path,
-            line,
-            preview,
-            reason,
-        } => format!(
-            "Error: Malformed JSONL at {}:{line}: {reason}. Line: {preview}",
-            path.display()
-        ),
-        mulch::Error::UnknownRecordType {
-            path,
-            line,
-            id,
-            record_type,
-        } => {
-            let id_part = id
-                .as_ref()
-                .map_or_else(String::new, |id| format!(" (id={id})"));
-            format!(
-                "Error: Unknown record type \"{record_type}\" at {}:{line}{id_part}. Register it under custom_types in mulch.config.yaml, remove the record, or pass --allow-unknown-types to bypass.",
-                path.display()
-            )
-        }
-        other => format!("Error: {other}"),
-    }
 }
