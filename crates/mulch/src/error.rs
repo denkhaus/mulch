@@ -19,6 +19,15 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A domain name violates `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`.
+    #[error(
+        "Invalid domain name: \"{domain}\". Only alphanumeric characters, hyphens, and underscores are allowed."
+    )]
+    InvalidDomain {
+        /// The rejected name.
+        domain: String,
+    },
+
     /// A store file could not be written.
     #[error("writing {path}")]
     Write {

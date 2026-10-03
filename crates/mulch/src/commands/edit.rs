@@ -2,19 +2,12 @@
 
 use serde_json::{Map, Value};
 
-use crate::cli::{EditArgs, GlobalOpts, OutcomeFlags};
-use crate::commands::{NO_STORE_MESSAGE, StoreLocation, domain_file, locate};
+use crate::cli::{EditArgs, GlobalOpts};
+use crate::commands::{
+    NO_STORE_MESSAGE, StoreLocation, domain_not_found, find_by_id, locate, read_domain_lines,
+    record_not_found,
+};
 use crate::output::{Failure, print_json, print_line, success_envelope};
-
-/// Payload fields per record type (same table as `record`).
-const PAYLOAD_FIELDS: [(&str, &[&str]); 6] = [
-    ("convention", &["content"]),
-    ("pattern", &["name", "description"]),
-    ("failure", &["description", "resolution"]),
-    ("decision", &["title", "rationale"]),
-    ("reference", &["name", "description"]),
-    ("guide", &["name", "description"]),
-];
 
 /// Runs `edit`: updates fields in place (key positions preserved),
 /// appends files/relates_to/supersedes at line end, never recomputes
@@ -39,27 +32,17 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == &args.domain) {
-        let list = domains.join(", ");
-        return Err(Failure::handled(
-            "edit",
-            format!(
-                "Error: domain \"{}\" not found in config.\nAvailable domains: {list}",
-                args.domain
-            ),
-        ));
+        let mut failure = domain_not_found("edit", &args.domain, &domains);
+        failure.envelope_to_stderr = true;
+        return Err(failure);
     }
 
-    let file = domain_file(&store.root, &args.domain);
-    let text = std::fs::read_to_string(&file).unwrap_or_default();
-    let mut lines: Vec<String> = text.lines().map(String::from).collect();
-    let position = lines.iter().position(|line| {
-        serde_json::from_str::<Value>(line)
-            .ok()
-            .and_then(|r| r.get("id").and_then(Value::as_str).map(str::to_string))
-            .is_some_and(|existing| existing == args.id)
-    });
-    let Some(position) = position else {
-        return Err(not_found(&args.id));
+    let mut lines = read_domain_lines(&store.root, &args.domain)
+        .map_err(|source| Failure::handled("edit", format!("reading domain file: {source}")))?;
+    let Some(position) = find_by_id(&lines, &args.id) else {
+        let mut failure = record_not_found("edit", &args.id);
+        failure.envelope_to_stderr = true;
+        return Err(failure);
     };
 
     let mut record: Map<String, Value> =
@@ -79,10 +62,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
             Value::String(classification.clone()),
         );
     }
-    let payload: &[&str] = PAYLOAD_FIELDS
-        .iter()
-        .find(|(name, _)| name == &record_type)
-        .map_or(&[], |(_, fields)| *fields);
+    let payload: &[&str] = mulch::payload_fields(&record_type);
     let updates: [(&str, &Option<String>); 6] = [
         ("content", &args.content),
         ("name", &args.name),
@@ -101,20 +81,19 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
 
     // Record-time-style outcome (no recorded_at inside).
     if args.outcome.status.is_some() {
-        append_outcome_without_time(&mut record, &args.outcome);
+        append_outcome_without_time(&mut record, &args.outcome, &args.id)?;
     }
 
-    // End-of-line array extensions (order: relates_to, supersedes, files).
-    extend_end_list(&mut record, "relates_to", args.relates_to.as_deref());
-    extend_end_list(&mut record, "supersedes", args.supersedes.as_deref());
-    extend_end_list(&mut record, "files", args.files.as_deref());
+    // List updates REPLACE the values (reference `update` semantics);
+    // absent keys are appended at line end (order: relates_to,
+    // supersedes, files).
+    set_end_list(&mut record, "relates_to", args.relates_to.as_deref());
+    set_end_list(&mut record, "supersedes", args.supersedes.as_deref());
+    set_end_list(&mut record, "files", args.files.as_deref());
 
     lines[position] = Value::Object(record.clone()).to_string();
-    let mut updated = lines.join("\n");
-    updated.push('\n');
-    std::fs::write(&file, updated).map_err(|source| {
-        Failure::handled("edit", format!("writing {}: {source}", file.display()))
-    })?;
+    crate::commands::write_domain_lines(&store.root, &args.domain, &lines)
+        .map_err(|source| Failure::handled("edit", format!("writing domain file: {source}")))?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();
@@ -132,16 +111,12 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     Ok(())
 }
 
-/// The unknown-id failure (reference text).
-pub(super) fn not_found(id: &str) -> Failure {
-    Failure::handled(
-        "edit",
-        format!("Error: Record \"{id}\" not found. Run `mulch query` to see record IDs."),
-    )
-}
-
 /// Appends an edit-time outcome object (no recorded_at).
-fn append_outcome_without_time(record: &mut Map<String, Value>, flags: &OutcomeFlags) {
+fn append_outcome_without_time(
+    record: &mut Map<String, Value>,
+    flags: &crate::cli::EditOutcomeFlags,
+    id: &str,
+) -> Result<(), Failure> {
     let mut outcome = Map::new();
     if let Some(status) = &flags.status {
         outcome.insert("status".into(), Value::String(status.clone()));
@@ -159,16 +134,21 @@ fn append_outcome_without_time(record: &mut Map<String, Value>, flags: &OutcomeF
     if let Some(agent) = &flags.agent {
         outcome.insert("agent".into(), Value::String(agent.clone()));
     }
-    record
+    let outcomes_entry = record
         .entry("outcomes")
-        .or_insert_with(|| Value::Array(Vec::new()))
-        .as_array_mut()
-        .expect("outcomes stays an array")
-        .push(Value::Object(outcome));
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(array) = outcomes_entry.as_array_mut() else {
+        return Err(Failure::handled(
+            "edit",
+            format!("record {id} carries a non-array outcomes field"),
+        ));
+    };
+    array.push(Value::Object(outcome));
+    Ok(())
 }
 
-/// Extends (or appends at line end) a string-list field.
-fn extend_end_list(record: &mut Map<String, Value>, key: &str, raw: Option<&str>) {
+/// Replaces (or appends at line end) a string-list field.
+fn set_end_list(record: &mut Map<String, Value>, key: &str, raw: Option<&str>) {
     let Some(items) = raw else {
         return;
     };
@@ -177,10 +157,7 @@ fn extend_end_list(record: &mut Map<String, Value>, key: &str, raw: Option<&str>
         .filter(|item| !item.trim().is_empty())
         .map(|item| Value::String(item.trim().to_string()))
         .collect();
-    match record.get_mut(key) {
-        Some(Value::Array(existing)) => existing.extend(parsed),
-        _ => {
-            record.insert(key.into(), Value::Array(parsed));
-        }
-    }
+    // Replace-or-append is the same insert for an order-preserving map
+    // when the position at line end is the desired one for new keys.
+    record.insert(key.into(), Value::Array(parsed));
 }

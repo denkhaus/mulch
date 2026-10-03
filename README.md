@@ -41,6 +41,12 @@ expectation (the parity rule: never silently):
   message as a handled error envelope (status-channel) or report the
   bad lines as `jsonl-integrity` findings. Expectation: same exit code
   1, clean text instead of a stack trace.
+- **Argument-parse errors use clap wording** (choice rejections,
+  missing-argument hints): same channels and exit code 1, different
+  text than commander's. The no-store paths of `add`, `record`,
+  `edit`, `outcome` and the invalid-domain `add` render as clean
+  handled errors where the reference crashes or prints stack traces —
+  same family as the crash-path bullet below.
 - **`--format` does not exist yet.** It belongs to the
   record-rendering commands (`query`, `prime`, `search`, …) and joins
   with its parity slice (`mulch-16da`). Per-command `--help` wording

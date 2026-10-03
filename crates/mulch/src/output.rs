@@ -36,7 +36,10 @@ impl Failure {
         let mut body = Map::new();
         body.insert("success".into(), Value::Bool(false));
         body.insert("command".into(), Value::String(command.into()));
-        body.insert("error".into(), Value::String(error.clone()));
+        // The json error field carries no `Error: ` prefix (reference
+        // json contract; the prefix is plain-stderr only).
+        let json_error = error.strip_prefix("Error: ").unwrap_or(&error).to_string();
+        body.insert("error".into(), Value::String(json_error));
         Self {
             message:            error,
             code:               EXIT_ERROR,

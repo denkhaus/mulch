@@ -3,8 +3,10 @@
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, OutcomeFlags};
-use crate::commands::edit::not_found;
-use crate::commands::{NO_STORE_MESSAGE, StoreLocation, domain_file, locate, now_iso};
+use crate::commands::{
+    NO_STORE_MESSAGE, StoreLocation, find_by_id, locate, now_iso, read_domain_lines,
+    record_not_found, write_domain_lines,
+};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `outcome`: appends `{status, recorded_at, duration?, agent?,
@@ -42,17 +44,12 @@ pub(super) fn run(
         ));
     }
 
-    let file = domain_file(&store.root, domain);
-    let text = std::fs::read_to_string(&file).unwrap_or_default();
-    let mut lines: Vec<String> = text.lines().map(String::from).collect();
-    let position = lines.iter().position(|line| {
-        serde_json::from_str::<Value>(line)
-            .ok()
-            .and_then(|r| r.get("id").and_then(Value::as_str).map(String::from))
-            .is_some_and(|existing| existing == id)
-    });
-    let Some(position) = position else {
-        return Err(not_found(id));
+    let mut lines = read_domain_lines(&store.root, domain)
+        .map_err(|source| Failure::handled("outcome", format!("reading domain file: {source}")))?;
+    let Some(position) = find_by_id(&lines, id) else {
+        let mut failure = record_not_found("outcome", id);
+        failure.envelope_to_stderr = true;
+        return Err(failure);
     };
 
     let mut record: Map<String, Value> = serde_json::from_str(&lines[position])
@@ -89,11 +86,8 @@ pub(super) fn run(
         array.len()
     };
     lines[position] = Value::Object(record).to_string();
-    let mut updated = lines.join("\n");
-    updated.push('\n');
-    std::fs::write(&file, updated).map_err(|source| {
-        Failure::handled("outcome", format!("writing {}: {source}", file.display()))
-    })?;
+    write_domain_lines(&store.root, domain, &lines)
+        .map_err(|source| Failure::handled("outcome", format!("writing domain file: {source}")))?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();

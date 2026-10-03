@@ -3,7 +3,6 @@
 mod add;
 mod doctor;
 mod edit;
-pub(crate) mod ids;
 mod init;
 mod outcome;
 mod record;
@@ -53,7 +52,14 @@ impl ConfigStore {
 
     /// Registers a domain: canonical (comment-free) config rewrite plus
     /// an empty expertise file (reference `add`/auto-create behavior).
+    /// Invalid names are rejected here so every registration path (add
+    /// and record auto-create) validates identically.
     pub(crate) fn add_domain(&mut self, domain: &str) -> Result<(), Error> {
+        if !valid_domain(domain) {
+            return Err(Error::InvalidDomain {
+                domain: domain.into(),
+            });
+        }
         self.config.add_domain(domain);
         std::fs::write(self.root.join("mulch.config.yaml"), self.config.to_yaml()).map_err(
             |source| Error::Write {
@@ -130,4 +136,73 @@ pub(crate) fn now_iso() -> String {
     jiff::Timestamp::now()
         .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string()
+}
+
+/// Valid domain names (reference `src/utils/config.ts:204`).
+pub(crate) fn valid_domain(domain: &str) -> bool {
+    let mut chars = domain.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Reads a domain's physical lines (blank lines included); a missing
+/// file reads as empty, real I/O failures propagate.
+pub(crate) fn read_domain_lines(
+    store_root: &Path,
+    domain: &str,
+) -> Result<Vec<String>, std::io::Error> {
+    match std::fs::read_to_string(domain_file(store_root, domain)) {
+        Ok(text) => Ok(text.lines().map(String::from).collect()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(source) => Err(source),
+    }
+}
+
+/// Writes a domain's lines back (LF-terminated).
+pub(crate) fn write_domain_lines(
+    store_root: &Path,
+    domain: &str,
+    lines: &[String],
+) -> Result<(), std::io::Error> {
+    let mut text = lines.join("\n");
+    text.push('\n');
+    std::fs::write(domain_file(store_root, domain), text)
+}
+
+/// Finds the physical line index of the record with `id`.
+pub(crate) fn find_by_id(lines: &[String], id: &str) -> Option<usize> {
+    lines.iter().position(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|r| {
+                r.get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .is_some_and(|existing| existing == id)
+    })
+}
+
+/// The shared domain-not-found failure (reference text).
+pub(crate) fn domain_not_found(command: &str, domain: &str, available: &[String]) -> Failure {
+    Failure::handled(
+        command,
+        format!(
+            "Error: domain \"{domain}\" not found in config.\nAvailable domains: {}",
+            available.join(", ")
+        ),
+    )
+}
+
+/// The shared unknown-id failure (reference text).
+pub(crate) fn record_not_found(command: &str, id: &str) -> Failure {
+    Failure::handled(
+        command,
+        format!("Error: Record \"{id}\" not found. Run `mulch query` to see record IDs."),
+    )
+}
+
+/// The required-fields hint line content for a record type.
+pub(crate) fn hint_fields(record_type: &str) -> String {
+    mulch::payload_fields(record_type).join(", ")
 }

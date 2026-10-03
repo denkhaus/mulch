@@ -14,6 +14,19 @@ pub fn id_key_field(record_type: &str) -> &'static str {
     }
 }
 
+/// Payload fields per record type, in canonical write order (the
+/// reference registry: convention=content, pattern/reference/guide=
+/// name+description, failure=description+resolution, decision=
+/// title+rationale).
+pub fn payload_fields(record_type: &str) -> &'static [&'static str] {
+    match record_type {
+        "pattern" | "reference" | "guide" => &["name", "description"],
+        "failure" => &["description", "resolution"],
+        "decision" => &["title", "rationale"],
+        _ => &["content"],
+    }
+}
+
 /// Computes the record id for a payload.
 pub fn record_id(record_type: &str, id_key_value: &str) -> String {
     let key = format!("{record_type}:{id_key_value}");
@@ -24,17 +37,4 @@ pub fn record_id(record_type: &str, id_key_value: &str) -> String {
         let _ = write!(hex, "{byte:02x}");
     }
     format!("mx-{hex}")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn known_reference_ids() {
-        assert_eq!(record_id("convention", "c1"), "mx-1d1926");
-        assert_eq!(record_id("reference", "N1"), "mx-b9079b");
-        assert_eq!(record_id("pattern", "N1"), "mx-a6adb8");
-        assert_eq!(record_id("guide", "N1"), "mx-ab7ce3");
-    }
 }

@@ -116,7 +116,10 @@ pub(crate) struct RecordArgs {
     pub(crate) record_type: Option<String>,
 
     /// Classification (default tactical).
-    #[arg(long)]
+    #[arg(
+        long,
+        value_parser = ["foundational", "tactical", "observational"]
+    )]
     pub(crate) classification: Option<String>,
 
     #[arg(long)]
@@ -217,7 +220,10 @@ pub(crate) struct EditArgs {
     /// Record id (`mx-…`).
     pub(crate) id: String,
 
-    #[arg(long)]
+    #[arg(
+        long,
+        value_parser = ["foundational", "tactical", "observational"]
+    )]
     pub(crate) classification: Option<String>,
 
     #[arg(long)]
@@ -251,10 +257,34 @@ pub(crate) struct EditArgs {
     pub(crate) supersedes: Option<String>,
 
     #[command(flatten)]
-    pub(crate) outcome: OutcomeFlags,
+    pub(crate) outcome: EditOutcomeFlags,
 }
 
-/// Outcome flags shared by `record --outcome-*` and `outcome`.
+/// Outcome flags of `mulch edit` (reference longs carry the
+/// `--outcome-` prefix here, unlike the `outcome` command).
+#[derive(Debug, Args)]
+pub(crate) struct EditOutcomeFlags {
+    /// Outcome verdict.
+    #[arg(
+        long = "outcome-status",
+        value_parser = ["success", "failure", "partial"]
+    )]
+    pub(crate) status: Option<String>,
+
+    /// Duration in milliseconds.
+    #[arg(long = "outcome-duration")]
+    pub(crate) duration: Option<String>,
+
+    /// Test results summary.
+    #[arg(long = "outcome-test-results")]
+    pub(crate) test_results: Option<String>,
+
+    /// Recording agent name.
+    #[arg(long = "outcome-agent")]
+    pub(crate) agent: Option<String>,
+}
+
+/// Outcome flags of `record --outcome-*` and the `outcome` command.
 #[derive(Debug, Args)]
 pub(crate) struct OutcomeFlags {
     /// Outcome verdict.

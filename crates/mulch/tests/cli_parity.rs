@@ -1067,3 +1067,232 @@ fn outcome_matches_reference() {
     assert_eq!(ours_missing.code, theirs_missing.code);
     assert_eq!(ours_missing.stderr, theirs_missing.stderr);
 }
+
+// ---- sprint 2 review round: json error channels, stdin/batch matrix ----
+
+#[test]
+fn edit_outcome_flags_and_list_replace_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("eo-ours");
+    let theirs = TempDir::new("eo-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "d",
+            "--type",
+            "pattern",
+            "--name",
+            "p",
+            "--description",
+            "d1",
+            "--files",
+            "f1.rs",
+        ]);
+    }
+    let id = pattern_p_id();
+
+    // edit --outcome-status uses the --outcome-* longs and appends
+    let edit = [
+        "edit",
+        "d",
+        &id,
+        "--outcome-status",
+        "success",
+        "--outcome-agent",
+        "ag",
+    ];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &edit);
+    let theirs_run = run_in(&theirs.0, &ml, &edit);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    assert_eq!(
+        normalize_line(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize_line(&read_store_file(&theirs.0, "expertise/d.jsonl"))
+    );
+
+    // edit --files REPLACES the list
+    let replace = ["edit", "d", &id, "--files", "g1.rs,g2.rs"];
+    let ours_rep = run_in(&ours.0, Path::new(mulch_bin()), &replace);
+    let theirs_rep = run_in(&theirs.0, &ml, &replace);
+    assert_eq!(ours_rep.code, theirs_rep.code);
+    assert_eq!(
+        normalize_line(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize_line(&read_store_file(&theirs.0, "expertise/d.jsonl"))
+    );
+    assert!(read_store_file(&ours.0, "expertise/d.jsonl").contains("g1.rs"));
+    assert!(!read_store_file(&ours.0, "expertise/d.jsonl").contains("f1.rs"));
+}
+
+#[test]
+fn edit_unknown_id_json_envelope_on_stderr() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("ejs-ours");
+    let theirs = TempDir::new("ejs-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "d"]);
+    }
+    let missing = ["edit", "d", "mx-deadbe", "--description", "x", "--json"];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &missing);
+    let theirs_run = run_in(&theirs.0, &ml, &missing);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    assert_eq!(ours_run.stderr, theirs_run.stderr);
+}
+
+#[test]
+fn record_invalid_ref_matches_reference_blob() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("iref-ours");
+    let theirs = TempDir::new("iref-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+    }
+    let args = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "x",
+        "--relates-to",
+        "mx-abc",
+    ];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let theirs_run = run_in(&theirs.0, &ml, &args);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    assert_eq!(ours_run.stderr, theirs_run.stderr);
+}
+
+#[test]
+fn record_missing_flags_json_error_text() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("mfj-ours");
+    let theirs = TempDir::new("mfj-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "d"]);
+    }
+    let args = [
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--name",
+        "t1",
+        "--description",
+        "d",
+        "--json",
+    ];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let theirs_run = run_in(&theirs.0, &ml, &args);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    assert_eq!(ours_run.stderr, theirs_run.stderr);
+}
+
+#[test]
+fn stdin_invalid_record_envelope_and_untouched_store() {
+    use std::io::Write as _;
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("sinv-ours");
+    let theirs = TempDir::new("sinv-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "d"]);
+    }
+    let payload = r#"{"type":"pattern","name":"pn"}"#;
+    for (dir, program) in [(&ours.0, Path::new(mulch_bin())), (&theirs.0, &ml)] {
+        let mut child = std::process::Command::new(program)
+            .args(["record", "d", "--stdin", "--json"])
+            .current_dir(dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn");
+        child
+            .stdin
+            .as_mut()
+            .expect("stdin")
+            .write_all(payload.as_bytes())
+            .expect("write");
+        let output = child.wait_with_output().expect("wait");
+        assert_eq!(output.status.code(), Some(1));
+    }
+    assert_eq!(read_store_file(&ours.0, "expertise/d.jsonl"), "");
+    assert_eq!(read_store_file(&theirs.0, "expertise/d.jsonl"), "");
+}
+
+#[test]
+fn batch_dry_run_writes_nothing() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("bdry-ours");
+    let theirs = TempDir::new("bdry-theirs");
+    let batch = r#"[{"type":"convention","content":"b1"},{"type":"convention","content":"b2"}]"#;
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "d"]);
+        std::fs::write(dir.join("b.json"), batch).expect("batch file");
+    }
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--batch",
+        "b.json",
+        "--dry-run",
+    ]);
+    let theirs_run = run_in(&theirs.0, &ml, &[
+        "record",
+        "d",
+        "--batch",
+        "b.json",
+        "--dry-run",
+    ]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    assert_eq!(read_store_file(&ours.0, "expertise/d.jsonl"), "");
+}
+
+#[test]
+fn classification_choices_rejected() {
+    let ours = TempDir::new("cls-ours");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["add", "d"]);
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "c",
+        "--classification",
+        "bogus",
+    ]);
+    // clap rejects the value before the store is touched (wording is a
+    // documented deviation; exit 1 + untouched store is the contract)
+    assert_eq!(run.code, 1);
+    assert_eq!(read_store_file(&ours.0, "expertise/d.jsonl"), "");
+}

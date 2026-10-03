@@ -18,7 +18,7 @@ mod store;
 
 pub use config::{Config, Governance, Prime, SUPPORTED_VERSION, Search, ShelfLife, TierWeights};
 pub use error::{Error, Result};
-pub use ids::{id_key_field, record_id};
+pub use ids::{id_key_field, payload_fields, record_id};
 pub use record::{Record, RecordId};
 pub use store::Store;
 
