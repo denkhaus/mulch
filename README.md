@@ -29,6 +29,29 @@ this repository is an independent implementation of that format, not a
 fork. The rewrite target's CLI is published as `@os-eco/mulch-cli`
 (the `ml` binary).
 
+## DEVIATIONS
+
+Deliberate divergences from the reference `ml` 0.10.7, each with its own
+expectation (the parity rule: never silently):
+
+- **Crash paths render as clean errors.** The reference exits 1 with a
+  raw Bun stack trace (no envelope) for (a) `.mulch/` without
+  `mulch.config.yaml` and (b) malformed JSONL lines in `doctor`. We
+  render the reference's own message as a handled error envelope
+  (status-channel) or report the bad lines as `jsonl-integrity`
+  findings. Expectation: same exit code 1, clean text instead of a
+  stack trace.
+- **`doctor` upgrade check is inert.** The reference warns when the npm
+  registry offers a newer version. The native binary has no npm
+  registry; the `upgrade` check reports pass with a cargo hint.
+  Expectation: check name and order stay, status does not.
+- **`--version` reports this binary's version**, not the reference's.
+- **`doctor --fix` does not repair malformed JSONL lines** (the
+  reference crashes on them before fixing anything); it implements the
+  probed fixes only: stale records are pruned, schema-invalid records
+  removed — both hard-deleted, the domain file left empty, the domain
+  stays registered.
+
 ## Status
 
 Bootstrap. The work is tracked in this repo's own `.seeds/` tracker
