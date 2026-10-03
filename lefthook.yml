@@ -1,0 +1,11 @@
+# lefthook config (seeds-e5af): deterministic no-push-while-running gate.
+#
+# INVARIANT: run sandboxes NEVER install hooks — lefthook.yml is inert on
+# its own; it activates ONLY after an operator runs `lefthook install` in
+# their own checkout. A toolchain/bootstrap `lefthook install` or a
+# core.hooksPath override would stall the whole develop line (every stage
+# push would hit the gate seeing its own active run).
+pre-push:
+    commands:
+        push-gate:
+            run: nu .fabro/scripts/push-gate.nu

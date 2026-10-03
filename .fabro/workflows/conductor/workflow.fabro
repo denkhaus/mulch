@@ -1,0 +1,153 @@
+digraph Conductor {
+    graph [
+        goal="Run the serialized seeds line: one pass = one develop+revisor cycle; children are created only after the previous child merged",
+        x.inspects="develop,revisor",
+        rankdir=LR,
+        // fabro-0e11: legal blocking fabro_run_wait (60m) and long gate shells
+        // must not trip the default 1800s stall watchdog.
+        stall_timeout="63m",
+        max_node_visits=12,
+        x.preamble_budget_kb=12
+    ]
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    // Survey (cheap): route this pass (Work by default) and
+    // pre-register the develop + revisor workflow versions while
+    // it has slack. No upstream exists in this repo — there is no
+    // merge leg.
+    survey [
+        label="Survey",
+        prompt="@prompts/survey.md",
+        // fabro-f84f: opt into vendored-skill discovery — the
+        // session loads `.fabro/skills` (rust-style-guide and
+        // friends) through the UseSkill tool.
+        x.skills="discover",
+        // Label enum (fabro-9ec3 pattern): a drifted preferred_next_label
+        // (node name instead of edge label) fails validation and repairs
+        // instead of riding the Unrouted catch-all to a green exit.
+        output_schema="@schemas/survey-output.schema.json",
+        output_retries=2,
+        retry_policy="standard",
+        reasoning_effort="low",
+        project_memory=false,
+        x.preamble_stages_ignore="survey",
+        x.fs_write="",
+        // fabro_workflow_version_create (fabro-978d): the survey
+        // pre-registers the develop + revisor workflow versions while it
+        // has slack, so the legs pass only the content-addressed id
+        // instead of transcribing ~118 KB of closure through tool
+        // arguments on the critical path.
+        x.fabro_tools="fabro_run_search,fabro_workflow_version_create"
+    ]
+
+
+    // Develop leg: one seed implementation through gate+review+PR.
+    develop [
+        label="Develop leg",
+        prompt="@prompts/develop-leg.md",
+        // fabro-f84f: opt into vendored-skill discovery — the
+        // session loads `.fabro/skills` (rust-style-guide and
+        // friends) through the UseSkill tool.
+        x.skills="discover",
+        // fabro-3196: file schema (fabro-017f teeth pattern) — keeps
+        // the routing contract AND rejects a revise-handoff routing
+        // ('Develop integrated' / 'Gate stuck — revise anyway')
+        // without a non-empty context_updates.child_run_id (run
+        // 01M2X6AT3V4CPSJC08SMCVB172 dropped it; the revise leg then
+        // failed pass continuity and the child went unreviewed).
+        output_schema="@schemas/develop-output.schema.json",
+        output_retries=2,
+        retry_policy="standard",
+        reasoning_effort="low",
+        project_memory=false,
+        x.preamble_stages_ignore="survey,develop",
+        x.fs_write="",
+        x.fabro_tools="fabro_workflow_version_create,fabro_run_create,fabro_run_get,fabro_run_wait,fabro_run_search"
+    ]
+
+    // Revise leg: revisor revises the newest develop run.
+    revise [
+        label="Revise leg",
+        prompt="@prompts/revise-leg.md",
+        // fabro-f84f: opt into vendored-skill discovery — the
+        // session loads `.fabro/skills` (rust-style-guide and
+        // friends) through the UseSkill tool.
+        x.skills="discover",
+        output_schema="routing",
+        output_retries=2,
+        retry_policy="standard",
+        reasoning_effort="low",
+        project_memory=false,
+        x.preamble_stages_ignore="survey,develop,revise",
+        x.fs_write="",
+        x.fabro_tools="fabro_workflow_version_create,fabro_run_create,fabro_run_get,fabro_run_wait,fabro_run_search"
+    ]
+
+    // Needs-operator human gate (seeds-a77c, HITL pilot). WHERE THE
+    // GATE LIVES — closeout note: this gate lives in the CONDUCTOR
+    // parent, never in a develop child, because develop children are
+    // created with args.auto_approve=true (auto-approve answers any
+    // gate with the FIRST option) — a child-owned gate would silently
+    // self-answer, so children stay gate-free and the conductor parent
+    // (approval=prompt) is the only place the question reliably lands
+    // in the web interviewer dock. FAIL-CLOSED: while the question is
+    // pending the conductor run blocks HERE — no identical child fires
+    // are spawned; an unanswered gate is never treated as consent to
+    // continue burning fires.
+    //
+    // Syntax note (2026-09-22 packaging outage, seeds-7cd1 session):
+    // the gate is written in the engine's REAL attribute model — the
+    // question text is this node's label, the options are the outgoing
+    // edges ([S]/[P] labels, accelerator keys parsed from the
+    // brackets), freeform is an edge flag, and the deadline is
+    // timeout="86400s". The first landing (PR #35) invented
+    // human.question/human.options/human.freeform/timeout_seconds
+    // node attrs: those exist in NO engine rev, and their quoted-key
+    // spelling broke the server packager's DOT parser, silently
+    // stalling every fire (packaging errors do not trip the 3-strike
+    // breaker). human.default_choice is dropped for now: the server
+    // parser needs the key unquoted while the tester's `dot -Tcanon`
+    // arm needs it quoted — irreconcilable in one file; on timeout the
+    // gate retry-classifies instead of auto-skipping. Restoring a
+    // timeout default needs the gate-parse reconciliation first.
+    needs_operator [
+        label="Needs operator: a seed needs host/operator capability (e.g. docker host, gh write:packages). Skip the seed and continue the line, or park the line?",
+        shape=hexagon,
+        timeout="86400s"
+    ]
+
+    start -> survey
+    survey -> develop [label="Work", condition="preferred_label=\"Work\""]
+    survey -> exit    [label="Nothing to do", condition="preferred_label=\"Nothing to do\""]
+    survey -> exit    [x.kind="soft", label="Survey failed", condition="outcome=failed"]
+    develop -> revise [label="Develop integrated", condition="preferred_label=\"Develop integrated\""]
+    // Gate-stuck park (fabro-1dc9): the develop child SUCCEEDED but its PR
+    // gate is persistently blocked after the bounded re-wait chain. The pass
+    // still runs the revise leg — an unreviewed develop run is worse than a
+    // parked PR; the next fire re-enters via survey.
+    develop -> revise [label="Gate stuck — revise anyway", condition="preferred_label=\"Gate stuck — revise anyway\""]
+    develop -> exit   [label="Tracker empty", condition="preferred_label=\"Tracker empty\""]
+    // Capability-block routing (seeds-a77c): the child ended SOFTLY on
+    // the develop graph's "Needs operator" exit (journal key
+    // `parked: needs operator <seed-id>`) — route the human gate, NOT
+    // the generic "Develop child failed" soft exit below.
+    develop -> needs_operator [label="Needs operator", condition="preferred_label=\"Needs operator\""]
+    develop -> exit   [x.kind="soft", label="Develop child failed", condition="preferred_label=\"Develop child failed\""]
+    // Gate outcomes (seeds-a77c): [S] skip ends the pass softly — the
+    // next fire claims the NEXT seed (the parked seed stays open);
+    // [P] park ends the pass softly for a human decision; a freeform
+    // note is journaled and takes the skip semantics (continue line).
+    needs_operator -> exit [x.kind="soft", label="[S] Skip seed & continue line"]
+    needs_operator -> exit [x.kind="soft", label="[P] Park line"]
+    needs_operator -> exit [x.kind="soft", label="[N] Operator note (skip + journaled note)", freeform=true]
+    revise -> exit [label="Cycle complete"]
+    revise -> exit [x.kind="soft", label="Revisor child failed", condition="preferred_label=\"Revisor child failed\""]
+    // Unconditional safety nets (validator rule all_conditional_edges):
+    // an unrouted outcome ends the pass softly — the next cron fire
+    // re-enters cleanly; nothing merges on an ambiguous state.
+    survey -> exit [x.kind="soft", label="Unrouted survey outcome"]
+    develop -> exit [x.kind="soft", label="Unrouted develop outcome"]
+    revise -> exit [x.kind="soft", label="Unrouted revise outcome"]
+}

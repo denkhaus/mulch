@@ -1,0 +1,9 @@
+[package]
+name = "mulch"
+description = "Native Rust implementation of the mulch structured-expertise format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

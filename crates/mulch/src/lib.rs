@@ -1,0 +1,26 @@
+//! mulch — native Rust implementation of the mulch structured-expertise
+//! format.
+//!
+//! Format-compatibility contract (README): read+write drop-in compatible
+//! with `@os-eco/mulch-cli` 0.10.7 (`.mulch/` directory:
+//! `mulch.config.yaml`, `expertise/<domain>.jsonl`, `archive/`).
+//! Unknown record fields are preserved on every write; additive fields
+//! are the only sanctioned extension mechanism.
+//!
+//! Bootstrap skeleton: the format core, CLI parity, and the
+//! self-hosting cutover are tracked in this repo's own Seeds tracker
+//! (seed ids `mulch-…`, see `.seeds/`).
+
+/// The reference implementation this crate is read+write compatible with
+/// (README format-compatibility promise; ADR-0023 in denkhaus/fabro).
+pub const COMPAT_TARGET: &str = "@os-eco/mulch-cli 0.10.7";
+
+#[cfg(test)]
+mod tests {
+    use super::COMPAT_TARGET;
+
+    #[test]
+    fn compat_target_is_pinned() {
+        assert_eq!(COMPAT_TARGET, "@os-eco/mulch-cli 0.10.7");
+    }
+}

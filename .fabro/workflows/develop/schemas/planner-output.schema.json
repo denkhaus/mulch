@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Planner routing output (fabro-9ec3 arm 3)",
+  "description": "Replaces output_schema=\"routing\" on the planner node: keeps the routing contract (required routing fields, preferred_next_label restricted to the node's outgoing edge labels) and adds the brief gate-command ban \u2014 the fabro-017f teeth pattern. A current_seed_brief containing the PROJECT_FACTS gate command (`just qualitygate`) or its byte-equivalent full-gate body (`nu scripts/qualitygate.nu`) fails validation, burns an output retry, and never passes silently. context_updates stays otherwise open (journal, seed keys, ...) exactly like the routing kind did.",
+  "type": "object",
+  "required": [
+    "outcome",
+    "preferred_next_label"
+  ],
+  "properties": {
+    "outcome": {
+      "type": "string"
+    },
+    "preferred_next_label": {
+      "type": "string",
+      "enum": [
+        "Seed claimed",
+        "Verification-only",
+        "Tracker empty",
+        "Already landed",
+        "Blocked",
+        "Needs operator"
+      ]
+    },
+    "failure_reason": {
+      "type": "string"
+    },
+    "suggested_next_ids": {
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "context_updates": {
+      "type": "object",
+      "properties": {
+        "current_seed_brief": {
+          "type": "string",
+          "pattern": "^(?:(?!just qualitygate|nu\\s+scripts/qualitygate\\.nu)[\\s\\S])*$",
+          "description": "Gate-command ban: the implementer never runs the full gate in any form; verification criteria must say 'gate green via the deterministic tester step'."
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
