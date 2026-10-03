@@ -159,3 +159,18 @@ The five canonical triage labels are used as-is (`needs-triage`, `needs-info`, `
 ### Domain docs
 
 Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root; read before exploring, create lazily via `/domain-modeling`. See `docs/agents/domain.md`.
+
+## Iterate loop (LOCAL)
+
+Local development runs in sprints via the local `iterate` skill
+(`.agents/skills/iterate/SKILL.md`): grilling-with-docs at decision points,
+working mode (but-commits + mulch + seeds + quality gates) always on,
+code-review after every sprint, improve-codebase-architecture every 3rd
+sprint, self-reflection evolving the skill at sprint close/session end.
+Sprint counter: `.iterate-state.json`. This loop is INDEPENDENT of the fabro
+develop line (user directive 2026-10-03): local-only on the `iterate`
+virtual branch — no pushes, no PRs, no `--assignee fabro`; all commits via
+`but`, never `git` and never `ml sync`. Local-loop skills live under
+`.agents/skills/` (iterate + repo-local rust-style-guide copy); the loop
+never loads skills from `.fabro/skills/` — that tree belongs to the
+autonomous fabro line.

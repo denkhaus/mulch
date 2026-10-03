@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use serde::ser::Error as _;
 use serde_yaml::Mapping;
 
 use crate::error::{Error, Result};
@@ -117,17 +118,17 @@ impl Config {
     /// Serialize in the reference key order (comments are not preserved;
     /// the reference CLI strips them too).
     pub fn to_yaml(&self) -> String {
+        // The reference applies config defaults before every write
+        // (`applyConfigDefaults`): governance and shelf-life blocks are
+        // always present, with user values merged over the defaults.
         let mut ordered = Mapping::new();
-        for key in [
-            "version",
-            "domains",
-            "governance",
-            "classification_defaults",
-        ] {
-            if let Some(value) = self.raw.get(yaml_str(key)) {
-                ordered.insert(yaml_str(key), value.clone());
-            }
-        }
+        ordered.insert(yaml_str("version"), self.version_value());
+        ordered.insert(yaml_str("domains"), self.domains_mapping());
+        ordered.insert(yaml_str("governance"), self.governance_mapping());
+        ordered.insert(
+            yaml_str("classification_defaults"),
+            self.classification_defaults_mapping(),
+        );
         for (key, value) in &self.raw {
             if !matches!(key.as_str(), Some(k) if matches!(k, "version" | "domains" | "governance" | "classification_defaults"))
             {
@@ -135,6 +136,69 @@ impl Config {
             }
         }
         serde_yaml::to_string(&ordered).expect("YAML mapping serialization is infallible")
+    }
+
+    /// `version`, falling back to the supported version.
+    fn version_value(&self) -> serde_yaml::Value {
+        self.raw
+            .get(yaml_str("version"))
+            .cloned()
+            .unwrap_or_else(|| yaml_str(SUPPORTED_VERSION))
+    }
+
+    /// The `domains` mapping (empty when absent), order preserved.
+    fn domains_mapping(&self) -> serde_yaml::Value {
+        self.raw
+            .get(yaml_str("domains"))
+            .cloned()
+            .unwrap_or_else(|| serde_yaml::Value::Mapping(Mapping::new()))
+    }
+
+    /// Governance thresholds with defaults backfilled.
+    fn governance_mapping(&self) -> serde_yaml::Value {
+        let user = self
+            .raw
+            .get(yaml_str("governance"))
+            .and_then(serde_yaml::Value::as_mapping)
+            .cloned()
+            .unwrap_or_default();
+        let defaults: [(&str, u64); 3] = [
+            ("max_entries", 100),
+            ("warn_entries", 150),
+            ("hard_limit", 200),
+        ];
+        let mut merged = Mapping::new();
+        for (key, default) in defaults {
+            let value = user
+                .get(yaml_str(key))
+                .cloned()
+                .unwrap_or_else(|| serde_yaml::Value::from(default));
+            merged.insert(yaml_str(key), value);
+        }
+        serde_yaml::Value::Mapping(merged)
+    }
+
+    /// `classification_defaults.shelf_life` with defaults backfilled.
+    fn classification_defaults_mapping(&self) -> serde_yaml::Value {
+        let user = self
+            .raw
+            .get(yaml_str("classification_defaults"))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|mapping| mapping.get(yaml_str("shelf_life")))
+            .and_then(serde_yaml::Value::as_mapping)
+            .cloned()
+            .unwrap_or_default();
+        let mut shelf = Mapping::new();
+        for (key, default) in [("tactical", 14_u64), ("observational", 30)] {
+            let value = user
+                .get(yaml_str(key))
+                .cloned()
+                .unwrap_or_else(|| serde_yaml::Value::from(default));
+            shelf.insert(yaml_str(key), value);
+        }
+        let mut outer = Mapping::new();
+        outer.insert(yaml_str("shelf_life"), serde_yaml::Value::Mapping(shelf));
+        serde_yaml::Value::Mapping(outer)
     }
 
     /// The config format version (`version: '1'`).
@@ -275,6 +339,79 @@ impl Config {
             serde_yaml::to_value(&value).expect("serializable"),
         );
     }
+
+    /// Remove a domain entry (a no-op when absent). The remaining
+    /// domains keep their original order — `Mapping::remove` alone
+    /// would swap the last entry into the hole.
+    pub fn remove_domain(&mut self, domain: &str) {
+        if let Some(domains) = self
+            .raw
+            .get_mut(yaml_str("domains"))
+            .and_then(serde_yaml::Value::as_mapping_mut)
+        {
+            let kept: Vec<(serde_yaml::Value, serde_yaml::Value)> = domains
+                .iter()
+                .filter(|(key, _)| key.as_str() != Some(domain))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            *domains = Mapping::from_iter(kept);
+        }
+    }
+
+    /// A domain's `required_fields` list, when configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConfigField`] when the value is present but not
+    /// a list of strings.
+    pub fn required_fields(&self, domain: &str) -> Result<Option<Vec<String>>> {
+        self.domain_list(domain, "required_fields")
+    }
+
+    /// A domain's `allowed_types` list, when configured.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConfigField`] when the value is present but not
+    /// a list of strings (a wrongly shaped rule must not silently pass
+    /// an enforcement gate).
+    pub fn allowed_types(&self, domain: &str) -> Result<Option<Vec<String>>> {
+        self.domain_list(domain, "allowed_types")
+    }
+
+    /// A per-domain string-list rule.
+    fn domain_list(&self, domain: &str, field: &'static str) -> Result<Option<Vec<String>>> {
+        let Some(domains) = self.raw.get(yaml_str("domains")) else {
+            return Ok(None);
+        };
+        let Some(entry) = domains
+            .as_mapping()
+            .and_then(|mapping| mapping.get(yaml_str(domain)))
+        else {
+            return Ok(None);
+        };
+        let Some(value) = entry
+            .as_mapping()
+            .and_then(|mapping| mapping.get(yaml_str(field)))
+        else {
+            return Ok(None);
+        };
+        let list = value.as_sequence().ok_or_else(|| Error::ConfigField {
+            path: PathBuf::from("mulch.config.yaml"),
+            field,
+            source: serde_yaml::Error::custom("expected a list of strings"),
+        })?;
+        let mut types = Vec::with_capacity(list.len());
+        for item in list {
+            let text = item.as_str().ok_or_else(|| Error::ConfigField {
+                path: PathBuf::from("mulch.config.yaml"),
+                field,
+                source: serde_yaml::Error::custom("expected string entries"),
+            })?;
+            types.push(text.to_string());
+        }
+        Ok(Some(types))
+    }
 }
 
 fn yaml_str(s: &str) -> serde_yaml::Value {
@@ -365,6 +502,31 @@ custom_types:
                 .expect("present")
                 .tactical,
             14
+        );
+    }
+
+    #[test]
+    fn remove_domain_and_allowed_types() {
+        let mut config =
+            Config::parse("version: '1'\ndomains:\n  alpha: {}\n  beta:\n    allowed_types:\n      - convention\n")
+                .expect("parses");
+        assert_eq!(config.domains(), vec!["alpha", "beta"]);
+        assert_eq!(
+            config.allowed_types("beta").expect("shape ok"),
+            Some(vec!["convention".to_string()])
+        );
+        assert_eq!(config.allowed_types("alpha").expect("no rules"), None);
+        config.remove_domain("alpha");
+        assert_eq!(config.domains(), vec!["beta"]);
+        assert!(config.to_yaml().contains("beta"));
+        assert!(!config.to_yaml().contains("alpha"));
+
+        let broken =
+            Config::parse("version: '1'\ndomains:\n  beta:\n    allowed_types: convention\n")
+                .expect("parses");
+        assert!(
+            broken.allowed_types("beta").is_err(),
+            "a scalar allowed_types must not pass the gate"
         );
     }
 

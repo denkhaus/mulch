@@ -1,0 +1,14 @@
+{
+ "sprints_completed": 4,
+ "sprints_reflected": 4,
+ "last_arch_review_at_sprint": 3,
+ "last_reflection": "2026-10-03",
+ "notes": [
+  "sprint system established 2026-10-03 (user directive): ported from nu-agent's iterate skill, adapted to this GitButler workspace (but instead of git, local-only, strictly separate from the fabro develop line)",
+  "sprint 1 (mulch-da8b): CLI skeleton + init/status/validate/doctor parity; two review rounds (standards 4 findings, spec 15) both fixed pre-close; battery 25 tests (13 differential); learnings recorded in mulch-compat (envelope/channel contract, empirical oneOf rule, byte-template pinning via fixtures)",
+  "sprint 2 (mulch-fdd0): record-creation family; two review rounds (standards: ConfigStore deepening, panic-on-input killed, io propagation, dedupe of pipelines; spec: edit outcome longs, stdin/batch validation+dedupe+dry-run, json error channel/prefix, ref-pattern blob) — both fixed pre-close; probe lesson: live-verify reviewer-claimed shapes (probe3 invalidated-ref blob); learnings recorded in mulch-compat",
+  "sprint 3 (mulch-dc67): delete/delete-domain/move; two review rounds — standards found the deep-module gaps (quiet gating, channels, ConfigStore ownership), spec read the REFERENCE SOURCE and found 2 blockers (silent store mutation via lenient reader, --all-except unknown id), config order corruption (swap_remove), missing id resolution and the wrong rewrite model (re-serialization, not raw lines). All fixed; 17 new differential tests. ARCH GATE DUE (3 % 3 == 0)",
+  "arch gate @ sprint 3: 5 candidates filed as seeds — mulch-8204 (store ownership, Strong), mulch-9e70 (command boundary, Strong), mulch-a3de (type registry, Worth exploring), mulch-a9b2 (canonical field order, Worth exploring), mulch-0c47 (doctor split, Worth exploring); report was a temp HTML served on localhost (ephemeral by design, the seeds carry the content)",
+  "sprint 4 (mulch-8204, arch-gate Strong): one owner for the .mulch store — lib StoreFiles (discovery, config mutations, read/write policies), CLI IO helpers + ConfigStore deleted, all commands migrated, open_store owns the no-store policy; plus three parity fixes for edit/outcome/record (strict read + compact rewrite). Reviews: standards found Partial depth (dead Lenient policy, reach-arounds, untested seam), spec found a regression in the first cut (--allow-unknown-types ignored) — both fixed; 5 pre-existing parity gaps filed as seeds. LESSON: a refactor that changes which flag reaches the reader must re-check every caller flag by flag."
+ ]
+}

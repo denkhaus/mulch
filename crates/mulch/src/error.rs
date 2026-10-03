@@ -19,10 +19,29 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A domain name violates `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`.
+    #[error(
+        "Invalid domain name: \"{domain}\". Only alphanumeric characters, hyphens, and underscores are allowed."
+    )]
+    InvalidDomain {
+        /// The rejected name.
+        domain: String,
+    },
+
     /// A store file could not be written.
     #[error("writing {path}")]
     Write {
         /// The file that failed to write.
+        path:   PathBuf,
+        /// The underlying I/O failure.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// A store file could not be removed.
+    #[error("removing {path}")]
+    Remove {
+        /// The file that failed to be removed.
         path:   PathBuf,
         /// The underlying I/O failure.
         #[source]
@@ -49,6 +68,32 @@ pub enum Error {
         /// The underlying YAML failure.
         #[source]
         source: serde_yaml::Error,
+    },
+
+    /// A JSONL line in a rewritten file is not valid JSON.
+    #[error("Malformed JSONL at {path}:{line}")]
+    MalformedLine {
+        /// The file being read.
+        path:    PathBuf,
+        /// The 1-based physical line number.
+        line:    usize,
+        /// Truncated line preview (reference `slice(0, 77) + "..."`).
+        preview: String,
+        /// The parser's reason.
+        reason:  String,
+    },
+
+    /// A record carries a type that is not registered.
+    #[error("Unknown record type \"{record_type}\" at {path}:{line}")]
+    UnknownRecordType {
+        /// The file being read.
+        path:        PathBuf,
+        /// The 1-based physical line number.
+        line:        usize,
+        /// The record id, when present.
+        id:          Option<String>,
+        /// The offending type name.
+        record_type: String,
     },
 
     /// An expertise JSONL line is not valid JSON or not an object.
