@@ -275,6 +275,29 @@ impl Config {
             serde_yaml::to_value(&value).expect("serializable"),
         );
     }
+
+    /// Remove a domain entry (a no-op when absent).
+    pub fn remove_domain(&mut self, domain: &str) {
+        if let Some(domains) = self
+            .raw
+            .get_mut(yaml_str("domains"))
+            .and_then(serde_yaml::Value::as_mapping_mut)
+        {
+            domains.remove(yaml_str(domain));
+        }
+    }
+
+    /// A domain's `allowed_types` list, when configured.
+    pub fn allowed_types(&self, domain: &str) -> Option<Vec<String>> {
+        let domains = self.raw.get(yaml_str("domains"))?.as_mapping()?;
+        let entry = domains.get(yaml_str(domain))?.as_mapping()?;
+        let list = entry.get(yaml_str("allowed_types"))?.as_sequence()?;
+        Some(
+            list.iter()
+                .filter_map(|item| item.as_str().map(String::from))
+                .collect(),
+        )
+    }
 }
 
 fn yaml_str(s: &str) -> serde_yaml::Value {

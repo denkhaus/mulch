@@ -73,6 +73,63 @@ pub(crate) enum Command {
     /// Edit an existing expertise record.
     Edit(Box<EditArgs>),
 
+    /// Delete an expertise record (or several).
+    Delete {
+        /// Domain to delete from.
+        domain: String,
+
+        /// Record id (`mx-…`); omit with --records/--all-except.
+        id: Option<String>,
+
+        /// Comma-separated record IDs to delete.
+        #[arg(long)]
+        records: Option<String>,
+
+        /// Delete all records except these comma-separated IDs.
+        #[arg(long = "all-except")]
+        all_except: Option<String>,
+
+        /// Preview without making changes.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Delete an expertise domain and its expertise file.
+    #[command(name = "delete-domain")]
+    DeleteDomain {
+        /// Domain to remove.
+        domain: String,
+
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+
+        /// Preview without making changes.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Move a record from one domain to another (appends at the end).
+    #[command(name = "move")]
+    MoveRecord {
+        /// Source domain.
+        source_domain: String,
+
+        /// Record id (`mx-…`).
+        id: String,
+
+        /// Target domain.
+        target_domain: String,
+
+        /// Preview the move without making changes.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+
+        /// Bypass the target domain's allowed_types gate.
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Append an outcome to an existing record.
     Outcome {
         /// Domain of the record.

@@ -1296,3 +1296,276 @@ fn classification_choices_rejected() {
     assert_eq!(run.code, 1);
     assert_eq!(read_store_file(&ours.0, "expertise/d.jsonl"), "");
 }
+
+// ---- sprint 3 (mulch-dc67): delete / delete-domain / move ----
+
+/// A deterministic store written by hand (fixed timestamps) so byte
+/// comparisons are meaningful.
+fn write_seed(dir: &Path, domains: &[(&str, &str)]) {
+    use std::fmt::Write as _;
+    let store = dir.join(".mulch");
+    std::fs::create_dir_all(store.join("expertise")).expect("store dirs");
+    let mut config = String::from("version: '1'\ndomains:\n");
+    for (domain, _) in domains {
+        let _ = writeln!(config, "  {domain}: {{}}");
+    }
+    config.push_str(
+        "governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\nclassification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30\n",
+    );
+    std::fs::write(store.join("mulch.config.yaml"), config).expect("config");
+    for (domain, body) in domains {
+        std::fs::write(
+            store.join("expertise").join(format!("{domain}.jsonl")),
+            body,
+        )
+        .expect("domain file");
+    }
+}
+
+const ALPHA_ONE: &str = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T20:47:57.690Z\",\"name\":\"Alpha One\",\"description\":\"first alpha pattern\",\"id\":\"mx-1bb21d\"}";
+const ALPHA_TWO: &str = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T20:47:58.050Z\",\"name\":\"Alpha Two\",\"description\":\"second alpha pattern\",\"id\":\"mx-c7129f\"}";
+
+#[test]
+fn delete_single_bulk_and_errors_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let seed = format!("{ALPHA_ONE}\n{ALPHA_TWO}\n");
+    let cases: [&[&str]; 6] = [
+        &["delete", "alpha", "mx-1bb21d"],
+        &["delete", "alpha", "mx-c7129f"],
+        &["delete", "alpha", "--records", "mx-1bb21d,mx-c7129f"],
+        &["delete", "alpha", "--all-except", "mx-1bb21d"],
+        &["delete", "alpha", "--dry-run"],
+        &["delete", "alpha", "--records", "mx-1bb21d", "--json"],
+    ];
+    for (index, args) in cases.iter().enumerate() {
+        let ours = TempDir::new(format!("del{index}-o").as_str());
+        let theirs = TempDir::new(format!("del{index}-t").as_str());
+        for dir in [&ours.0, &theirs.0] {
+            write_seed(dir, &[("alpha", seed.as_str()), ("beta", "")]);
+        }
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} exit");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "{args:?} stdout");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "{args:?} stderr");
+        assert_eq!(
+            read_store_file(&ours.0, "expertise/alpha.jsonl"),
+            read_store_file(&theirs.0, "expertise/alpha.jsonl"),
+            "{args:?} file"
+        );
+    }
+
+    // Error surfaces
+    let errors: [&[&str]; 5] = [
+        &["delete", "alpha"],
+        &["delete", "alpha", "mx-1bb21d", "--records", "mx-c7129f"],
+        &["delete", "alpha", "--records", ""],
+        &["delete", "alpha", "--all-except", ""],
+        &["delete", "alpha", "mx-ffffff"],
+    ];
+    for (index, args) in errors.iter().enumerate() {
+        let ours = TempDir::new(format!("dele{index}-o").as_str());
+        let theirs = TempDir::new(format!("dele{index}-t").as_str());
+        for dir in [&ours.0, &theirs.0] {
+            write_seed(dir, &[("alpha", seed.as_str())]);
+        }
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} exit");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "{args:?} stderr");
+        assert_eq!(
+            read_store_file(&ours.0, "expertise/alpha.jsonl"),
+            seed,
+            "{args:?} must not touch the store"
+        );
+    }
+}
+
+#[test]
+fn delete_junk_rewrite_and_last_record_match() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let junk = format!(
+        "# comment\n{{\"id\":\"mx-aaaaaa\",\"type\":\"pattern\",\"name\":\"Weird Order\",\"zzz_custom\":\"keepme\",\"description\":\"weird\",\"classification\":\"tactical\",\"recorded_at\":\"2026-01-01T00:00:00.000Z\"}}\n\n{ALPHA_ONE}\n"
+    );
+    let ours = TempDir::new("djunk-o");
+    let theirs = TempDir::new("djunk-t");
+    for dir in [&ours.0, &theirs.0] {
+        write_seed(dir, &[("alpha", junk.as_str())]);
+    }
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "delete",
+        "alpha",
+        "mx-1bb21d",
+    ]);
+    let theirs_run = run_in(&theirs.0, &ml, &["delete", "alpha", "mx-1bb21d"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    // the junk is dropped, the survivor stays byte-identical
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/alpha.jsonl"),
+        read_store_file(&theirs.0, "expertise/alpha.jsonl")
+    );
+    assert!(!read_store_file(&ours.0, "expertise/alpha.jsonl").contains("comment"));
+
+    // deleting the last record leaves a 0-byte file (never removes it)
+    let ours_last = TempDir::new("dlast-o");
+    let theirs_last = TempDir::new("dlast-t");
+    for dir in [&ours_last.0, &theirs_last.0] {
+        write_seed(dir, &[("beta", &format!("{ALPHA_ONE}\n"))]);
+    }
+    let _ = run_in(&ours_last.0, Path::new(mulch_bin()), &[
+        "delete",
+        "beta",
+        "mx-1bb21d",
+    ]);
+    let _ = run_in(&theirs_last.0, &ml, &["delete", "beta", "mx-1bb21d"]);
+    assert_eq!(read_store_file(&ours_last.0, "expertise/beta.jsonl"), "");
+    assert_eq!(read_store_file(&theirs_last.0, "expertise/beta.jsonl"), "");
+    assert!(ours_last.0.join(".mulch/expertise/beta.jsonl").is_file());
+}
+
+#[test]
+fn delete_domain_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let seed = format!("{ALPHA_ONE}\n{ALPHA_TWO}\n");
+    // --yes, --json (prompt skipped) and --dry-run
+    let cases: [&[&str]; 3] = [
+        &["delete-domain", "alpha", "--yes"],
+        &["delete-domain", "alpha", "--json"],
+        &["delete-domain", "alpha", "--yes", "--dry-run"],
+    ];
+    for (index, args) in cases.iter().enumerate() {
+        let ours = TempDir::new(format!("dd{index}-o").as_str());
+        let theirs = TempDir::new(format!("dd{index}-t").as_str());
+        for dir in [&ours.0, &theirs.0] {
+            write_seed(dir, &[("alpha", seed.as_str()), ("beta", "")]);
+        }
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} exit");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "{args:?} stdout");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "{args:?} stderr");
+        assert_eq!(
+            read_store_file(&ours.0, "mulch.config.yaml"),
+            read_store_file(&theirs.0, "mulch.config.yaml"),
+            "{args:?} config"
+        );
+        assert_eq!(
+            ours.0.join(".mulch/expertise/alpha.jsonl").exists(),
+            theirs.0.join(".mulch/expertise/alpha.jsonl").exists(),
+            "{args:?} file presence"
+        );
+    }
+
+    // unknown domain: plain carries the add-hint, json the domain list
+    for json in [false, true] {
+        let ours = TempDir::new(format!("ddu-{}", if json { "j" } else { "p" }).as_str());
+        let theirs = TempDir::new(format!("ddut-{}", if json { "j" } else { "p" }).as_str());
+        for dir in [&ours.0, &theirs.0] {
+            write_seed(dir, &[("beta", "")]);
+        }
+        let mut args = vec!["delete-domain", "nope", "--yes"];
+        if json {
+            args.push("--json");
+        }
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let theirs_run = run_in(&theirs.0, &ml, &args);
+        assert_eq!(ours_run.code, theirs_run.code);
+        assert_eq!(ours_run.stdout, theirs_run.stdout);
+        assert_eq!(ours_run.stderr, theirs_run.stderr);
+    }
+}
+
+#[test]
+fn move_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let alpha = format!("{ALPHA_ONE}\n{ALPHA_TWO}\n");
+    let beta = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T20:47:58.427Z\",\"name\":\"Beta One\",\"description\":\"first beta pattern\",\"id\":\"mx-3242b5\"}\n";
+    let cases: [&[&str]; 3] = [
+        &["move", "alpha", "mx-1bb21d", "beta"],
+        &["move", "alpha", "mx-1bb21d", "beta", "--json"],
+        &["move", "alpha", "mx-1bb21d", "beta", "--dry-run"],
+    ];
+    for (index, args) in cases.iter().enumerate() {
+        let ours = TempDir::new(format!("mv{index}-o").as_str());
+        let theirs = TempDir::new(format!("mv{index}-t").as_str());
+        for dir in [&ours.0, &theirs.0] {
+            write_seed(dir, &[("alpha", alpha.as_str()), ("beta", beta)]);
+        }
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} exit");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "{args:?} stdout");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "{args:?} stderr");
+        assert_eq!(
+            read_store_file(&ours.0, "expertise/beta.jsonl"),
+            read_store_file(&theirs.0, "expertise/beta.jsonl"),
+            "{args:?} target"
+        );
+        assert_eq!(
+            read_store_file(&ours.0, "expertise/alpha.jsonl"),
+            read_store_file(&theirs.0, "expertise/alpha.jsonl"),
+            "{args:?} source"
+        );
+    }
+
+    // errors: same domain, unknown target, schema-invalid record
+    let invalid = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T20:47:57.690Z\",\"name\":\"Broken\",\"id\":\"mx-f16294\"}\n";
+    let error_cases: [(&[&str], &str); 3] = [
+        (&["move", "alpha", "mx-1bb21d", "alpha"], alpha.as_str()),
+        (&["move", "alpha", "mx-1bb21d", "zeta"], alpha.as_str()),
+        (&["move", "alpha", "mx-f16294", "beta"], invalid),
+    ];
+    for (index, (args, body)) in error_cases.iter().enumerate() {
+        let ours = TempDir::new(format!("mve{index}-o").as_str());
+        let theirs = TempDir::new(format!("mve{index}-t").as_str());
+        for dir in [&ours.0, &theirs.0] {
+            write_seed(dir, &[("alpha", body), ("beta", beta)]);
+        }
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} exit");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "{args:?} stderr");
+    }
+}
+
+#[test]
+fn move_incoming_references_and_allowed_types() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // gamma refers to the moved id -> incomingReferences entry
+    let gamma = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T20:48:00.000Z\",\"name\":\"Gamma One\",\"description\":\"refers\",\"relates_to\":[\"mx-1bb21d\"],\"id\":\"mx-da09e8\"}\n";
+    let alpha = format!("{ALPHA_ONE}\n");
+    let beta = format!("{ALPHA_TWO}\n");
+    let ours = TempDir::new("mvr-o");
+    let theirs = TempDir::new("mvr-t");
+    for dir in [&ours.0, &theirs.0] {
+        write_seed(dir, &[
+            ("alpha", alpha.as_str()),
+            ("beta", beta.as_str()),
+            ("gamma", gamma),
+        ]);
+    }
+    let args = ["move", "alpha", "mx-1bb21d", "beta", "--json"];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let theirs_run = run_in(&theirs.0, &ml, &args);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    if ours_run.stdout.contains("incomingReferences") {
+        assert!(ours_run.stdout.contains("mx-da09e8"), "referrer reported");
+    }
+}

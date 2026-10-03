@@ -1,9 +1,12 @@
 //! Command implementations, one module per parity-slice command.
 
 mod add;
+mod delete;
+mod delete_domain;
 mod doctor;
 mod edit;
 mod init;
+mod move_cmd;
 mod outcome;
 mod record;
 pub(crate) mod schema;
@@ -48,6 +51,18 @@ impl ConfigStore {
             .into_iter()
             .map(String::from)
             .collect()
+    }
+
+    /// Removes a domain from the config (canonical rewrite, comments
+    /// stripped) — the file effects stay with the caller.
+    pub(crate) fn remove_domain(&mut self, domain: &str) -> Result<(), Error> {
+        self.config.remove_domain(domain);
+        std::fs::write(self.root.join("mulch.config.yaml"), self.config.to_yaml()).map_err(
+            |source| Error::Write {
+                path: self.root.join("mulch.config.yaml"),
+                source,
+            },
+        )
     }
 
     /// Registers a domain: canonical (comment-free) config rewrite plus
@@ -127,6 +142,36 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
             id,
             outcome,
         } => outcome::run(&cli.opts, domain, id, outcome),
+        Command::Delete {
+            domain,
+            id,
+            records,
+            all_except,
+            dry_run,
+        } => {
+            let mode =
+                delete::Mode::from_args(id.as_deref(), records.as_deref(), all_except.as_deref());
+            delete::run(&cli.opts, &mode, domain, *dry_run)
+        }
+        Command::DeleteDomain {
+            domain,
+            yes,
+            dry_run,
+        } => delete_domain::run(&cli.opts, domain, *yes, *dry_run),
+        Command::MoveRecord {
+            source_domain,
+            id,
+            target_domain,
+            dry_run,
+            force,
+        } => move_cmd::run(
+            &cli.opts,
+            source_domain,
+            id,
+            target_domain,
+            *dry_run,
+            *force,
+        ),
     }
 }
 
@@ -164,8 +209,15 @@ pub(crate) fn write_domain_lines(
     domain: &str,
     lines: &[String],
 ) -> Result<(), std::io::Error> {
-    let mut text = lines.join("\n");
-    text.push('\n');
+    // An empty survivor set leaves a 0-byte file (reference contract:
+    // the file is never removed).
+    let text = if lines.is_empty() {
+        String::new()
+    } else {
+        let mut text = lines.join("\n");
+        text.push('\n');
+        text
+    };
     std::fs::write(domain_file(store_root, domain), text)
 }
 
@@ -205,4 +257,46 @@ pub(crate) fn record_not_found(command: &str, id: &str) -> Failure {
 /// The required-fields hint line content for a record type.
 pub(crate) fn hint_fields(record_type: &str) -> String {
     mulch::payload_fields(record_type).join(", ")
+}
+
+/// The record summary the reference prints in delete/move messages
+/// (payload id-key field value; truncation length is unpinned).
+pub(crate) fn record_summary(record: &serde_json::Value) -> String {
+    let kind = record
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("convention");
+    let field = match kind {
+        "pattern" | "reference" | "guide" => "name",
+        "failure" => "description",
+        "decision" => "title",
+        _ => "content",
+    };
+    record
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The parsed-record line set of a domain, keeping raw survivor lines
+/// and dropping non-record lines (reference rewrite semantics).
+pub(crate) fn parsed_lines(lines: &[String]) -> Vec<(usize, serde_json::Value, String)> {
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .map(|value| (index, value, line.clone()))
+        })
+        .collect()
+}
+
+/// Reads a one-line answer from stdin (the delete-domain prompt).
+pub(crate) fn read_confirmation() -> std::io::Result<String> {
+    use std::io::BufRead as _;
+    let mut buffer = String::new();
+    std::io::stdin().lock().read_line(&mut buffer)?;
+    Ok(buffer)
 }
