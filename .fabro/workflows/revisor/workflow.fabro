@@ -115,7 +115,7 @@ digraph Revisor {
         // fs_hide is denied as hidden); the write-allowlist stays the
         // artifact trees plus exactly the tracker file.
         x.fs_hide="lib/**,apps/**,docs/**",
-        x.fs_write=".seeds/issues.jsonl,.fabro/revisions/**",
+        x.fs_write=".seeds/issues.jsonl,.seeds/config.yaml,.fabro/revisions/**",
         x.fabro_tools="",
         // Read window: current target + current findings ONLY. Filing,
         // marker, and commit need no journal history — prior-pass

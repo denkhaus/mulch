@@ -174,7 +174,7 @@ digraph Develop {
         // so the tracker file leaves the hide list; every other loop
         // asset stays hidden and writes stay pinned to the tracker file.
         x.fs_hide=".fabro/**,.mulch/**,.agents/**,scripts/**,justfile",
-        x.fs_write=".seeds/issues.jsonl",
+        x.fs_write=".seeds/issues.jsonl,.seeds/config.yaml",
         // fabro-900e (envelope write side): the planner's context_updates
         // contract is stable — declare it so the preamble_allow_keys lint
         // (fabro-e47c) can prove producers, and drift (an undocumented new
