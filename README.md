@@ -36,11 +36,23 @@ expectation (the parity rule: never silently):
 
 - **Crash paths render as clean errors.** The reference exits 1 with a
   raw Bun stack trace (no envelope) for (a) `.mulch/` without
-  `mulch.config.yaml` and (b) malformed JSONL lines in `doctor`. We
-  render the reference's own message as a handled error envelope
-  (status-channel) or report the bad lines as `jsonl-integrity`
-  findings. Expectation: same exit code 1, clean text instead of a
-  stack trace.
+  `mulch.config.yaml`, (b) `validate` with no `.mulch/` at all, and
+  (c) malformed JSONL lines in `doctor`. We render the reference's own
+  message as a handled error envelope (status-channel) or report the
+  bad lines as `jsonl-integrity` findings. Expectation: same exit code
+  1, clean text instead of a stack trace.
+- **`--format` does not exist yet.** It belongs to the
+  record-rendering commands (`query`, `prime`, `search`, …) and joins
+  with its parity slice (`mulch-16da`). Per-command `--help` wording
+  also differs (clap renderer; the reference reuses its root template
+  with the command name swapped in) — help text lists only
+  implemented commands either way.
+- **Seven doctor checks evaluate as unconditional pass** on clean
+  stores only: `duplicates`, `orphaned-domains`, `file-anchors`,
+  `governance`, `domain-violations`, `domain-rules-compatibility`,
+  `decay-config`. Their warn/fail semantics (real duplicates, orphaned
+  files, governance overruns) land with the later CLI-parity slices;
+  until then they hold the reference's clean-store output shape.
 - **`doctor` upgrade check is inert.** The reference warns when the npm
   registry offers a newer version. The native binary has no npm
   registry; the `upgrade` check reports pass with a cargo hint.

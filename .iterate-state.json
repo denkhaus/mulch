@@ -1,9 +1,10 @@
 {
- "sprints_completed": 0,
- "sprints_reflected": 0,
+ "sprints_completed": 1,
+ "sprints_reflected": 1,
  "last_arch_review_at_sprint": null,
  "last_reflection": "2026-10-03",
  "notes": [
-  "sprint system established 2026-10-03 (user directive): ported from nu-agent's iterate skill, adapted to this GitButler workspace (but instead of git, local-only, strictly separate from the fabro develop line)"
+  "sprint system established 2026-10-03 (user directive): ported from nu-agent's iterate skill, adapted to this GitButler workspace (but instead of git, local-only, strictly separate from the fabro develop line)",
+  "sprint 1 (mulch-da8b): CLI skeleton + init/status/validate/doctor parity; two review rounds (standards 4 findings, spec 15) both fixed pre-close; battery 25 tests (13 differential); learnings recorded in mulch-compat (envelope/channel contract, empirical oneOf rule, byte-template pinning via fixtures)"
  ]
 }
