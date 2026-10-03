@@ -89,8 +89,11 @@ no virtual branch is ever named `main`.
   healthy when the status parses and no commit is conflicted; any
   number of applied virtual branches is normal (multi-agent).
 - **Landing local work:** `but push <branch>` + `but pr new <branch>`
-  (+ `but pr auto-merge <selector>`) into `main` — never a direct push
+  + `gh pr merge <n> --auto --squash` into `main` — never a direct push
   to main (forge auth completed 2026-10-03; gh was the interim leg).
+  NOTE: `but pr auto-merge` engages with merge-method MERGE, which
+  main's required-linear-history rule refuses — re-arm it with the gh
+  squash call (PR #3 lesson, 2026-10-03).
   Run PRs land on main the engine way; the local workspace follows with
   `but pull` (integrates the new target state, rebases applied
   branches, removes merged-upstream ones).
@@ -142,3 +145,17 @@ mulch` path existing).
 `.fabro/skills/rust-style-guide/SKILL.md` is the binding coding policy for
 every Rust diff — read it before writing or reviewing Rust. The workspace
 lints in `Cargo.toml` mirror it mechanically.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's own Seeds tracker (`.seeds/`, `seeds` CLI, prefix `mulch-`) — not GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage labels are used as-is (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root; read before exploring, create lazily via `/domain-modeling`. See `docs/agents/domain.md`.
