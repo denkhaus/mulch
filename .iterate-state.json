@@ -1,11 +1,12 @@
 {
- "sprints_completed": 2,
- "sprints_reflected": 2,
+ "sprints_completed": 3,
+ "sprints_reflected": 3,
  "last_arch_review_at_sprint": null,
  "last_reflection": "2026-10-03",
  "notes": [
   "sprint system established 2026-10-03 (user directive): ported from nu-agent's iterate skill, adapted to this GitButler workspace (but instead of git, local-only, strictly separate from the fabro develop line)",
   "sprint 1 (mulch-da8b): CLI skeleton + init/status/validate/doctor parity; two review rounds (standards 4 findings, spec 15) both fixed pre-close; battery 25 tests (13 differential); learnings recorded in mulch-compat (envelope/channel contract, empirical oneOf rule, byte-template pinning via fixtures)",
-  "sprint 2 (mulch-fdd0): record-creation family; two review rounds (standards: ConfigStore deepening, panic-on-input killed, io propagation, dedupe of pipelines; spec: edit outcome longs, stdin/batch validation+dedupe+dry-run, json error channel/prefix, ref-pattern blob) — both fixed pre-close; probe lesson: live-verify reviewer-claimed shapes (probe3 invalidated-ref blob); learnings recorded in mulch-compat"
+  "sprint 2 (mulch-fdd0): record-creation family; two review rounds (standards: ConfigStore deepening, panic-on-input killed, io propagation, dedupe of pipelines; spec: edit outcome longs, stdin/batch validation+dedupe+dry-run, json error channel/prefix, ref-pattern blob) — both fixed pre-close; probe lesson: live-verify reviewer-claimed shapes (probe3 invalidated-ref blob); learnings recorded in mulch-compat",
+  "sprint 3 (mulch-dc67): delete/delete-domain/move; two review rounds — standards found the deep-module gaps (quiet gating, channels, ConfigStore ownership), spec read the REFERENCE SOURCE and found 2 blockers (silent store mutation via lenient reader, --all-except unknown id), config order corruption (swap_remove), missing id resolution and the wrong rewrite model (re-serialization, not raw lines). All fixed; 17 new differential tests. ARCH GATE DUE (3 % 3 == 0)"
  ]
 }
