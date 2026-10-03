@@ -1,17 +1,16 @@
 //! `mulch delete-domain` — remove a domain entry and its expertise
-//! file (archive stays).
-
-use mulch::Error;
+//! file (the archive file stays).
+//!
+//! `--json` skips the confirmation prompt entirely (reference quirk:
+//! the machine path deletes without `--yes`); the prompt answer is
+//! compared raw (`y`/`yes`, no trimming — reference `delete-domain.ts`);
+//! EOF cancels instead of blocking (README DEVIATIONS).
 
 use crate::cli::GlobalOpts;
-use crate::commands::{
-    NO_STORE_MESSAGE, StoreLocation, domain_file, locate, parsed_lines, read_confirmation,
-    read_domain_lines,
-};
-use crate::output::{Failure, print_json, success_envelope};
+use crate::commands::{NO_STORE_CONFIG_MESSAGE, StoreLocation, locate, read_confirmation};
+use crate::output::{Failure, print_json, print_line, success_envelope};
 
-/// Runs `delete-domain`. `--json` skips the prompt entirely;
-/// `--yes` skips it in plain mode; a cancelled prompt is exit 0.
+/// Runs `delete-domain`.
 pub(super) fn run(
     opts: &GlobalOpts,
     domain: &str,
@@ -23,9 +22,10 @@ pub(super) fn run(
     let mut store = match locate(&cwd) {
         Ok(StoreLocation::Open(store)) => store,
         Ok(_) => {
-            let mut failure = Failure::handled("delete-domain", NO_STORE_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
+            return Err(Failure::handled_on_stderr(
+                "delete-domain",
+                NO_STORE_CONFIG_MESSAGE,
+            ));
         }
         Err(source) => {
             return Err(Failure::handled(
@@ -40,10 +40,11 @@ pub(super) fn run(
         return Err(not_in_config(opts, domain, &domains));
     }
 
-    let lines = read_domain_lines(&store.root, domain).map_err(|source| {
-        Failure::handled("delete-domain", format!("reading domain file: {source}"))
-    })?;
-    let record_count = parsed_lines(&lines).len();
+    // Strict read: malformed lines abort before anything is deleted.
+    let file = crate::commands::domain_file(&store.root, domain);
+    let records = mulch::read_strict(&file, opts.allow_unknown_types)
+        .map_err(|source| Failure::handled_on_stderr("delete-domain", render_error(&source)))?;
+    let record_count = records.len();
     let plural = if record_count == 1 {
         "record"
     } else {
@@ -51,94 +52,120 @@ pub(super) fn run(
     };
 
     if dry_run {
-        let text = format!(
-            "[DRY RUN] Would delete domain {domain} ({record_count} {plural}) and its expertise file."
-        );
-        #[allow(clippy::print_stdout, reason = "dry-run preview renders on stdout")]
-        {
-            println!("{text}");
+        if opts.json {
+            let fields = serde_json::json!({
+                "domain": domain,
+                "dryRun": true,
+                "recordCount": record_count,
+            });
+            print_json(&success_envelope("delete-domain", object(fields)), false);
+        } else {
+            print_line(
+                opts.quiet,
+                &format!(
+                    "[DRY RUN] Would delete domain {domain} ({record_count} {plural}) and its expertise file."
+                ),
+            );
         }
         return Ok(());
     }
 
     // --json deletes immediately (reference prompt-skip quirk).
     if !opts.json && !yes {
-        #[allow(clippy::print_stdout, reason = "prompt renders on stdout")]
-        {
-            print!(
-                "This will delete domain \"{domain}\" ({record_count} {plural}) and its expertise file. Continue? (y/N): "
-            );
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-        }
-        let answer = read_confirmation();
-        // EOF (closed stdin) cancels instead of blocking — the
-        // reference hangs here (README DEVIATIONS).
-        let confirmed = answer.is_ok_and(|line| {
-            line.trim().eq_ignore_ascii_case("y") || line.trim().eq_ignore_ascii_case("yes")
+        print_prompt(&format!(
+            "This will delete domain \"{domain}\" ({record_count} {plural}) and its expertise file. Continue?"
+        ));
+        let confirmed = read_confirmation().is_ok_and(|answer| {
+            let answer = answer.to_lowercase();
+            answer == "y" || answer == "yes"
         });
         if !confirmed {
-            #[allow(clippy::print_stdout, reason = "prompt result renders on stdout")]
-            {
-                println!("Cancelled.");
-            }
+            print_line(opts.quiet, "Cancelled.");
             return Ok(());
         }
     }
 
-    // Effects: config entry removed (YAML serializer rewrite, comments
-    // stripped), live expertise file deleted, archive untouched.
-    store.remove_domain(domain).map_err(|source| {
+    // One domain-level operation: config rewrite + live-file removal.
+    store.delete_domain(domain).map_err(|source| {
         Failure::handled("delete-domain", crate::output::chain_message(&source))
     })?;
-    let file = domain_file(&store.root, domain);
-    if file.is_file() {
-        std::fs::remove_file(&file).map_err(|source| {
-            Failure::handled(
-                "delete-domain",
-                format!("removing {}: {source}", file.display()),
-            )
-        })?;
-    }
 
     if opts.json {
-        let mut fields = serde_json::Map::new();
-        fields.insert("domain".into(), serde_json::Value::String(domain.into()));
-        fields.insert("deletedFile".into(), serde_json::Value::Bool(true));
-        fields.insert(
-            "recordCount".into(),
-            serde_json::Value::from(record_count as u64),
-        );
-        print_json(&success_envelope("delete-domain", fields), false);
+        let fields = serde_json::json!({
+            "domain": domain,
+            "deletedFile": true,
+            "recordCount": record_count,
+        });
+        print_json(&success_envelope("delete-domain", object(fields)), false);
     } else {
-        #[allow(clippy::print_stdout, reason = "success renders on stdout")]
-        {
-            println!("✓ Removed domain {domain} and deleted expertise file.");
-        }
+        print_line(
+            opts.quiet,
+            &format!("✓ Removed domain {domain} and deleted expertise file."),
+        );
     }
     Ok(())
+}
+
+/// Renders the prompt on stdout without a trailing newline.
+#[allow(clippy::print_stdout, reason = "prompt renders on stdout")]
+fn print_prompt(text: &str) {
+    use std::io::Write as _;
+    print!("{text} ");
+    let _ = std::io::stdout().flush();
 }
 
 /// The unknown-domain failure: plain mode carries the add-hint, json
 /// mode the available-domains list (reference divergence).
 fn not_in_config(opts: &GlobalOpts, domain: &str, available: &[String]) -> Failure {
+    let list = if available.is_empty() {
+        "(none)".to_string()
+    } else {
+        available.join(", ")
+    };
     let message = if opts.json {
-        format!(
-            "Domain \"{domain}\" not found in config. Available domains: {}",
-            available.join(", ")
-        )
+        format!("Domain \"{domain}\" not found in config. Available domains: {list}")
     } else {
         format!(
             "Error: domain \"{domain}\" not found in config.\nHint: Run `mulch add {domain}` to create it, or check `mulch status` for existing domains."
         )
     };
-    let mut failure = Failure::handled("delete-domain", message);
-    failure.envelope_to_stderr = true;
-    failure
+    Failure::handled_on_stderr("delete-domain", message)
 }
 
-/// Config write errors are typed; keep the error surface explicit.
-const _: fn() = || {
-    let _ = Error::InvalidDomain {
-        domain: String::new(),
-    };
-};
+/// Renders a format-core error the way the reference does.
+fn render_error(error: &mulch::Error) -> String {
+    match error {
+        mulch::Error::MalformedLine {
+            path,
+            line,
+            preview,
+            reason,
+        } => format!(
+            "Error: Malformed JSONL at {}:{line}: {reason}. Line: {preview}",
+            path.display()
+        ),
+        mulch::Error::UnknownRecordType {
+            path,
+            line,
+            id,
+            record_type,
+        } => {
+            let id_part = id
+                .as_ref()
+                .map_or_else(String::new, |id| format!(" (id={id})"));
+            format!(
+                "Error: Unknown record type \"{record_type}\" at {}:{line}{id_part}. Register it under custom_types in mulch.config.yaml, remove the record, or pass --allow-unknown-types to bypass.",
+                path.display()
+            )
+        }
+        other => format!("Error: {other}"),
+    }
+}
+
+/// A `serde_json::Map` from a `json!` macro result.
+fn object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    }
+}

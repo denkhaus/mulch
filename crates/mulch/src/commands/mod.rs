@@ -54,7 +54,7 @@ impl ConfigStore {
     }
 
     /// Removes a domain from the config (canonical rewrite, comments
-    /// stripped) — the file effects stay with the caller.
+    /// stripped).
     pub(crate) fn remove_domain(&mut self, domain: &str) -> Result<(), Error> {
         self.config.remove_domain(domain);
         std::fs::write(self.root.join("mulch.config.yaml"), self.config.to_yaml()).map_err(
@@ -63,6 +63,17 @@ impl ConfigStore {
                 source,
             },
         )
+    }
+
+    /// Deletes a domain entirely: config entry removed and the live
+    /// expertise file deleted (the archive file stays).
+    pub(crate) fn delete_domain(&mut self, domain: &str) -> Result<(), Error> {
+        self.remove_domain(domain)?;
+        let file = domain_file(&self.root, domain);
+        if file.is_file() {
+            std::fs::remove_file(&file).map_err(|source| Error::Write { path: file, source })?;
+        }
+        Ok(())
     }
 
     /// Registers a domain: canonical (comment-free) config rewrite plus
@@ -116,6 +127,12 @@ pub(crate) fn locate(root: &Path) -> Result<StoreLocation, Error> {
 /// The handled-error message for a missing store (status et al.).
 pub(crate) const NO_STORE_MESSAGE: &str = "No .mulch/ directory found. Run `mulch init` first.";
 
+/// The no-store message of the read-modify-write commands: the
+/// reference's config reader throws it (with the `Error: ` prefix the
+/// command adds).
+pub(crate) const NO_STORE_CONFIG_MESSAGE: &str =
+    "Error: No .mulch/ directory found. Run `mulch init` to set up this project.";
+
 /// The reference's second wording, thrown by its config reader when
 /// `.mulch/` exists without a config (we render it as a clean error).
 pub(crate) const NO_CONFIG_MESSAGE: &str =
@@ -149,8 +166,12 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
             all_except,
             dry_run,
         } => {
-            let mode =
-                delete::Mode::from_args(id.as_deref(), records.as_deref(), all_except.as_deref());
+            let mode = delete::Mode::from_args(
+                cli.opts.json,
+                id.as_deref(),
+                records.as_deref(),
+                all_except.as_deref(),
+            )?;
             delete::run(&cli.opts, &mode, domain, *dry_run)
         }
         Command::DeleteDomain {
@@ -246,51 +267,20 @@ pub(crate) fn domain_not_found(command: &str, domain: &str, available: &[String]
     )
 }
 
+/// The shared unknown-id message (reference text).
+pub(crate) fn record_not_found_text(command: &str, id: &str) -> String {
+    let _ = command;
+    format!("Error: Record \"{id}\" not found. Run `mulch query` to see record IDs.")
+}
+
 /// The shared unknown-id failure (reference text).
 pub(crate) fn record_not_found(command: &str, id: &str) -> Failure {
-    Failure::handled(
-        command,
-        format!("Error: Record \"{id}\" not found. Run `mulch query` to see record IDs."),
-    )
+    Failure::handled(command, record_not_found_text(command, id))
 }
 
 /// The required-fields hint line content for a record type.
 pub(crate) fn hint_fields(record_type: &str) -> String {
     mulch::payload_fields(record_type).join(", ")
-}
-
-/// The record summary the reference prints in delete/move messages
-/// (payload id-key field value; truncation length is unpinned).
-pub(crate) fn record_summary(record: &serde_json::Value) -> String {
-    let kind = record
-        .get("type")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("convention");
-    let field = match kind {
-        "pattern" | "reference" | "guide" => "name",
-        "failure" => "description",
-        "decision" => "title",
-        _ => "content",
-    };
-    record
-        .get(field)
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_string()
-}
-
-/// The parsed-record line set of a domain, keeping raw survivor lines
-/// and dropping non-record lines (reference rewrite semantics).
-pub(crate) fn parsed_lines(lines: &[String]) -> Vec<(usize, serde_json::Value, String)> {
-    lines
-        .iter()
-        .enumerate()
-        .filter_map(|(index, line)| {
-            serde_json::from_str::<serde_json::Value>(line)
-                .ok()
-                .map(|value| (index, value, line.clone()))
-        })
-        .collect()
 }
 
 /// Reads a one-line answer from stdin (the delete-domain prompt).

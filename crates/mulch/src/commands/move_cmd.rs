@@ -1,14 +1,19 @@
-//! `mulch move` — move a record between domains: the source file is
-//! rewritten from surviving raw lines, the target file gets the raw
-//! line appended (byte-identical, unsorted).
+//! `mulch move` — move a record between domains.
+//!
+//! Reference semantics: the source file is rewritten through the format
+//! core (surviving records re-serialized compactly), the target file
+//! gets the moved record APPENDED compactly (existing bytes preserved,
+//! insertion order — not sorted). `move` validates the record (schema,
+//! archived status, target `allowed_types` and `required_fields`);
+//! `delete` does not.
 
+use std::path::PathBuf;
+
+use mulch::{ResolveError, read_strict, record_summary, resolve_record_id, write_records};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{
-    NO_STORE_MESSAGE, StoreLocation, domain_file, locate, parsed_lines, read_domain_lines,
-    record_not_found, record_summary,
-};
+use crate::commands::{NO_STORE_CONFIG_MESSAGE, StoreLocation, domain_file, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `move`.
@@ -21,127 +26,175 @@ pub(super) fn run(
     force: bool,
 ) -> Result<(), Failure> {
     let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("move", format!("resolving cwd: {source}")))?;
+        .map_err(|source_err| Failure::handled("move", format!("resolving cwd: {source_err}")))?;
     let store = match locate(&cwd) {
         Ok(StoreLocation::Open(store)) => store,
-        Ok(_) => {
-            let mut failure = Failure::handled("move", NO_STORE_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
-        }
-        Err(source) => {
+        Ok(_) => return Err(Failure::handled_on_stderr("move", NO_STORE_CONFIG_MESSAGE)),
+        Err(source_err) => {
             return Err(Failure::handled(
                 "move",
-                crate::output::chain_message(&source),
+                crate::output::chain_message(&source_err),
             ));
         }
     };
 
-    let domains = store.domains();
-    if !domains.iter().any(|d| d == source) {
-        let mut failure = move_domain_not_found(source, &domains);
-        failure.envelope_to_stderr = true;
-        return Err(failure);
-    }
-    // No auto-create: an unknown target is an error (reference).
-    if !domains.iter().any(|d| d == target) {
-        let mut failure = move_domain_not_found(target, &domains);
-        failure.envelope_to_stderr = true;
-        return Err(failure);
-    }
+    // Same-domain check comes FIRST (reference order).
     if source == target {
-        let mut failure = Failure::handled(
+        return Err(Failure::handled_on_stderr(
             "move",
             "Error: Source and target domain are the same — nothing to move.",
-        );
-        failure.envelope_to_stderr = true;
-        return Err(failure);
+        ));
+    }
+    let domains = store.domains();
+    for domain in [source, target] {
+        if !domains.iter().any(|d| d == domain) {
+            return Err(move_domain_failure(domain, &domains));
+        }
     }
 
-    let source_lines = read_domain_lines(&store.root, source).map_err(|source_err| {
-        Failure::handled("move", format!("reading domain file: {source_err}"))
-    })?;
-    let parsed = parsed_lines(&source_lines);
-    let Some((index, record, raw)) = parsed
-        .iter()
-        .find(|(_, record, _)| record.get("id").and_then(Value::as_str) == Some(id))
-        .cloned()
-    else {
-        let mut failure = record_not_found("move", id);
-        failure.envelope_to_stderr = true;
-        return Err(failure);
+    let source_file = domain_file(&store.root, source);
+    let target_file = domain_file(&store.root, target);
+    let lines = read_strict(&source_file, opts.allow_unknown_types)
+        .map_err(|source_err| Failure::handled_on_stderr("move", render_error(&source_err)))?;
+    let index = match resolve_record_id(&lines, id) {
+        Ok(index) => index,
+        Err(ResolveError::NotFound(identifier)) => {
+            return Err(Failure::handled_on_stderr(
+                "move",
+                format!(
+                    "Error: Record \"{identifier}\" not found. Run `mulch query` to see record IDs."
+                ),
+            ));
+        }
+        Err(ResolveError::Ambiguous { count, ids }) => {
+            return Err(Failure::handled_on_stderr(
+                "move",
+                format!(
+                    "Error: Ambiguous identifier \"{id}\" matches {count} records: {}. Use more characters to disambiguate.",
+                    ids.join(", ")
+                ),
+            ));
+        }
     };
+    let record = lines[index].record.clone();
+    let kind = lines[index].record_type();
+    let record_id = lines[index].id().map(str::to_string);
 
-    // move validates the moved record (delete does not).
+    // Archived records must be restored first (reference).
+    let archived = record.get("status").and_then(Value::as_str) == Some("archived");
+    if archived {
+        let shown = record_id.clone().unwrap_or_else(|| id.to_string());
+        return Err(Failure::handled_on_stderr(
+            "move",
+            format!("Error: Record {shown} is archived. Run `ml restore {shown}` first."),
+        ));
+    }
+
+    // move validates what delete does not.
     if let crate::commands::schema::FullVerdict::Invalid { subs, .. } =
         crate::commands::schema::full_verdict(&record)
     {
-        let mut failure = Failure::handled(
+        return Err(Failure::handled_on_stderr(
             "move",
             format!(
                 "Error: Record fails schema validation: {}. Edit the record before moving.",
                 subs.join("; ")
             ),
-        );
-        failure.envelope_to_stderr = true;
-        return Err(failure);
+        ));
     }
 
-    let kind = record
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("convention")
-        .to_string();
-    // Target allowed_types gate (--force bypasses it; required_fields
-    // stay enforced through the schema verdict above).
-    if let Some(allowed) = store.config.allowed_types(target)
+    // Target allowed_types gate (--force bypasses it only).
+    let allowed = store.config.allowed_types(target).map_err(|source_err| {
+        Failure::handled("move", crate::output::chain_message(&source_err))
+    })?;
+    if let Some(allowed) = allowed
         && !allowed.iter().any(|t| t == &kind)
         && !force
     {
-        let mut failure = Failure::handled(
+        return Err(Failure::handled_on_stderr(
             "move",
             format!(
-                "Type \"{kind}\" is not in target domain \"{target}\" allowed_types ({}). Pass --force to override, or adjust mulch.config.yaml.",
+                "Error: Type \"{kind}\" is not in target domain \"{target}\" allowed_types ({}). Pass --force to override, or adjust mulch.config.yaml.",
                 allowed.join(", ")
             ),
-        );
-        failure.envelope_to_stderr = true;
-        return Err(failure);
+        ));
+    }
+
+    // Target required_fields gate (enforced even with --force).
+    let required = store.config.required_fields(target).map_err(|source_err| {
+        Failure::handled("move", crate::output::chain_message(&source_err))
+    })?;
+    if let Some(required) = required {
+        let missing: Vec<String> = required
+            .into_iter()
+            .filter(|field| record.get(field).is_none_or(serde_json::Value::is_null))
+            .collect();
+        if !missing.is_empty() {
+            let shown = record_id.clone().unwrap_or_else(|| id.to_string());
+            let fields = missing
+                .iter()
+                .map(|field| format!("\"{field}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(Failure::handled_on_stderr(
+                "move",
+                format!(
+                    "Error: Record is missing field(s) required by target domain \"{target}\": {fields}. Edit the record (`ml edit {shown}`) before moving."
+                ),
+            ));
+        }
     }
 
     let summary = record_summary(&record);
-    let incoming = incoming_references(domains.as_slice(), target, id, &store)?;
+    let incoming = incoming_references(
+        &store.root,
+        &source_file,
+        &target_file,
+        record_id.as_deref(),
+    );
 
     if !dry_run {
-        // Source: surviving raw lines (junk dropped) — like delete.
-        let survivors: Vec<String> = parsed
+        let survivors: Vec<Value> = lines
             .iter()
-            .filter(|(position, _, _)| *position != index)
-            .map(|(_, _, raw)| raw.clone())
+            .enumerate()
+            .filter(|(position, _)| *position != index)
+            .map(|(_, line)| line.record.clone())
             .collect();
-        crate::commands::write_domain_lines(&store.root, source, &survivors).map_err(
-            |source_err| {
-                Failure::handled("move", format!("writing source domain file: {source_err}"))
-            },
-        )?;
+        write_records(&source_file, &survivors).map_err(|source_err| {
+            Failure::handled("move", crate::output::chain_message(&source_err))
+        })?;
 
-        // Target: raw append, existing bytes preserved.
-        let target_file = domain_file(&store.root, target);
-        let mut text = std::fs::read_to_string(&target_file).unwrap_or_default();
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
+        // Target: raw byte append of the compact record (existing bytes
+        // preserved verbatim).
+        let mut bytes = match std::fs::read(&target_file) {
+            Ok(bytes) => bytes,
+            Err(source_err) if source_err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(source_err) => {
+                return Err(Failure::handled(
+                    "move",
+                    format!("reading target domain file: {source_err}"),
+                ));
+            }
+        };
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
         }
-        text.push_str(&raw);
-        text.push('\n');
-        std::fs::write(&target_file, text).map_err(|source_err| {
+        let mut moved = record.clone();
+        mulch::assign_missing_id(&mut moved);
+        bytes.extend_from_slice(serde_json::to_string(&moved).unwrap_or_default().as_bytes());
+        bytes.push(b'\n');
+        std::fs::write(&target_file, bytes).map_err(|source_err| {
             Failure::handled("move", format!("writing target domain file: {source_err}"))
         })?;
     }
 
     if opts.json {
         let mut record_json = Map::new();
-        record_json.insert("id".into(), Value::String(id.into()));
-        record_json.insert("type".into(), Value::String(kind));
+        record_json.insert(
+            "id".into(),
+            record_id.clone().map_or(Value::Null, Value::String),
+        );
+        record_json.insert("type".into(), Value::String(kind.clone()));
         record_json.insert("summary".into(), Value::String(summary.clone()));
         let mut fields = Map::new();
         if dry_run {
@@ -150,41 +203,97 @@ pub(super) fn run(
         fields.insert("sourceDomain".into(), Value::String(source.into()));
         fields.insert("targetDomain".into(), Value::String(target.into()));
         fields.insert("record".into(), Value::Object(record_json));
-        fields.insert("incomingReferences".into(), Value::Array(incoming));
+        fields.insert("incomingReferences".into(), Value::Array(incoming.clone()));
         print_json(&success_envelope("move", fields), false);
-    } else {
+    } else if !opts.quiet {
+        let id_part = record_id
+            .as_ref()
+            .map_or_else(String::new, |id| format!(" {id}"));
         let prefix = if dry_run {
             "[DRY RUN] Would move"
         } else {
             "✓ Moved"
         };
-        print_line(
-            opts.quiet,
-            &format!("{prefix} {kind} {id} from {source} → {target}: {summary}"),
-        );
+        let mut text = format!("{prefix} {kind}{id_part} from {source} → {target}: {summary}");
+        if !incoming.is_empty() {
+            if dry_run {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut text,
+                    format_args!(
+                        "\n  {} inbound reference(s) detected; ID is preserved so links remain valid.",
+                        incoming.len()
+                    ),
+                );
+            } else {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut text,
+                    format_args!(
+                        "\n  {} inbound reference(s) found; ID preserved so existing links still resolve:",
+                        incoming.len()
+                    ),
+                );
+                for reference in &incoming {
+                    let domain = reference
+                        .get("domain")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let ref_id = reference
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("(no id)");
+                    let field = reference
+                        .get("field")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let _ = std::fmt::Write::write_fmt(
+                        &mut text,
+                        format_args!("\n    {domain}/{ref_id} via {field}"),
+                    );
+                }
+            }
+        }
+        print_line(false, &text);
     }
     Ok(())
 }
 
-/// Referrers outside the target domain (`relates_to`/`supersedes`),
-/// informational only.
+/// Inbound references: every `expertise/*.jsonl` except the source and
+/// target files (reference scans the directory).
 fn incoming_references(
-    domains: &[String],
-    target: &str,
-    id: &str,
-    store: &crate::commands::ConfigStore,
-) -> Result<Vec<Value>, Failure> {
+    store_root: &std::path::Path,
+    source_file: &std::path::Path,
+    target_file: &std::path::Path,
+    id: Option<&str>,
+) -> Vec<Value> {
+    let Some(id) = id else {
+        return Vec::new();
+    };
     let mut incoming = Vec::new();
-    for domain in domains {
-        if domain == target {
+    let directory = store_root.join("expertise");
+    let Ok(entries) = std::fs::read_dir(&directory) else {
+        return Vec::new();
+    };
+    // Directory order, not sorted: the reference reports the
+    // readdir order it walks.
+    let files: Vec<PathBuf> = entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    for file in files {
+        let Some(file) = (!(file == source_file || file == target_file)).then_some(file) else {
             continue;
-        }
-        let lines = read_domain_lines(&store.root, domain).map_err(|source| {
-            Failure::handled("move", format!("reading domain file {domain}: {source}"))
-        })?;
-        for (_, record, _) in parsed_lines(&lines) {
+        };
+        let domain = file
+            .file_stem()
+            .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
+        let Ok(records) = read_strict(&file, true) else {
+            continue;
+        };
+        for line in records {
             for field in ["relates_to", "supersedes"] {
-                let refers = record
+                let refers = line
+                    .record
                     .get(field)
                     .and_then(Value::as_array)
                     .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(id)));
@@ -193,13 +302,8 @@ fn incoming_references(
                     entry.insert("domain".into(), Value::String(domain.clone()));
                     entry.insert(
                         "id".into(),
-                        Value::String(
-                            record
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                        ),
+                        line.id()
+                            .map_or(Value::Null, |id| Value::String(id.to_string())),
                     );
                     entry.insert("field".into(), Value::String(field.into()));
                     incoming.push(Value::Object(entry));
@@ -207,17 +311,48 @@ fn incoming_references(
             }
         }
     }
-    Ok(incoming)
+    incoming
 }
 
-/// `move`'s own unknown-domain text (capital D, single line — differs
-/// from the delete/edit family).
-fn move_domain_not_found(domain: &str, available: &[String]) -> Failure {
-    Failure::handled(
+/// `move`'s own unknown-domain text (capital D, single line).
+fn move_domain_failure(domain: &str, available: &[String]) -> Failure {
+    let list = if available.is_empty() {
+        "(none)".to_string()
+    } else {
+        available.join(", ")
+    };
+    Failure::handled_on_stderr(
         "move",
-        format!(
-            "Error: Domain \"{domain}\" not found in config. Available domains: {}",
-            available.join(", ")
-        ),
+        format!("Error: Domain \"{domain}\" not found in config. Available domains: {list}"),
     )
+}
+
+/// Renders a format-core error the way the reference does.
+fn render_error(error: &mulch::Error) -> String {
+    match error {
+        mulch::Error::MalformedLine {
+            path,
+            line,
+            preview,
+            reason,
+        } => format!(
+            "Error: Malformed JSONL at {}:{line}: {reason}. Line: {preview}",
+            path.display()
+        ),
+        mulch::Error::UnknownRecordType {
+            path,
+            line,
+            id,
+            record_type,
+        } => {
+            let id_part = id
+                .as_ref()
+                .map_or_else(String::new, |id| format!(" (id={id})"));
+            format!(
+                "Error: Unknown record type \"{record_type}\" at {}:{line}{id_part}. Register it under custom_types in mulch.config.yaml, remove the record, or pass --allow-unknown-types to bypass.",
+                path.display()
+            )
+        }
+        other => format!("Error: {other}"),
+    }
 }

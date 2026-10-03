@@ -60,6 +60,32 @@ pub enum Error {
         source: serde_yaml::Error,
     },
 
+    /// A JSONL line in a rewritten file is not valid JSON.
+    #[error("Malformed JSONL at {path}:{line}")]
+    MalformedLine {
+        /// The file being read.
+        path:    PathBuf,
+        /// The 1-based physical line number.
+        line:    usize,
+        /// Truncated line preview (reference `slice(0, 77) + "..."`).
+        preview: String,
+        /// The parser's reason.
+        reason:  String,
+    },
+
+    /// A record carries a type that is not registered.
+    #[error("Unknown record type \"{record_type}\" at {path}:{line}")]
+    UnknownRecordType {
+        /// The file being read.
+        path:        PathBuf,
+        /// The 1-based physical line number.
+        line:        usize,
+        /// The record id, when present.
+        id:          Option<String>,
+        /// The offending type name.
+        record_type: String,
+    },
+
     /// An expertise JSONL line is not valid JSON or not an object.
     #[error("parsing record {path} line {line}")]
     RecordParse {

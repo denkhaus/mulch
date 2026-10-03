@@ -54,7 +54,7 @@ fn main() -> ExitCode {
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => {
-            output::render_failure(&failure, cli.opts.json, failure.envelope_to_stderr);
+            output::render_failure(&failure, cli.opts.json);
             ExitCode::from(failure.code)
         }
     }

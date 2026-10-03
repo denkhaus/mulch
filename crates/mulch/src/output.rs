@@ -30,6 +30,14 @@ pub(crate) struct Failure {
 }
 
 impl Failure {
+    /// Builds a handled error whose JSON envelope renders on stderr
+    /// (the per-command channel contract; probe-pinned).
+    pub(crate) fn handled_on_stderr(command: &str, error: impl Into<String>) -> Self {
+        let mut failure = Self::handled(command, error);
+        failure.envelope_to_stderr = true;
+        failure
+    }
+
     /// Builds a handled error with the reference envelope shape.
     pub(crate) fn handled(command: &str, error: impl Into<String>) -> Self {
         let error = error.into();
@@ -64,12 +72,12 @@ pub(crate) fn chain_message(error: &dyn std::error::Error) -> String {
 }
 
 /// Renders a failure: JSON envelope or the plain stderr line.
-pub(crate) fn render_failure(failure: &Failure, json: bool, envelope_to_stderr: bool) {
+pub(crate) fn render_failure(failure: &Failure, json: bool) {
     if failure.rendered {
         return;
     }
     if json {
-        print_json(&failure.envelope, envelope_to_stderr);
+        print_json(&failure.envelope, failure.envelope_to_stderr);
     } else {
         #[allow(clippy::print_stderr, reason = "error rendering is the CLI boundary")]
         {

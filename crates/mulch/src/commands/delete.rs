@@ -1,48 +1,88 @@
 //! `mulch delete` — remove records (single id, `--records`,
-//! `--all-except`), rewriting the file from surviving raw lines.
+//! `--all-except`).
+//!
+//! Rewrite model (reference): the surviving records are re-serialized
+//! compactly by the format core (`write_records`), which also assigns
+//! ids to id-less survivors. Malformed lines and unregistered types are
+//! hard errors — nothing is written (reference `readExpertiseFile`).
 
-use serde_json::{Map, Value};
+use mulch::{ResolveError, read_strict, record_summary, resolve_record_id, write_records};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{
-    NO_STORE_MESSAGE, StoreLocation, domain_not_found, locate, parsed_lines, read_domain_lines,
-    record_not_found, record_summary, write_domain_lines,
-};
+use crate::commands::{NO_STORE_CONFIG_MESSAGE, StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Which records the invocation targets (reference mode exclusivity).
 pub(super) enum Mode {
-    /// One positional id.
+    /// One positional id (or bare hash / unique prefix).
     Single(String),
     /// `--records` list.
     Records(Vec<String>),
-    /// `--all-except` list.
+    /// `--all-except` list (ids to keep; each must resolve).
     AllExcept(Vec<String>),
-    /// Nothing provided (error).
-    Missing,
-    /// An id combined with `--records`/`--all-except` (error).
-    Conflict,
 }
 
 impl Mode {
-    /// Parses the mutually exclusive id sources.
+    /// Parses the mutually exclusive id sources, rejecting the invalid
+    /// shapes at construction (plain/json texts differ in casing —
+    /// reference `delete.ts`).
     pub(super) fn from_args(
+        json: bool,
         id: Option<&str>,
         records: Option<&str>,
         all_except: Option<&str>,
-    ) -> Self {
+    ) -> Result<Self, Failure> {
         let list = |raw: &str| -> Vec<String> {
             raw.split(',')
                 .map(|item| item.trim().to_string())
                 .filter(|item| !item.is_empty())
                 .collect()
         };
+        // Plain carries the `Error: ` prefix and lowercase wording;
+        // json capitalizes and drops the prefix (reference delete.ts).
+        let render = |text: &str| -> String {
+            if json {
+                let mut chars = text.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            } else {
+                format!("Error: {text}")
+            }
+        };
         match (id, records, all_except) {
-            (Some(id), None, None) => Mode::Single(id.to_string()),
-            (None, Some(raw), None) => Mode::Records(list(raw)),
-            (None, None, Some(raw)) => Mode::AllExcept(list(raw)),
-            (None, None, None) => Mode::Missing,
-            _ => Mode::Conflict,
+            (Some(id), None, None) => Ok(Mode::Single(id.to_string())),
+            (None, Some(raw), None) => {
+                let ids = list(raw);
+                if ids.is_empty() {
+                    return Err(Failure::handled_on_stderr(
+                        "delete",
+                        render("--records requires at least one ID."),
+                    ));
+                }
+                Ok(Mode::Records(ids))
+            }
+            (None, None, Some(raw)) => {
+                let keep = list(raw);
+                if keep.is_empty() {
+                    return Err(Failure::handled_on_stderr(
+                        "delete",
+                        render("--all-except requires at least one ID to keep."),
+                    ));
+                }
+                Ok(Mode::AllExcept(keep))
+            }
+            (None, None, None) => Err(Failure::handled_on_stderr(
+                "delete",
+                render("must provide a record ID, --records, or --all-except."),
+            )),
+            _ => Err(Failure::handled_on_stderr(
+                "delete",
+                render(
+                    "cannot combine a record ID with --records or --all-except. Use only one mode.",
+                ),
+            )),
         }
     }
 }
@@ -59,9 +99,10 @@ pub(super) fn run(
     let store = match locate(&cwd) {
         Ok(StoreLocation::Open(store)) => store,
         Ok(_) => {
-            let mut failure = Failure::handled("delete", NO_STORE_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
+            return Err(Failure::handled_on_stderr(
+                "delete",
+                NO_STORE_CONFIG_MESSAGE,
+            ));
         }
         Err(source) => {
             return Err(Failure::handled(
@@ -73,172 +114,208 @@ pub(super) fn run(
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {
-        let mut failure = domain_not_found("delete", domain, &domains);
-        failure.envelope_to_stderr = true;
-        return Err(failure);
+        return Err(domain_failure(opts, "delete", domain, &domains));
     }
 
-    // Mode validation (reference texts, plain `Error:` form).
-    let (targets, bulk): (Vec<String>, bool) = match mode {
-        Mode::Missing => {
-            return Err(handled(
-                "delete",
-                "Error: must provide a record ID, --records, or --all-except.",
-            ));
-        }
-        Mode::Conflict => {
-            return Err(handled(
-                "delete",
-                "Error: cannot combine a record ID with --records or --all-except. Use only one mode.",
-            ));
-        }
-        Mode::Single(id) => (vec![id.clone()], false),
-        Mode::Records(ids) if ids.is_empty() => {
-            return Err(handled(
-                "delete",
-                "Error: --records requires at least one ID.",
-            ));
-        }
-        Mode::Records(ids) => (ids.clone(), true),
-        Mode::AllExcept(ids) if ids.is_empty() => {
-            return Err(handled(
-                "delete",
-                "Error: --all-except requires at least one ID to keep.",
-            ));
+    let file = crate::commands::domain_file(&store.root, domain);
+    let lines = read_strict(&file, opts.allow_unknown_types)
+        .map_err(|source| Failure::handled_on_stderr("delete", render_error(&source)))?;
+
+    // Resolve every target (missing/ambiguous ids abort before any write).
+    let mut removal_indices: Vec<usize> = Vec::new();
+    match mode {
+        Mode::Single(id) => removal_indices.push(resolve(&lines, id)?),
+        Mode::Records(ids) => {
+            for id in ids {
+                removal_indices.push(resolve(&lines, id)?);
+            }
         }
         Mode::AllExcept(keep) => {
-            let lines = read_domain_lines(&store.root, domain).map_err(|source| {
-                Failure::handled("delete", format!("reading domain file: {source}"))
-            })?;
-            let selected: Vec<String> = parsed_lines(&lines)
-                .into_iter()
-                .filter(|(_, record, _)| {
-                    let id = record
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    !keep.contains(&id)
-                })
-                .filter_map(|(_, record, _)| {
-                    record.get("id").and_then(Value::as_str).map(str::to_string)
-                })
-                .collect();
-            (selected, true)
-        }
-    };
-    let _ = bulk;
-
-    let lines = read_domain_lines(&store.root, domain)
-        .map_err(|source| Failure::handled("delete", format!("reading domain file: {source}")))?;
-    let parsed = parsed_lines(&lines);
-
-    // Resolve targets to (line index, record), first match per id.
-    let mut removals: Vec<(usize, Value)> = Vec::new();
-    for id in &targets {
-        let found = parsed
-            .iter()
-            .find(|(_, record, _)| record.get("id").and_then(Value::as_str) == Some(id.as_str()))
-            .map(|(index, record, _)| (*index, record.clone()));
-        if let Some(hit) = found {
-            removals.push(hit);
-        } else {
-            // Atomic: nothing is deleted on a missing id.
-            let mut failure = record_not_found("delete", id);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
+            let mut keep_indices: Vec<usize> = Vec::new();
+            for id in keep {
+                keep_indices.push(resolve(&lines, id)?);
+            }
+            for index in 0..lines.len() {
+                if !keep_indices.contains(&index) {
+                    removal_indices.push(index);
+                }
+            }
         }
     }
+    // A Set of indices: duplicate ids never double-delete (reference).
+    removal_indices.sort_unstable();
+    removal_indices.dedup();
 
-    let deleted: Vec<(String, String, String)> = removals
+    let bulk = !matches!(mode, Mode::Single(_)) || dry_run;
+    let deleted: Vec<(String, String, String)> = removal_indices
         .iter()
-        .map(|(_, record)| {
-            let id = record
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let kind = record
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("convention")
-                .to_string();
-            let summary = record_summary(record);
-            (id, kind, summary)
+        .map(|index| {
+            let line = &lines[*index];
+            (
+                line.id().unwrap_or_default().to_string(),
+                line.record_type(),
+                record_summary(&line.record),
+            )
         })
         .collect();
-
-    let single_shape = !bulk && !dry_run && matches!(mode, Mode::Single(_));
-    let keep_indices: Vec<usize> = removals.iter().map(|(index, _)| *index).collect();
-    let survivors: Vec<String> = parsed
-        .iter()
-        .filter(|(index, _, _)| !keep_indices.contains(index))
-        .map(|(_, _, raw)| raw.clone())
-        .collect();
-    let kept = survivors.len();
+    let kept = lines.len() - removal_indices.len();
 
     if !dry_run {
-        write_domain_lines(&store.root, domain, &survivors).map_err(|source| {
-            Failure::handled("delete", format!("writing domain file: {source}"))
-        })?;
+        let survivors: Vec<serde_json::Value> = lines
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !removal_indices.contains(index))
+            .map(|(_, line)| line.record.clone())
+            .collect();
+        write_records(&file, &survivors)
+            .map_err(|source| Failure::handled("delete", crate::output::chain_message(&source)))?;
+    }
+
+    // The reference prints each deleted record's summary through the
+    // type registry; an unregistered type throws AFTER the rewrite
+    // (only reachable under --allow-unknown-types).
+    if opts.allow_unknown_types {
+        for (_, kind, _) in &deleted {
+            if !mulch::PAYLOAD_TYPES.contains(&kind.as_str()) {
+                return Err(Failure::handled_on_stderr(
+                    "delete",
+                    format!("Error: Unknown record type: {kind}"),
+                ));
+            }
+        }
     }
 
     if opts.json {
-        if single_shape {
-            let (id, kind, summary) = deleted.first().cloned().unwrap_or_default();
-            let mut fields = Map::new();
-            fields.insert("domain".into(), Value::String(domain.into()));
-            fields.insert("id".into(), Value::String(id));
-            fields.insert("type".into(), Value::String(kind));
-            fields.insert("summary".into(), Value::String(summary));
-            print_json(&success_envelope("delete", fields), false);
-        } else {
-            let list: Vec<Value> = deleted
+        if bulk {
+            let list: Vec<serde_json::Value> = deleted
                 .iter()
                 .map(|(id, kind, summary)| {
-                    let mut item = Map::new();
-                    item.insert("id".into(), Value::String(id.clone()));
-                    item.insert("type".into(), Value::String(kind.clone()));
-                    item.insert("summary".into(), Value::String(summary.clone()));
-                    Value::Object(item)
+                    serde_json::json!({ "id": id, "type": kind, "summary": summary })
                 })
                 .collect();
-            let mut fields = Map::new();
-            fields.insert("domain".into(), Value::String(domain.into()));
-            fields.insert("dryRun".into(), Value::Bool(dry_run));
-            fields.insert("deleted".into(), Value::Array(list));
-            fields.insert("kept".into(), Value::from(kept as u64));
-            print_json(&success_envelope("delete", fields), false);
+            let fields = serde_json::json!({
+                "domain": domain,
+                "dryRun": dry_run,
+                "deleted": list,
+                "kept": kept,
+            });
+            print_json(&success_envelope("delete", object(fields)), false);
+        } else {
+            let (id, kind, summary) = deleted.first().cloned().unwrap_or_default();
+            let fields = serde_json::json!({
+                "domain": domain,
+                "id": id,
+                "type": kind,
+                "summary": summary,
+            });
+            print_json(&success_envelope("delete", object(fields)), false);
         }
     } else {
         let mut text = String::new();
         for (id, kind, summary) in &deleted {
             let verb = if dry_run {
                 "[DRY RUN] Would delete"
-            } else if single_shape {
-                "✓ Deleted"
-            } else {
+            } else if bulk {
                 "Deleted"
+            } else {
+                "✓ Deleted"
             };
             let _ = std::fmt::Write::write_fmt(
                 &mut text,
                 format_args!("{verb} {kind} {id} from {domain}: {summary}\n"),
             );
         }
-        if !single_shape && !dry_run && deleted.len() > 1 {
+        if !bulk && !dry_run {
+            // single-id form already carries the ✓ on its line
+        }
+        if bulk && !dry_run && deleted.len() > 1 {
             let _ = std::fmt::Write::write_fmt(
                 &mut text,
                 format_args!("✓ Deleted {} records from {domain}\n", deleted.len()),
             );
         }
-        print_line(opts.quiet, text.trim_end_matches('\n'));
+        // Zero deletions print nothing at all (reference).
+        let text = text.trim_end_matches('\n');
+        if !text.is_empty() {
+            print_line(opts.quiet, text);
+        }
     }
     Ok(())
 }
 
-/// A plain handled failure with the `Error:` prefix already baked in.
-fn handled(command: &str, message: &str) -> Failure {
-    let mut failure = Failure::handled(command, message);
-    failure.envelope_to_stderr = true;
-    failure
+/// Resolves one identifier against the domain's records.
+fn resolve(lines: &[mulch::LineRecord], id: &str) -> Result<usize, Failure> {
+    resolve_record_id(lines, id).map_err(|error| match error {
+        ResolveError::NotFound(identifier) => Failure::handled_on_stderr(
+            "delete",
+            format!(
+                "Error: Record \"{identifier}\" not found. Run `mulch query` to see record IDs."
+            ),
+        ),
+        ResolveError::Ambiguous { count, ids } => Failure::handled_on_stderr(
+            "delete",
+            format!(
+                "Error: Ambiguous identifier \"{id}\" matches {count} records: {}. Use more characters to disambiguate.",
+                ids.join(", ")
+            ),
+        ),
+    })
+}
+
+/// The unknown-domain failure (plain and json texts differ).
+fn domain_failure(opts: &GlobalOpts, command: &str, domain: &str, available: &[String]) -> Failure {
+    let list = if available.is_empty() {
+        "(none)".to_string()
+    } else {
+        available.join(", ")
+    };
+    if opts.json {
+        Failure::handled_on_stderr(
+            command,
+            format!("Domain \"{domain}\" not found in config. Available domains: {list}"),
+        )
+    } else {
+        Failure::handled_on_stderr(
+            command,
+            format!("Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}"),
+        )
+    }
+}
+
+/// Renders a format-core error the way the reference does.
+fn render_error(error: &mulch::Error) -> String {
+    match error {
+        mulch::Error::MalformedLine {
+            path,
+            line,
+            preview,
+            reason,
+        } => format!(
+            "Error: Malformed JSONL at {}:{line}: {reason}. Line: {preview}",
+            path.display()
+        ),
+        mulch::Error::UnknownRecordType {
+            path,
+            line,
+            id,
+            record_type,
+        } => {
+            let id_part = id
+                .as_ref()
+                .map_or_else(String::new, |id| format!(" (id={id})"));
+            format!(
+                "Error: Unknown record type \"{record_type}\" at {}:{line}{id_part}. Register it under custom_types in mulch.config.yaml, remove the record, or pass --allow-unknown-types to bypass.",
+                path.display()
+            )
+        }
+        other => format!("Error: {other}"),
+    }
+}
+
+/// A `serde_json::Value::Object` from a `json!` macro result.
+fn object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    match value {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    }
 }

@@ -3,6 +3,16 @@
 
 use sha2::{Digest as _, Sha256};
 
+/// The registered record types (reference registry).
+pub const PAYLOAD_TYPES: [&str; 6] = [
+    "convention",
+    "pattern",
+    "failure",
+    "decision",
+    "reference",
+    "guide",
+];
+
 /// The id key field per record type (reference registry).
 pub fn id_key_field(record_type: &str) -> &'static str {
     match record_type {
@@ -18,6 +28,7 @@ pub fn id_key_field(record_type: &str) -> &'static str {
 /// reference registry: convention=content, pattern/reference/guide=
 /// name+description, failure=description+resolution, decision=
 /// title+rationale).
+#[must_use]
 pub fn payload_fields(record_type: &str) -> &'static [&'static str] {
     match record_type {
         "pattern" | "reference" | "guide" => &["name", "description"],
