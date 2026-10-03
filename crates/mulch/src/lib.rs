@@ -7,9 +7,18 @@
 //! Unknown record fields are preserved on every write; additive fields
 //! are the only sanctioned extension mechanism.
 //!
-//! Bootstrap skeleton: the format core, CLI parity, and the
-//! self-hosting cutover are tracked in this repo's own Seeds tracker
-//! (seed ids `mulch-…`, see `.seeds/`).
+//! The format core lives here; CLI parity and the self-hosting cutover
+//! are tracked in this repo's Seeds tracker (seed ids `mulch-…`).
+
+mod config;
+mod error;
+mod record;
+mod store;
+
+pub use config::{Config, Governance, Prime, SUPPORTED_VERSION, Search, ShelfLife, TierWeights};
+pub use error::{Error, Result};
+pub use record::{Record, RecordId};
+pub use store::Store;
 
 /// The reference implementation this crate is read+write compatible with
 /// (README format-compatibility promise; ADR-0023 in denkhaus/fabro).
