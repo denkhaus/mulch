@@ -88,13 +88,10 @@ no virtual branch is ever named `main`.
 - `but status` replaces `git branch --show-current` — the workspace is
   healthy when the status parses and no commit is conflicted; any
   number of applied virtual branches is normal (multi-agent).
-- **Landing local work:** `but push <branch>`, then a PR into `main` —
-  never a direct push to main. Until the operator completes GitButler
-  forge auth (`but config forge auth`, interactive), the PR leg runs
-  through `gh` (`gh pr create --head <branch> --base main` +
-  `gh pr merge <n> --auto --squash` — the fabro-experiment precedent);
-  with forge auth, `but pr new` / `but pr auto-merge` take over. Run PRs
-  land on main the engine way; the local workspace follows with
+- **Landing local work:** `but push <branch>` + `but pr new <branch>`
+  (+ `but pr auto-merge <selector>`) into `main` — never a direct push
+  to main (forge auth completed 2026-10-03; gh was the interim leg).
+  Run PRs land on main the engine way; the local workspace follows with
   `but pull` (integrates the new target state, rebases applied
   branches, removes merged-upstream ones).
 - Update a specific virtual branch from its own remote with
