@@ -3,7 +3,7 @@
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::schema::schema_error;
+use crate::commands::schema::{plain_detail_lines, validate_message};
 use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, domain_file, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -43,8 +43,13 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let mut total_records = 0;
     for domain in store.domains() {
         let text = std::fs::read_to_string(domain_file(&store.root, &domain)).unwrap_or_default();
-        for (index, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
+        // Physical 1-based line numbers: blank lines are skipped as
+        // records but still counted by position (reference addressing).
+        for (index, line) in text.lines().enumerate() {
             let line_no = index + 1;
+            if line.trim().is_empty() {
+                continue;
+            }
             total_records += 1;
             match serde_json::from_str::<Value>(line) {
                 Err(_) => findings.push(Finding {
@@ -53,7 +58,14 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
                     message: "Invalid JSON: failed to parse".into(),
                 }),
                 Ok(record) => {
-                    if let Some(message) = schema_error(&record) {
+                    let unknown = matches!(
+                        crate::commands::schema::verdict(&record),
+                        crate::commands::schema::Verdict::Unknown(_)
+                    );
+                    if unknown && opts.allow_unknown_types {
+                        continue;
+                    }
+                    if let Some(message) = validate_message(&record) {
                         findings.push(Finding {
                             domain: domain.clone(),
                             line: line_no,
@@ -104,13 +116,23 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
         };
         print_json(&envelope, false);
     } else {
+        // The reference prints the validate summary even under --quiet.
         print_line(
-            opts.quiet,
+            false,
             &format!("{total_records} records validated, {total_errors} errors found"),
         );
         #[allow(clippy::print_stderr, reason = "error details render on stderr")]
         for finding in &findings {
-            eprintln!("{}:{} - {}", finding.domain, finding.line, finding.message);
+            let prefix = format!("{}:{} - ", finding.domain, finding.line);
+            let lines = plain_detail_lines(&finding.message);
+            #[allow(clippy::print_stderr, reason = "error details render on stderr")]
+            for (index, detail) in lines.iter().enumerate() {
+                if index == 0 {
+                    eprintln!("{prefix}{detail}");
+                } else {
+                    eprintln!("{detail}");
+                }
+            }
         }
     }
 

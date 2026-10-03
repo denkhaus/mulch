@@ -441,3 +441,214 @@ fn recent_timestamp(file: &Path) -> String {
     let rest = &text[start..];
     rest[..24].to_string()
 }
+
+// ---- spec-review round 2: parse layer, schema-invalid strings, no-store
+// doctor, --fix --json, quiet matrix, blank-line numbering ----
+
+#[test]
+fn parse_layer_contract() {
+    let ours = TempDir::new("parse");
+    let bin = Path::new(mulch_bin());
+
+    // no args: help on stderr, exit 1, stdout empty
+    let run = run_in(&ours.0, bin, &[]);
+    assert_eq!(run.code, 1);
+    assert_eq!(run.stdout, "");
+    assert!(run.stderr.starts_with("mulch"), "help goes to stderr");
+
+    // -v and --version: bare version, exit 0
+    for flag in ["-v", "--version"] {
+        let run = run_in(&ours.0, bin, &[flag]);
+        assert_eq!(run.code, 0);
+        assert_eq!(run.stdout, concat!(env!("CARGO_PKG_VERSION"), "\n"));
+    }
+
+    // unknown command: exact two-line stderr, no timing noise
+    let run = run_in(&ours.0, bin, &["nonsense", "--timing"]);
+    assert_eq!(run.code, 1);
+    assert_eq!(run.stdout, "");
+    assert_eq!(
+        run.stderr,
+        "Unknown command: nonsense\nRun 'mulch --help' for usage.\n"
+    );
+}
+
+#[test]
+fn schema_invalid_strings_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("schemainv-ours");
+    let theirs = TempDir::new("schemainv-theirs");
+    let record = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T10:00:00.000Z\",\"name\":\"x\"}";
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let file = dir.join(".mulch/expertise/dev.jsonl");
+        std::fs::write(file, format!("{record}\n")).expect("write record");
+        let cfg = dir.join(".mulch/mulch.config.yaml");
+        let text = std::fs::read_to_string(&cfg).expect("config");
+        std::fs::write(cfg, text.replace("domains: {}", "domains:\n  dev: {}"))
+            .expect("register domain");
+    }
+
+    // validate plain: summary on stdout, multi-line details on stderr
+    let ours_plain = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    let theirs_plain = run_in(&theirs.0, &ml, &["validate"]);
+    assert_eq!(ours_plain.code, theirs_plain.code);
+    assert_eq!(ours_plain.stdout, theirs_plain.stdout);
+    assert_eq!(ours_plain.stderr, theirs_plain.stderr);
+
+    // validate json: envelope on stdout, message strings pinned
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["validate", "--json"]);
+    let theirs_json = run_in(&theirs.0, &ml, &["validate", "--json"]);
+    assert_eq!(ours_json.code, theirs_json.code);
+    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
+
+    // doctor plain: the schema-validation detail line matches modulo
+    // the upgrade check
+    let ours_doc = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+    let theirs_doc = run_in(&theirs.0, &ml, &["doctor"]);
+    assert_eq!(ours_doc.code, theirs_doc.code);
+    assert!(
+        ours_doc
+            .stdout
+            .contains("must have required property 'description'")
+    );
+    assert_eq!(
+        ours_doc
+            .stdout
+            .lines()
+            .filter(|l| l.contains("must have required property"))
+            .collect::<Vec<_>>(),
+        theirs_doc
+            .stdout
+            .lines()
+            .filter(|l| l.contains("must have required property"))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn doctor_no_store_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("nostore-doc-ours");
+    let theirs = TempDir::new("nostore-doc-theirs");
+
+    let ours_plain = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+    let theirs_plain = run_in(&theirs.0, &ml, &["doctor"]);
+    assert_eq!(ours_plain.code, theirs_plain.code);
+    assert_eq!(ours_plain.stdout, theirs_plain.stdout);
+    assert_eq!(ours_plain.stderr, theirs_plain.stderr);
+
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--json"]);
+    let theirs_json = run_in(&theirs.0, &ml, &["doctor", "--json"]);
+    assert_eq!(ours_json.code, theirs_json.code);
+    assert_eq!(ours_json.stdout, theirs_json.stdout);
+    assert_eq!(ours_json.stderr, theirs_json.stderr);
+}
+
+#[test]
+fn doctor_fix_json_mutates_store_like_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("fixjson-ours");
+    let theirs = TempDir::new("fixjson-theirs");
+    let record = "{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T10:00:00.000Z\"}";
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let file = dir.join(".mulch/expertise/dev.jsonl");
+        std::fs::write(file, format!("{record}\n")).expect("write record");
+        let cfg = dir.join(".mulch/mulch.config.yaml");
+        let text = std::fs::read_to_string(&cfg).expect("config");
+        std::fs::write(cfg, text.replace("domains: {}", "domains:\n  dev: {}"))
+            .expect("register domain");
+    }
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "doctor", "--fix", "--json",
+    ]);
+    let theirs_run = run_in(&theirs.0, &ml, &["doctor", "--fix", "--json"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    // --json applies the fix: the invalid record is gone in BOTH stores.
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/dev.jsonl"),
+        read_store_file(&theirs.0, "expertise/dev.jsonl")
+    );
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), "");
+}
+
+#[test]
+fn quiet_matrix_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("quiet-ours");
+    let theirs = TempDir::new("quiet-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p1",
+            "--description",
+            "dp1",
+        ]);
+    }
+
+    // validate --quiet still prints the summary
+    let ours_val = run_in(&ours.0, Path::new(mulch_bin()), &["validate", "--quiet"]);
+    let theirs_val = run_in(&theirs.0, &ml, &["validate", "--quiet"]);
+    assert_eq!(ours_val.code, theirs_val.code);
+    assert_eq!(ours_val.stdout, theirs_val.stdout);
+
+    // doctor --quiet prints NOTHING (plain mode)
+    let ours_doc = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--quiet"]);
+    let theirs_doc = run_in(&theirs.0, &ml, &["doctor", "--quiet"]);
+    assert_eq!(ours_doc.code, theirs_doc.code);
+    assert_eq!(ours_doc.stdout, theirs_doc.stdout);
+    assert_eq!(ours_doc.stdout, "");
+}
+
+#[test]
+fn blank_lines_keep_physical_line_numbers() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("blank-ours");
+    let theirs = TempDir::new("blank-theirs");
+    let valid = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T10:00:00.000Z\",\"name\":\"p\",\"description\":\"d\"}";
+    let invalid = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T10:00:00.000Z\",\"name\":\"x\"}";
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let file = dir.join(".mulch/expertise/dev.jsonl");
+        std::fs::write(file, format!("\n{valid}\n{invalid}\nnot json\n")).expect("write lines");
+        let cfg = dir.join(".mulch/mulch.config.yaml");
+        let text = std::fs::read_to_string(&cfg).expect("config");
+        std::fs::write(cfg, text.replace("domains: {}", "domains:\n  dev: {}"))
+            .expect("register domain");
+    }
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["validate"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    assert_eq!(ours_run.stderr, theirs_run.stderr);
+    // physical addressing: findings at lines 3 and 4, not 2 and 3
+    assert!(
+        ours_run
+            .stderr
+            .contains("dev:3 - Schema validation failed:")
+    );
+    assert!(ours_run.stderr.contains("dev:4 - Invalid JSON"));
+}

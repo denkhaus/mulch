@@ -36,13 +36,23 @@ pub(crate) struct GlobalOpts {
 
 /// mulch — structured expertise management (native implementation).
 #[derive(Debug, Parser)]
-#[command(name = "mulch", version, disable_help_subcommand = true)]
+#[command(
+    name = "mulch",
+    version,
+    disable_help_subcommand = true,
+    disable_version_flag = true
+)]
 pub(crate) struct Cli {
+    /// Print version (reference short form `-v`; top-level only — the
+    /// reference's version flag is not subcommand-global).
+    #[arg(short = 'v', long)]
+    pub(crate) version: bool,
+
     #[command(flatten)]
     pub opts: GlobalOpts,
 
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 /// The implemented command surface (help honesty: nothing else listed).

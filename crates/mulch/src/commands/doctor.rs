@@ -7,9 +7,9 @@ use jiff::Timestamp;
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::schema::schema_error;
+use crate::commands::schema::doctor_detail;
 use crate::commands::stale::StaleRule;
-use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, domain_file, locate};
+use crate::commands::{StoreLocation, domain_file, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One check result.
@@ -60,15 +60,8 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     let cwd = std::env::current_dir()
         .map_err(|source| Failure::handled("doctor", format!("resolving cwd: {source}")))?;
     let store = match locate(&cwd) {
-        Ok(StoreLocation::Missing) => {
-            let mut failure = Failure::handled("doctor", NO_STORE_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
-        }
-        Ok(StoreLocation::NoConfig) => {
-            let mut failure = Failure::handled("doctor", NO_CONFIG_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
+        Ok(StoreLocation::Missing | StoreLocation::NoConfig) => {
+            return Err(no_store_report(opts));
         }
         Ok(StoreLocation::Open(store)) => store,
         Err(source) => {
@@ -81,7 +74,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
 
     let domains = read_domains(&store);
     let rule = StaleRule::from_config(store.config.shelf_life().ok().flatten().as_ref());
-    let checks = run_checks(&rule, &domains);
+    let checks = run_checks(opts, &rule, &domains);
 
     let pass = checks
         .iter()
@@ -115,6 +108,11 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
             Value::Object(body)
         };
         print_json(&envelope, false);
+        if fix {
+            // The reference mutates the store in --json mode too; the
+            // plain Fixed: block is a plain-mode rendering only.
+            drop(apply_fixes(&store, &rule, &domains)?);
+        }
     } else {
         let mut text = String::from("Mulch Doctor");
         for check in &checks {
@@ -128,13 +126,14 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
             }
         }
         let _ = write!(text, "\n\n{pass} passed, {warn} warning(s), {fail} failed");
-        print_line(false, &text);
+        // The reference's --quiet silences the whole plain report.
+        print_line(opts.quiet, &text);
 
         if fix {
-            let fixes = apply_fixes(&store, &rule, &domains)?;
-            if !fixes.is_empty() {
-                let mut fixed = String::from("Fixed:");
-                for fix_line in fixes {
+            let fixes_applied = apply_fixes(&store, &rule, &domains)?;
+            if !fixes_applied.is_empty() && !opts.quiet {
+                let mut fixed = String::from("\nFixed:");
+                for fix_line in fixes_applied {
                     let _ = write!(fixed, "\n  ✓ {fix_line}");
                 }
                 #[allow(clippy::print_stdout, reason = "fix report prints to stdout")]
@@ -181,7 +180,7 @@ fn read_domains(store: &crate::commands::ConfigStore) -> Vec<DomainLines> {
 }
 
 /// Runs the 17 checks in the reference's fixed order.
-fn run_checks(rule: &StaleRule, domains: &[DomainLines]) -> Vec<Check> {
+fn run_checks(opts: &GlobalOpts, rule: &StaleRule, domains: &[DomainLines]) -> Vec<Check> {
     vec![
         Check {
             name:    "config",
@@ -193,7 +192,7 @@ fn run_checks(rule: &StaleRule, domains: &[DomainLines]) -> Vec<Check> {
         jsonl_integrity(domains),
         legacy_outcome(domains),
         schema_validation(domains),
-        unknown_types(domains),
+        unknown_types(domains, opts.allow_unknown_types),
         type_registry(domains),
         Check {
             name:    "domain-rules-compatibility",
@@ -331,7 +330,7 @@ fn schema_validation(domains: &[DomainLines]) -> Check {
         .flat_map(|d| {
             d.lines.iter().filter_map(|(line, parsed)| {
                 let record = parsed.as_ref().ok()?;
-                schema_error(record).map(|message| format!("{}:{} - {}", d.domain, line, message))
+                doctor_detail(record).map(|message| format!("{}:{} -  {}", d.domain, line, message))
             })
         })
         .collect();
@@ -354,7 +353,7 @@ fn schema_validation(domains: &[DomainLines]) -> Check {
     }
 }
 
-fn unknown_types(domains: &[DomainLines]) -> Check {
+fn unknown_types(domains: &[DomainLines], allow_unknown: bool) -> Check {
     let known: Vec<&str> = crate::commands::schema::BRANCHES
         .iter()
         .map(|(name, _)| *name)
@@ -369,7 +368,9 @@ fn unknown_types(domains: &[DomainLines]) -> Check {
             })
         })
         .collect();
-    if bad.is_empty() {
+    // The --allow-unknown-types escape hatch tolerates them (worktree/
+    // CI lag); the reference's clean-store contract stays pass.
+    if bad.is_empty() || allow_unknown {
         Check {
             name:    "unknown-types",
             status:  Status::Pass,
@@ -536,18 +537,18 @@ fn apply_fixes(
                         // A record without a parsable timestamp is never
                         // stale; schema errors catch it instead.
                         Some(recorded) if rule.is_stale(classification, recorded, now) => {
-                            Verdict::Stale
+                            FixVerdict::Stale
                         }
-                        _ if schema_error(&record).is_some() => Verdict::Invalid,
-                        _ => Verdict::Keep,
+                        _ if doctor_detail(&record).is_some() => FixVerdict::Invalid,
+                        _ => FixVerdict::Keep,
                     }
                 }
-                Err(_) => Verdict::Invalid,
+                Err(_) => FixVerdict::Invalid,
             };
             match verdict {
-                Verdict::Keep => kept.push(line),
-                Verdict::Stale => stale_pruned += 1,
-                Verdict::Invalid => invalid_removed += 1,
+                FixVerdict::Keep => kept.push(line),
+                FixVerdict::Stale => stale_pruned += 1,
+                FixVerdict::Invalid => invalid_removed += 1,
             }
         }
 
@@ -578,7 +579,7 @@ fn apply_fixes(
 }
 
 /// One line's keep/prune verdict during `--fix`.
-enum Verdict {
+enum FixVerdict {
     Keep,
     Stale,
     Invalid,
@@ -602,4 +603,51 @@ fn check_json(check: &Check) -> Value {
         ),
     );
     Value::Object(body)
+}
+
+/// The reference's no-store doctor contract: a one-check report whose
+/// config entry failed (plain: header + summary on stdout, the ✗ line
+/// on stderr; JSON: full envelope on stdout), exit 1.
+fn no_store_report(opts: &GlobalOpts) -> Failure {
+    if opts.json {
+        let mut check = Map::new();
+        check.insert("name".into(), Value::String("config".into()));
+        check.insert("status".into(), Value::String("fail".into()));
+        check.insert(
+            "message".into(),
+            Value::String("No .mulch/ directory found".into()),
+        );
+        check.insert("fixable".into(), Value::Bool(false));
+        check.insert("details".into(), Value::Array(Vec::new()));
+        let mut summary = Map::new();
+        summary.insert("pass".into(), Value::from(0));
+        summary.insert("warn".into(), Value::from(0));
+        summary.insert("fail".into(), Value::from(1));
+        let mut body = Map::new();
+        body.insert("success".into(), Value::Bool(false));
+        body.insert("command".into(), Value::String("doctor".into()));
+        body.insert("checks".into(), Value::Array(vec![Value::Object(check)]));
+        body.insert("summary".into(), Value::Object(summary));
+        let mut failure = Failure::handled("doctor", "");
+        failure.envelope = Value::Object(body);
+        failure.envelope_to_stderr = false;
+        failure.rendered = false;
+        failure.code = 1;
+        failure
+    } else {
+        #[allow(
+            clippy::print_stdout,
+            clippy::print_stderr,
+            reason = "report rendering is the CLI boundary"
+        )]
+        {
+            println!("Mulch Doctor\n\n0 passed, 0 warnings, 1 failed");
+            eprintln!("  ✗ No .mulch/ directory found");
+        }
+        let mut failure = Failure::handled("doctor", "");
+        failure.message.clear();
+        failure.rendered = true;
+        failure.code = 1;
+        failure
+    }
 }

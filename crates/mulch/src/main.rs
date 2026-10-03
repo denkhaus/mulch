@@ -11,19 +11,43 @@ mod output;
 
 use std::process::ExitCode;
 
-use clap::Parser as _;
 use clap::error::ErrorKind;
+use clap::{CommandFactory as _, Parser as _};
 use cli::Cli;
 
 fn main() -> ExitCode {
     let started = std::time::Instant::now();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
-        Err(error) => return render_parse_failure(&error, started),
+        Err(error) => return render_parse_failure(&error),
     };
+    let Some(command) = cli.command.as_ref() else {
+        if cli.version {
+            #[allow(clippy::print_stdout, reason = "version renders on stdout")]
+            {
+                println!(env!("CARGO_PKG_VERSION"));
+            }
+            return ExitCode::SUCCESS;
+        }
+        // The reference's no-args contract: full help on stderr, exit 1.
+        #[allow(clippy::print_stderr, reason = "help renders on stderr here")]
+        {
+            eprintln!("{}", Cli::command().render_help());
+        }
+        return ExitCode::from(output::EXIT_ERROR);
+    };
+    if cli.version {
+        // The reference prints the bare version value (our version
+        // value itself is a documented deviation).
+        #[allow(clippy::print_stdout, reason = "version renders on stdout")]
+        {
+            println!(env!("CARGO_PKG_VERSION"));
+        }
+        return ExitCode::SUCCESS;
+    }
     let timing = cli.opts.timing;
 
-    let outcome = commands::dispatch(&cli);
+    let outcome = commands::dispatch(&cli, command);
     if timing {
         report_timing(started);
     }
@@ -46,7 +70,7 @@ fn report_timing(started: std::time::Instant) {
 /// Maps clap parse failures onto the reference's exit-1 contract:
 /// no arguments print the help to STDERR, unknown commands print the
 /// two-line unknown hint; `--help` keeps clap's stdout/exit-0 shape.
-fn render_parse_failure(error: &clap::Error, started: std::time::Instant) -> ExitCode {
+fn render_parse_failure(error: &clap::Error) -> ExitCode {
     match error.kind() {
         ErrorKind::DisplayHelp => {
             #[allow(clippy::print_stdout, reason = "help renders on stdout")]
@@ -55,15 +79,7 @@ fn render_parse_failure(error: &clap::Error, started: std::time::Instant) -> Exi
             }
             ExitCode::SUCCESS
         }
-        ErrorKind::DisplayVersion => {
-            #[allow(clippy::print_stdout, reason = "version renders on stdout")]
-            {
-                println!("{}", error.render());
-            }
-            ExitCode::SUCCESS
-        }
         ErrorKind::InvalidSubcommand => {
-            report_timing(started);
             #[allow(clippy::print_stderr, reason = "error rendering is the CLI boundary")]
             {
                 eprintln!("Unknown command: {}", unknown_command(error));
@@ -72,7 +88,6 @@ fn render_parse_failure(error: &clap::Error, started: std::time::Instant) -> Exi
             ExitCode::from(output::EXIT_ERROR)
         }
         _ => {
-            report_timing(started);
             #[allow(clippy::print_stderr, reason = "error rendering is the CLI boundary")]
             {
                 eprintln!("{}", error.render());

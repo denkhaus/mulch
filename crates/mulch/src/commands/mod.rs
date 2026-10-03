@@ -84,8 +84,9 @@ pub(crate) fn domain_file(store_root: &Path, domain: &str) -> PathBuf {
 }
 
 /// Runs the parsed command.
-pub(crate) fn dispatch(cli: &Cli) -> Result<(), Failure> {
-    match &cli.command {
+pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
+    let _ = &cli.command;
+    match command {
         Command::Init => init::run(&cli.opts),
         Command::Status => status::run(&cli.opts),
         Command::Validate => validate::run(&cli.opts),
