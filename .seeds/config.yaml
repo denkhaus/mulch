@@ -1,4 +1,6 @@
 project: mulch
 version: '1'
 max_plan_depth: 3
-
+# VCS manager for `seeds sync` (seeds-5b36, v0.6.0): git = plain git commits;
+# gitbutler = report-only (no git write; prints paths + message for `but commit`).
+vcs_manager: gitbutler
