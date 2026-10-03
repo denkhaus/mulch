@@ -19,7 +19,7 @@ use std::path::Path;
 use mulch::Error;
 /// Store lookup: the filesystem seam lives in the library
 /// ([`mulch::StoreFiles`]); the CLI only matches its outcome.
-pub(crate) use mulch::Located as StoreLocation;
+pub(crate) use mulch::StoreLocation;
 
 use crate::cli::{Cli, Command};
 use crate::output::Failure;
@@ -33,14 +33,40 @@ pub(crate) const NO_STORE_MESSAGE: &str = "No .mulch/ directory found. Run `mulc
 pub(crate) const NO_STORE_CONFIG_MESSAGE: &str =
     "Error: No .mulch/ directory found. Run `mulch init` to set up this project.";
 
-/// The reference's second wording, thrown by its config reader when
-/// `.mulch/` exists without a config (we render it as a clean error).
-pub(crate) const NO_CONFIG_MESSAGE: &str =
-    "No .mulch/ directory found. Run `mulch init` to set up this project.";
-
 /// Locates the store for the parity commands.
-pub(crate) fn locate(root: &Path) -> Result<mulch::Located, mulch::Error> {
+pub(crate) fn locate(root: &Path) -> Result<mulch::StoreLocation, mulch::Error> {
     mulch::StoreFiles::locate(root)
+}
+
+/// Opens the store or fails with the command's no-store contract.
+///
+/// One owner for the "no store" policy: the message variants and the
+/// JSON-envelope channel live here, not in ten command prologues.
+/// `config_message` selects the read-modify-write wording (the
+/// reference's config reader) over the reporting wording.
+pub(crate) fn open_store(
+    command: &'static str,
+    config_message: bool,
+) -> Result<mulch::StoreFiles, Failure> {
+    let cwd = std::env::current_dir()
+        .map_err(|source| Failure::handled(command, format!("resolving cwd: {source}")))?;
+    match locate(&cwd) {
+        Ok(StoreLocation::Open(store)) => Ok(store),
+        Ok(StoreLocation::Missing | StoreLocation::NoConfig) => {
+            let message = if config_message {
+                NO_STORE_CONFIG_MESSAGE
+            } else {
+                NO_STORE_MESSAGE
+            };
+            Err(Failure::handled_on_stderr(command, message))
+        }
+        Err(source) => Err(Failure::handled(command, chain_message_from(&source))),
+    }
+}
+
+/// The crate-local alias for the output module's chain renderer.
+fn chain_message_from(error: &mulch::Error) -> String {
+    crate::output::chain_message(error)
 }
 
 /// Runs the parsed command.
@@ -106,12 +132,28 @@ pub(crate) fn now_iso() -> String {
 
 /// The shared domain-not-found failure (reference text).
 pub(crate) fn domain_not_found(command: &str, domain: &str, available: &[String]) -> Failure {
-    Failure::handled(
+    let list = if available.is_empty() {
+        "(none)".to_string()
+    } else {
+        available.join(", ")
+    };
+    Failure::handled_on_stderr(
         command,
-        format!(
-            "Error: domain \"{domain}\" not found in config.\nAvailable domains: {}",
-            available.join(", ")
-        ),
+        format!("Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}"),
+    )
+}
+
+/// The JSON-mode variant of the unknown-domain text (capital D, one
+/// line, no `Error: ` prefix — the reference's `outputJsonError`).
+pub(crate) fn domain_not_found_json(command: &str, domain: &str, available: &[String]) -> Failure {
+    let list = if available.is_empty() {
+        "(none)".to_string()
+    } else {
+        available.join(", ")
+    };
+    Failure::handled_on_stderr(
+        command,
+        format!("Domain \"{domain}\" not found in config. Available domains: {list}"),
     )
 }
 

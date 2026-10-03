@@ -4,7 +4,6 @@ use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
 use crate::commands::schema::{plain_detail_lines, validate_message};
-use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One validation finding (`domain:line` addressed).
@@ -17,27 +16,7 @@ struct Finding {
 /// Runs `validate`: summary on stdout, details on stderr, JSON envelope
 /// on stdout (reference channel quirk), exit 1 on any error.
 pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("validate", format!("resolving cwd: {source}")))?;
-    let store = match locate(&cwd) {
-        Ok(StoreLocation::Missing) => {
-            let mut failure = Failure::handled("validate", NO_STORE_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
-        }
-        Ok(StoreLocation::NoConfig) => {
-            let mut failure = Failure::handled("validate", NO_CONFIG_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
-        }
-        Ok(StoreLocation::Open(store)) => store,
-        Err(source) => {
-            return Err(Failure::handled(
-                "validate",
-                crate::output::chain_message(&source),
-            ));
-        }
-    };
+    let store = crate::commands::open_store("validate", false)?;
 
     let mut findings = Vec::new();
     let mut total_records = 0;

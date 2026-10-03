@@ -7,7 +7,7 @@
 //! EOF cancels instead of blocking (README DEVIATIONS).
 
 use crate::cli::GlobalOpts;
-use crate::commands::{NO_STORE_CONFIG_MESSAGE, StoreLocation, locate, read_confirmation};
+use crate::commands::read_confirmation;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `delete-domain`.
@@ -17,23 +17,7 @@ pub(super) fn run(
     yes: bool,
     dry_run: bool,
 ) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("delete-domain", format!("resolving cwd: {source}")))?;
-    let mut store = match locate(&cwd) {
-        Ok(StoreLocation::Open(store)) => store,
-        Ok(_) => {
-            return Err(Failure::handled_on_stderr(
-                "delete-domain",
-                NO_STORE_CONFIG_MESSAGE,
-            ));
-        }
-        Err(source) => {
-            return Err(Failure::handled(
-                "delete-domain",
-                crate::output::chain_message(&source),
-            ));
-        }
-    };
+    let mut store = crate::commands::open_store("delete-domain", true)?;
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {

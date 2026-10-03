@@ -6,10 +6,9 @@
 //! ids to id-less survivors. Malformed lines and unregistered types are
 //! hard errors — nothing is written (reference `readExpertiseFile`).
 
-use mulch::{ResolveError, read_strict, record_summary, resolve_record_id, write_records};
+use mulch::{ResolveError, record_summary, resolve_record_id};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{NO_STORE_CONFIG_MESSAGE, StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Which records the invocation targets (reference mode exclusivity).
@@ -94,33 +93,18 @@ pub(super) fn run(
     domain: &str,
     dry_run: bool,
 ) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("delete", format!("resolving cwd: {source}")))?;
-    let store = match locate(&cwd) {
-        Ok(StoreLocation::Open(store)) => store,
-        Ok(_) => {
-            return Err(Failure::handled_on_stderr(
-                "delete",
-                NO_STORE_CONFIG_MESSAGE,
-            ));
-        }
-        Err(source) => {
-            return Err(Failure::handled(
-                "delete",
-                crate::output::chain_message(&source),
-            ));
-        }
-    };
+    let store = crate::commands::open_store("delete", true)?;
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {
         return Err(domain_failure(opts, "delete", domain, &domains));
     }
 
-    let file = store.domain_path(domain);
-    let lines = read_strict(&file, opts.allow_unknown_types).map_err(|source| {
-        Failure::handled_on_stderr("delete", crate::commands::render_core_error(&source))
-    })?;
+    let lines = store
+        .read_records(domain, opts.allow_unknown_types)
+        .map_err(|source| {
+            Failure::handled_on_stderr("delete", crate::commands::render_core_error(&source))
+        })?;
 
     // Resolve every target (missing/ambiguous ids abort before any write).
     let mut removal_indices: Vec<usize> = Vec::new();
@@ -168,7 +152,8 @@ pub(super) fn run(
             .filter(|(index, _)| !removal_indices.contains(index))
             .map(|(_, line)| line.record.clone())
             .collect();
-        write_records(&file, &survivors)
+        store
+            .rewrite_domain(domain, &survivors)
             .map_err(|source| Failure::handled("delete", crate::output::chain_message(&source)))?;
     }
 

@@ -9,11 +9,10 @@
 
 use std::path::PathBuf;
 
-use mulch::{ResolveError, read_strict, record_summary, resolve_record_id, write_records};
+use mulch::{ResolveError, record_summary, resolve_record_id};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{NO_STORE_CONFIG_MESSAGE, StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `move`.
@@ -25,18 +24,7 @@ pub(super) fn run(
     dry_run: bool,
     force: bool,
 ) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source_err| Failure::handled("move", format!("resolving cwd: {source_err}")))?;
-    let store = match locate(&cwd) {
-        Ok(StoreLocation::Open(store)) => store,
-        Ok(_) => return Err(Failure::handled_on_stderr("move", NO_STORE_CONFIG_MESSAGE)),
-        Err(source_err) => {
-            return Err(Failure::handled(
-                "move",
-                crate::output::chain_message(&source_err),
-            ));
-        }
-    };
+    let store = crate::commands::open_store("move", true)?;
 
     // Same-domain check comes FIRST (reference order).
     if source == target {
@@ -54,9 +42,11 @@ pub(super) fn run(
 
     let source_file = store.domain_path(source);
     let target_file = store.domain_path(target);
-    let lines = read_strict(&source_file, opts.allow_unknown_types).map_err(|source_err| {
-        Failure::handled_on_stderr("move", crate::commands::render_core_error(&source_err))
-    })?;
+    let lines = store
+        .read_records(source, opts.allow_unknown_types)
+        .map_err(|source_err| {
+            Failure::handled_on_stderr("move", crate::commands::render_core_error(&source_err))
+        })?;
     let index = match resolve_record_id(&lines, id) {
         Ok(index) => index,
         Err(ResolveError::NotFound(identifier)) => {
@@ -164,32 +154,22 @@ pub(super) fn run(
             .filter(|(position, _)| *position != index)
             .map(|(_, line)| line.record.clone())
             .collect();
-        write_records(&source_file, &survivors).map_err(|source_err| {
-            Failure::handled("move", crate::output::chain_message(&source_err))
-        })?;
+        store
+            .rewrite_domain(source, &survivors)
+            .map_err(|source_err| {
+                Failure::handled("move", crate::output::chain_message(&source_err))
+            })?;
 
-        // Target: raw byte append of the compact record (existing bytes
-        // preserved verbatim).
-        let mut bytes = match std::fs::read(&target_file) {
-            Ok(bytes) => bytes,
-            Err(source_err) if source_err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(source_err) => {
-                return Err(Failure::handled(
-                    "move",
-                    format!("reading target domain file: {source_err}"),
-                ));
-            }
-        };
-        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
-            bytes.push(b'\n');
-        }
+        // Target: the seam's append-verbatim policy (existing bytes
+        // preserved, newline guard included).
         let mut moved = record.clone();
         mulch::assign_missing_id(&mut moved);
-        bytes.extend_from_slice(serde_json::to_string(&moved).unwrap_or_default().as_bytes());
-        bytes.push(b'\n');
-        std::fs::write(&target_file, bytes).map_err(|source_err| {
-            Failure::handled("move", format!("writing target domain file: {source_err}"))
-        })?;
+        let line = serde_json::to_string(&moved).unwrap_or_default();
+        store
+            .append_domain_line(target, &line)
+            .map_err(|source_err| {
+                Failure::handled("move", crate::output::chain_message(&source_err))
+            })?;
     }
 
     if opts.json {
@@ -291,7 +271,7 @@ fn incoming_references(
         let domain = file
             .file_stem()
             .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
-        let Ok(records) = read_strict(&file, true) else {
+        let Ok(records) = mulch::read_strict(&file, true) else {
             continue;
         };
         for line in records {

@@ -4,11 +4,11 @@
 use std::fmt::Write as _;
 use std::io::Read as _;
 
-use mulch::{ReadPolicy, id_key_field, record_id};
+use mulch::{id_key_field, record_id};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, RecordArgs};
-use crate::commands::{NO_STORE_MESSAGE, StoreLocation, locate, now_iso};
+use crate::commands::now_iso;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Builds the canonical JSONL object for the flag path (field order
@@ -247,22 +247,7 @@ fn evidence_map(args: &RecordArgs) -> Option<Map<String, Value>> {
 
 /// Runs `record`.
 pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("record", format!("resolving cwd: {source}")))?;
-    let mut store = match locate(&cwd) {
-        Ok(StoreLocation::Open(store)) => store,
-        Ok(_) => {
-            let mut failure = Failure::handled("record", NO_STORE_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
-        }
-        Err(source) => {
-            return Err(Failure::handled(
-                "record",
-                crate::output::chain_message(&source),
-            ));
-        }
-    };
+    let mut store = crate::commands::open_store("record", false)?;
 
     // Auto-create precedes validation AND dry-run (reference behavior:
     // the domain side effects happen even for dry-runs and failed
@@ -307,7 +292,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     // `readExpertiseFile`): malformed lines and unregistered types abort
     // before the write.
     let existing = store
-        .read_records(&args.domain, ReadPolicy::Strict)
+        .read_records(&args.domain, opts.allow_unknown_types)
         .map_err(|source| {
             Failure::handled_on_stderr("record", crate::commands::render_core_error(&source))
         })?;
@@ -438,7 +423,7 @@ fn stdin_batch(
     };
 
     let existing = store
-        .read_records(&args.domain, ReadPolicy::Strict)
+        .read_records(&args.domain, opts.allow_unknown_types)
         .map_err(|source| {
             Failure::handled_on_stderr("record", crate::commands::render_core_error(&source))
         })?;

@@ -38,6 +38,16 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// A store file could not be removed.
+    #[error("removing {path}")]
+    Remove {
+        /// The file that failed to be removed.
+        path:   PathBuf,
+        /// The underlying I/O failure.
+        #[source]
+        source: std::io::Error,
+    },
+
     /// `mulch.config.yaml` is not valid YAML or not a mapping.
     #[error("parsing config {path}")]
     ConfigParse {

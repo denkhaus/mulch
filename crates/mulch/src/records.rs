@@ -140,14 +140,23 @@ pub fn write_records(path: &Path, records: &[Value]) -> Result<()> {
     if records.is_empty() {
         body.clear();
     }
-    let temp = PathBuf::from(format!("{}.tmp", path.display()));
+    // A unique temp name (the reference uses a random suffix) so two
+    // writers never share a scratch file, with best-effort cleanup on a
+    // failed rename.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let temp = PathBuf::from(format!("{}.tmp.{unique:x}", path.display()));
     std::fs::write(&temp, body).map_err(|source| Error::Write {
         path: temp.clone(),
         source,
     })?;
-    std::fs::rename(&temp, path).map_err(|source| Error::Write {
-        path: path.to_path_buf(),
-        source,
+    std::fs::rename(&temp, path).map_err(|source| {
+        std::fs::remove_file(&temp).ok();
+        Error::Write {
+            path: path.to_path_buf(),
+            source,
+        }
     })
 }
 

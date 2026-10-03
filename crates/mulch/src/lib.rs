@@ -27,7 +27,7 @@ pub use records::{
     write_records,
 };
 pub use store::Store;
-pub use store_files::{Located, ReadPolicy, StoreFiles};
+pub use store_files::{StoreFiles, StoreLocation};
 
 /// The reference implementation this crate is read+write compatible with
 /// (README format-compatibility promise; ADR-0023 in denkhaus/fabro).

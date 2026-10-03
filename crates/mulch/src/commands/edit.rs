@@ -1,44 +1,29 @@
 //! `mulch edit <domain> <id>` — in-place field updates.
 
-use mulch::ReadPolicy;
 use serde_json::{Map, Value};
 
 use crate::cli::{EditArgs, GlobalOpts};
-use crate::commands::{NO_STORE_MESSAGE, StoreLocation, domain_not_found, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `edit`: updates fields in place (key positions preserved),
 /// appends files/relates_to/supersedes at line end, never recomputes
 /// the id, and succeeds as a no-op when no flags are given.
 pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("edit", format!("resolving cwd: {source}")))?;
-    let store = match locate(&cwd) {
-        Ok(StoreLocation::Open(store)) => store,
-        Ok(_) => {
-            let mut failure = Failure::handled("edit", NO_STORE_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
-        }
-        Err(source) => {
-            return Err(Failure::handled(
-                "edit",
-                crate::output::chain_message(&source),
-            ));
-        }
-    };
+    let store = crate::commands::open_store("edit", false)?;
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == &args.domain) {
-        let mut failure = domain_not_found("edit", &args.domain, &domains);
-        failure.envelope_to_stderr = true;
-        return Err(failure);
+        return Err(if opts.json {
+            crate::commands::domain_not_found_json("edit", &args.domain, &domains)
+        } else {
+            crate::commands::domain_not_found("edit", &args.domain, &domains)
+        });
     }
 
     // Strict read (reference `readExpertiseFile`): malformed lines and
     // unregistered types abort before the rewrite.
     let mut records = store
-        .read_records(&args.domain, ReadPolicy::Strict)
+        .read_records(&args.domain, opts.allow_unknown_types)
         .map_err(|source| {
             Failure::handled_on_stderr("edit", crate::commands::render_core_error(&source))
         })?;

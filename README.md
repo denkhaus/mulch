@@ -41,6 +41,10 @@ expectation (the parity rule: never silently):
   message as a handled error envelope (status-channel) or report the
   bad lines as `jsonl-integrity` findings. Expectation: same exit code
   1, clean text instead of a stack trace.
+- **`status` reports instead of crashing on a malformed or
+  unknown-type line** (the reference exits 1 with a runtime stack trace
+  and prints nothing): the reporting commands keep the per-line view,
+  the mutating commands abort (strict read).
 - **Malformed-line reasons carry serde's wording** (V8/JSC phrases
   differ); the `Malformed JSONL at <path>:<line>: <reason>. Line:
   <preview>` template and the 80-char preview are byte-identical.

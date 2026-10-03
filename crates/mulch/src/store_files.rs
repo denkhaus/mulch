@@ -29,7 +29,7 @@ use crate::records::{LineRecord, read_strict, write_records};
 
 /// Where a store lookup landed.
 #[derive(Debug)]
-pub enum Located {
+pub enum StoreLocation {
     /// `.mulch/` absent.
     Missing,
     /// `.mulch/` exists but `mulch.config.yaml` does not (the reference
@@ -39,15 +39,6 @@ pub enum Located {
     /// Config parsed; domain files are read per command with the
     /// declared policy.
     Open(StoreFiles),
-}
-
-/// Which read policy a command declares.
-#[derive(Clone, Copy, Debug)]
-pub enum ReadPolicy {
-    /// Skip malformed lines and tolerate unregistered types.
-    Lenient,
-    /// Fail on malformed lines and unregistered types.
-    Strict,
 }
 
 /// A `.mulch/` directory with its parsed config: the single owner of the
@@ -66,14 +57,14 @@ impl StoreFiles {
     /// [`Error::Read`] when the config exists but cannot be read,
     /// [`Error::ConfigParse`] / [`Error::UnsupportedVersion`] when it
     /// does not parse.
-    pub fn locate(project_root: &Path) -> Result<Located> {
+    pub fn locate(project_root: &Path) -> Result<StoreLocation> {
         let root = project_root.join(".mulch");
         if !root.is_dir() {
-            return Ok(Located::Missing);
+            return Ok(StoreLocation::Missing);
         }
         let config_path = root.join("mulch.config.yaml");
         if !config_path.is_file() {
-            return Ok(Located::NoConfig);
+            return Ok(StoreLocation::NoConfig);
         }
         let text = std::fs::read_to_string(&config_path).map_err(|source| Error::Read {
             path: config_path,
@@ -81,7 +72,7 @@ impl StoreFiles {
         })?;
         let config = Config::parse(&text)?;
         config.ensure_supported()?;
-        Ok(Located::Open(Self { root, config }))
+        Ok(StoreLocation::Open(Self { root, config }))
     }
 
     /// The `.mulch` directory.
@@ -106,11 +97,6 @@ impl StoreFiles {
     /// The live expertise file of a domain.
     pub fn domain_path(&self, domain: &str) -> PathBuf {
         self.root.join("expertise").join(format!("{domain}.jsonl"))
-    }
-
-    /// The archive file of a domain.
-    pub fn archive_path(&self, domain: &str) -> PathBuf {
-        self.root.join("archive").join(format!("{domain}.jsonl"))
     }
 
     /// Registers a domain: name validation, canonical config rewrite and
@@ -154,7 +140,7 @@ impl StoreFiles {
         self.remove_domain(domain)?;
         let path = self.domain_path(domain);
         if path.is_file() {
-            std::fs::remove_file(&path).map_err(|source| Error::Write { path, source })?;
+            std::fs::remove_file(&path).map_err(|source| Error::Remove { path, source })?;
         }
         Ok(())
     }
@@ -184,20 +170,36 @@ impl StoreFiles {
         }
     }
 
-    /// A domain's records under the declared policy.
+    /// A domain's records, STRICT (the reference `readExpertiseFile`):
+    /// unparsable lines and unregistered types are typed errors, so a
+    /// caller never mutates a store it could not read. `allow_unknown`
+    /// is the CLI's `--allow-unknown-types` escape hatch (worktree/CI
+    /// lag): it tolerates unregistered types but never malformed lines.
     ///
     /// # Errors
     ///
-    /// [`Error::MalformedLine`] / [`Error::UnknownRecordType`] under
-    /// [`ReadPolicy::Strict`]; [`Error::Read`] for I/O failures.
-    pub fn read_records(&self, domain: &str, policy: ReadPolicy) -> Result<Vec<LineRecord>> {
+    /// [`Error::MalformedLine`] / [`Error::UnknownRecordType`] for bad
+    /// lines, [`Error::Read`] for I/O failures.
+    pub fn read_records(&self, domain: &str, allow_unknown: bool) -> Result<Vec<LineRecord>> {
+        read_strict(&self.domain_path(domain), allow_unknown)
+    }
+
+    /// A domain file's modification time (a read need the reporting
+    /// commands have; `None` when the file does not exist).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Read`] when the file exists but its metadata cannot be
+    /// read.
+    pub fn domain_modified(&self, domain: &str) -> Result<Option<std::time::SystemTime>> {
         let path = self.domain_path(domain);
-        match policy {
-            ReadPolicy::Strict => read_strict(&path, false),
-            ReadPolicy::Lenient => Ok(read_strict(&path, true)?
-                .into_iter()
-                .filter(|line| serde_json::from_value::<Value>(line.record.clone()).is_ok())
-                .collect()),
+        match std::fs::metadata(&path) {
+            Ok(metadata) => metadata
+                .modified()
+                .map(Some)
+                .map_err(|source| Error::Read { path, source }),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(Error::Read { path, source }),
         }
     }
 

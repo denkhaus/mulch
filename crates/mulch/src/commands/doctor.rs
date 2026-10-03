@@ -9,7 +9,6 @@ use serde_json::{Map, Value};
 use crate::cli::GlobalOpts;
 use crate::commands::schema::doctor_detail;
 use crate::commands::stale::StaleRule;
-use crate::commands::{StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One check result.
@@ -57,13 +56,16 @@ struct DomainLines {
 /// `--fix` appends its fixes after the report; the exit code reflects
 /// the PRE-fix check pass (reference contract).
 pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
+    // doctor owns its no-store contract: the reference still prints the
+    // report shape (header + summary on stdout, the failed config check
+    // on stderr) instead of a plain handled error.
     let cwd = std::env::current_dir()
         .map_err(|source| Failure::handled("doctor", format!("resolving cwd: {source}")))?;
-    let store = match locate(&cwd) {
-        Ok(StoreLocation::Missing | StoreLocation::NoConfig) => {
+    let store = match mulch::StoreFiles::locate(&cwd) {
+        Ok(mulch::StoreLocation::Open(store)) => store,
+        Ok(mulch::StoreLocation::Missing | mulch::StoreLocation::NoConfig) => {
             return Err(no_store_report(opts));
         }
-        Ok(StoreLocation::Open(store)) => store,
         Err(source) => {
             return Err(Failure::handled(
                 "doctor",
@@ -552,14 +554,17 @@ fn apply_fixes(
         }
 
         if kept.len() != live.len() {
-            let empty = if kept.is_empty() {
-                String::new()
-            } else {
-                format!("{}\n", kept.join("\n"))
-            };
-            std::fs::write(&file, empty).map_err(|source| {
-                Failure::handled("doctor", format!("writing {}: {source}", file.display()))
-            })?;
+            // The repair rewrites through the seam's compact writer (the
+            // reference model), not through raw lines.
+            let survivors: Vec<Value> = kept
+                .iter()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .collect();
+            store
+                .rewrite_domain(&domain.domain, &survivors)
+                .map_err(|source| {
+                    Failure::handled("doctor", crate::output::chain_message(&source))
+                })?;
             if stale_pruned > 0 {
                 fixes.push(format!(
                     "Pruned {stale_pruned} stale record(s) from {}",

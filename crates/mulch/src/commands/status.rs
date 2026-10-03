@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::Path;
 
 use jiff::Timestamp;
 use mulch::Record;
@@ -10,7 +9,6 @@ use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
 use crate::commands::stale::StaleRule;
-use crate::commands::{NO_CONFIG_MESSAGE, NO_STORE_MESSAGE, StoreLocation, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Record types in the reference's fixed distribution order.
@@ -28,23 +26,7 @@ const CLASSIFICATIONS: [&str; 3] = ["foundational", "tactical", "observational"]
 
 /// Runs `status` against the store at the current directory.
 pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("status", format!("resolving cwd: {source}")))?;
-    let store = match locate(&cwd) {
-        Ok(StoreLocation::Missing) => {
-            return Err(no_store("status", opts.json));
-        }
-        Ok(StoreLocation::NoConfig) => {
-            return Err(no_config("status", opts.json));
-        }
-        Ok(StoreLocation::Open(store)) => store,
-        Err(source) => {
-            return Err(Failure::handled(
-                "status",
-                crate::output::chain_message(&source),
-            ));
-        }
-    };
+    let store = crate::commands::open_store("status", false)?;
 
     let governance = store.config().governance().ok().flatten();
     let shelf_life = store.config().shelf_life().ok().flatten();
@@ -54,8 +36,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let mut domain_lines = Vec::new();
     let mut domains_json = Vec::new();
     for domain in store.domains() {
-        let file = store.domain_path(&domain);
-        let (records, mtime) = read_domain(&file);
+        let (records, mtime) = read_domain(&store, &domain)?;
         let status = DomainStatus::compute(&domain, &records, mtime, now, &rule);
 
         domain_lines.push(status.plain_line(now));
@@ -205,25 +186,26 @@ impl DomainStatus {
     }
 }
 
-/// Reads a domain file leniently: every parseable line counts as a
-/// record, malformed lines are skipped (status never fails on them).
-fn read_domain(file: &Path) -> (Vec<Record>, Option<Timestamp>) {
-    let text = std::fs::read_to_string(file).unwrap_or_default();
-    let records = text
-        .lines()
+/// Reads a domain's records for reporting: every parseable line counts,
+/// malformed lines are skipped (status never fails on them). The seam
+/// supplies the raw lines and the modification time.
+fn read_domain(
+    store: &mulch::StoreFiles,
+    domain: &str,
+) -> Result<(Vec<Record>, Option<Timestamp>), Failure> {
+    let lines = store
+        .read_lines(domain)
+        .map_err(|source| Failure::handled("status", crate::output::chain_message(&source)))?;
+    let records = lines
+        .iter()
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| Record::parse(line).ok())
         .collect();
-    let mtime = std::fs::metadata(file)
-        .and_then(|meta| meta.modified())
-        .ok()
+    let mtime = store
+        .domain_modified(domain)
+        .map_err(|source| Failure::handled("status", crate::output::chain_message(&source)))?
         .and_then(|time| Timestamp::try_from(time).ok());
-    (records, mtime)
-}
-
-/// The record's classification, defaulting like the reference writer.
-fn classification_of(record: &Record) -> &str {
-    record.classification().unwrap_or("tactical")
+    Ok((records, mtime))
 }
 
 /// Parses an ISO-8601 timestamp with `Z` offset.
@@ -232,6 +214,11 @@ fn parse_timestamp(raw: Option<&str>) -> Result<Option<Timestamp>, jiff::Error> 
         None => Ok(None),
         Some(text) => text.parse::<Timestamp>().map(Some),
     }
+}
+
+/// The record's classification, defaulting like the reference writer.
+fn classification_of(record: &Record) -> &str {
+    record.classification().unwrap_or("tactical")
 }
 
 /// Relative-time rendering ("just now", "2m ago", "3h ago", "4d ago").
@@ -296,19 +283,4 @@ fn shelf_life_json(shelf: Option<&mulch::ShelfLife>) -> Value {
 /// JSON number helper.
 fn json_num(value: u64) -> Value {
     Value::from(value)
-}
-
-/// The handled no-store failure (envelope on STDERR, exit 1).
-fn no_store(command: &str, json: bool) -> Failure {
-    let mut failure = Failure::handled(command, NO_STORE_MESSAGE);
-    failure.envelope_to_stderr = json;
-    failure
-}
-
-/// The no-config failure (clean rendering of the reference's crash
-/// path — README DEVIATIONS).
-fn no_config(command: &str, json: bool) -> Failure {
-    let mut failure = Failure::handled(command, NO_CONFIG_MESSAGE);
-    failure.envelope_to_stderr = json;
-    failure
 }

@@ -1,10 +1,9 @@
 //! `mulch outcome <domain> <id>` — append an outcome entry.
 
-use mulch::ReadPolicy;
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, OutcomeFlags};
-use crate::commands::{NO_STORE_MESSAGE, StoreLocation, locate, now_iso};
+use crate::commands::now_iso;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `outcome`: appends `{status, recorded_at, duration?, agent?,
@@ -16,36 +15,19 @@ pub(super) fn run(
     id: &str,
     flags: &OutcomeFlags,
 ) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("outcome", format!("resolving cwd: {source}")))?;
-    let store = match locate(&cwd) {
-        Ok(StoreLocation::Open(store)) => store,
-        Ok(_) => {
-            let mut failure = Failure::handled("outcome", NO_STORE_MESSAGE);
-            failure.envelope_to_stderr = true;
-            return Err(failure);
-        }
-        Err(source) => {
-            return Err(Failure::handled(
-                "outcome",
-                crate::output::chain_message(&source),
-            ));
-        }
-    };
+    let store = crate::commands::open_store("outcome", false)?;
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {
-        let list = domains.join(", ");
-        return Err(Failure::handled(
-            "outcome",
-            format!("domain \"{domain}\" not found in config.\nAvailable domains: {list}"),
-        ));
+        return Err(if opts.json {
+            crate::commands::domain_not_found_json("outcome", domain, &domains)
+        } else {
+            crate::commands::domain_not_found("outcome", domain, &domains)
+        });
     }
 
-    // Strict read (reference `readExpertiseFile`): malformed lines and
-    // unregistered types abort before the rewrite.
     let mut records = store
-        .read_records(domain, ReadPolicy::Strict)
+        .read_records(domain, opts.allow_unknown_types)
         .map_err(|source| {
             Failure::handled_on_stderr("outcome", crate::commands::render_core_error(&source))
         })?;
