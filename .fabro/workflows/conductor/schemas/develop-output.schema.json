@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Conductor develop-leg routing output (fabro-3196)",
+  "description": "Replaces output_schema=\"routing\" on the conductor develop node (fabro-017f / fabro-9ec3 arm 3 teeth pattern). Keeps the routing contract (required routing fields, preferred_next_label restricted to the develop node's five outgoing labels) and adds pass continuity: a routing that hands off to the revise leg ('Develop integrated' or 'Gate stuck \u2014 revise anyway') FAILS validation unless context_updates.child_run_id is a non-empty string. Basis: run 01M2X6AT3V4CPSJC08SMCVB172 (2026-09-19) omitted it on the gate-stuck arm, the revise leg failed pass continuity, and run 01M2X6EC95G76YFNF1YTCJZG7P went unreviewed. context_updates stays otherwise open (journal, ...) exactly like the routing kind did.",
+  "type": "object",
+  "required": [
+    "outcome",
+    "preferred_next_label"
+  ],
+  "properties": {
+    "outcome": {
+      "type": "string"
+    },
+    "preferred_next_label": {
+      "type": "string",
+      "enum": [
+        "Develop integrated",
+        "Gate stuck — revise anyway",
+        "Tracker empty",
+        "Develop child failed",
+        "Needs operator"
+      ]
+    },
+    "failure_reason": {
+      "type": "string"
+    },
+    "suggested_next_ids": {
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "context_updates": {
+      "type": "object",
+      "properties": {
+        "child_run_id": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "preferred_next_label": {
+            "enum": [
+              "Develop integrated",
+              "Gate stuck — revise anyway"
+            ]
+          }
+        },
+        "required": [
+          "preferred_next_label"
+        ]
+      },
+      "then": {
+        "required": [
+          "context_updates"
+        ],
+        "properties": {
+          "context_updates": {
+            "required": [
+              "child_run_id"
+            ],
+            "properties": {
+              "child_run_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

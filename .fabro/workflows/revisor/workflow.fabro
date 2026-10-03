@@ -1,0 +1,166 @@
+digraph Revisor {
+    graph [
+        goal="Improve the develop workflow from run evidence: inspect the freshest unrevised run via Ask-Fabro (ADR-0015: one revision per invocation, newest-first, stale-evidence runs skipped), distill actionable seeds with a basis line, file them for develop to implement",
+        // ADR-0011 / fabro-7461: the capability grant, named neutrally —
+        // this workflow inspects the journaled workflows' runs (read-only enumeration +
+        // Ask-Fabro authority). Enforced at token, tool, and server layers.
+        x.inspects="conductor,develop",
+        rankdir=LR,
+        max_node_visits=30,
+        // Same posture as develop (fabro-45d0 measured there): bounded
+        // preambles, deterministic cycle counters.
+        x.preamble_budget_kb=24,
+    ]
+
+    start [shape=Mdiamond, label="Start"]
+    // Exit kinds (fabro-b907, ADR-0010): soft -> next pass re-enters.
+    // ADR-0015 v2 removed the approval gate: natural completion = the
+    // pass budget is exhausted after filing, merged by the host-side
+    // integrate step (run_workflow.nu PR + auto-merge) — identical to
+    // develop's merge path, no human in the loop.
+    exit  [shape=Msquare, label="Exit"]
+
+    // Select (ADR-0015 v2): pick the NEWEST revisable develop run —
+    // revisable = terminal, live sandbox, and workflow_version_id equal
+    // to the newest run's version (stale-evidence runs are skipped so
+    // outdated workflow definitions cannot produce outdated seeds).
+    // Markers are merged .fabro/revisions/<run-id>.md files — absence on
+    // this branch means unrevised. ONE run per pass; the invocation ends
+    // after the first filed revision (budget constant on the file edges).
+    // Read-only node: fs_write empty, product code and tracker hidden;
+    // fabro_run_search is the only fabro tool it needs.
+    select [
+        label="Select",
+        prompt="@prompts/select.md",
+        output_schema="routing",
+        output_retries=2,
+        retry_policy="standard",
+        reasoning_effort="low",
+        // 2026-09-03 grilling: per-node cap removed — graph max_node_visits=30
+        // bounds every node; node caps only bind earlier and killed the fork at
+        // cycle 11 (fabro-8fb5). AGENTS.md is product-world noise here — but project_memory is INERT
+        // for agent nodes until fabro-9588 threads it into AgentSession;
+        // kept as the declared intent.
+        project_memory=false,
+        x.preamble_stages_ignore="select,analyze,file",
+        x.fs_hide="lib/**,apps/**,docs/**,.seeds/**",
+        x.fs_write="",
+        x.fabro_tools="fabro_run_search",
+        // Read window (e47c pattern): selection re-derives from the run
+        // list every pass — stale target keys from the previous cycle
+        // must not render. journal is the ONLY input: the prior selector's
+        // observations (blocked-backlog counts, skipped non-terminal runs)
+        // are the continuity this loop-closing stage needs.
+        x.preamble_allow_keys="journal",
+        // context_allow_keys also gates this node's OWN context writes
+        // (enforce_stage_envelope): without the version key here, select's
+        // revisor_target_workflow_version write was dropped with a
+        // context_update_dropped notice and the basis lines degraded to
+        // "absent" (cycle 1, 2026-09-05).
+        x.context_allow_keys="revisor_target_run_id,revisor_target_title,revisor_target_status,revisor_target_wall,revisor_target_workflow_version,journal"
+    ]
+
+    // Analyze: the intellectual core. ONE fabro_ask call with the proven
+    // improve.md question verbatim (no untested prompt — ramp fork 4),
+    // grounded at the selected run. The answer is persisted in the manual
+    // review shape so the artifact stays diff-compatible with
+    // run_workflow.nu output. Writes are limited to the reviews tree;
+    // the analyst distills revision_findings (seed candidates) as a
+    // context key for the bookkeeper.
+    analyze [
+        label="Analyze",
+        prompt="@prompts/analyze.md",
+        output_schema="routing",
+        output_retries=2,
+        retry_policy="standard",
+        reasoning_effort="high",
+        // 2026-09-03 grilling: cap removed (see select), AGENTS.md hidden —
+        // self-contained prompt; inert until fabro-9588 (see select).
+        project_memory=false,
+        x.preamble_stages_ignore="select,analyze,file",
+        x.fs_hide="lib/**,apps/**,docs/**,.seeds/**",
+        x.fs_write=".fabro/reviews/**",
+        x.fabro_tools="fabro_ask",
+        // Read window: the CURRENT target trio (+wall) and journal;
+        // revision_findings stays out — a previous cycle's findings are
+        // stale, analyze re-emits fresh ones. journal stays: the prior
+        // analyst's observations carried real threads across cycles
+        // (the d810 cross-world blocker surfaced twice this way).
+        x.preamble_allow_keys="revisor_target_run_id,revisor_target_title,revisor_target_status,revisor_target_wall,revisor_target_workflow_version,journal",
+        x.context_allow_keys="revision_findings,journal"
+    ]
+
+    // File: deterministic bookkeeping. seeds create per finding (English
+    // seeds, one change each), the revision report doubles as the
+    // bookkeeping marker (.fabro/revisions/<run-id>.md — no marker on the
+    // base branch = run not yet revised), then git add+commit of exactly
+    // the artifact paths via shell. The run-scope gate rule (a9bb step 2)
+    // mechanically blocks any workflow-asset touch from this run too —
+    // the revisor never changes code or its own definition.
+    file [
+        label="File",
+        prompt="@prompts/file.md",
+        output_schema="routing",
+        output_retries=2,
+        retry_policy="standard",
+        reasoning_effort="low",
+        // 2026-09-03 grilling: cap removed (see select), AGENTS.md hidden —
+        // bookkeeping needs no repo memory; inert until fabro-9588.
+        project_memory=false,
+        x.preamble_stages_ignore="select,analyze,file",
+        // Filing writes the tracker through the shell (the documented
+        // escape hatch), but petri's checkpoint envelope judges the
+        // staged set, not the tool: the tracker file is admitted
+        // explicitly and leaves the hide list (a write glob under
+        // fs_hide is denied as hidden); the write-allowlist stays the
+        // artifact trees plus exactly the tracker file.
+        x.fs_hide="lib/**,apps/**,docs/**",
+        x.fs_write=".seeds/issues.jsonl,.fabro/revisions/**",
+        x.fabro_tools="",
+        // Read window: current target + current findings ONLY. Filing,
+        // marker, and commit need no journal history — prior-pass
+        // observations serve select/analyze continuity, not bookkeeping
+        // (2026-09-02 preamble review). The node's own filed_seed_ids
+        // never render back either (stale on loops); its journal EMISSION
+        // is unaffected (that is the write side, context_allow_keys).
+        x.preamble_allow_keys="revisor_target_run_id,revisor_target_title,revisor_target_status,revisor_target_workflow_version,revision_findings",
+        x.context_allow_keys="filed_seed_ids,journal"
+    ]
+
+    start -> select
+
+    // Tracker-clean analog of develop's "Tracker empty": a plain natural
+    // completion, not an error.
+    select -> exit [label="Nothing to revise", condition="preferred_label=\"Nothing to revise\""]
+    // Selector tool failure is transient (server/tool hiccup): soft exit,
+    // the pass retries next invocation. Same convention as the analyze/file
+    // failure edges (reviewer spec finding 3, 2026-09-02).
+    select -> exit [x.kind="soft", label="Selector failed (next pass retries)", condition="outcome=failed"]
+    select -> analyze [label="Run selected"]
+
+    // A zero-finding analysis is a legitimate outcome: file writes the
+    // marker-only revision (healthy run, no seeds).
+    analyze -> file [label="Findings ready", condition="outcome=succeeded"]
+    // Ask-Fabro hiccup (session creation, analyst failure): soft exit —
+    // the run stays unrevised, the next pass retries it.
+    analyze -> exit [x.kind="soft", label="Ask failed (next pass retries)"]
+
+    // ADR-0015 v2: no HITL gate. One revision per invocation by default —
+    // the engine's own node generations count select passes (every
+    // back-edge re-entry increments nodes.select.generation; the revisor
+    // is one-target-per-run, so per-run counts equal the legacy
+    // reset-per-target seed_cycles). Edges are mutually exclusive (matched
+    // condition edges can be picked nondeterministically when several
+    // match): failed -> soft exit; budget exhausted -> natural exit
+    // (merges via the normal PR + auto-merge path, identical to develop);
+    // budget remaining -> next pass. Raising the budget is currently the
+    // N in "nodes.select.generation >= N" / "< N"; an engine graph
+    // attribute can replace them later.
+    file -> exit [x.kind="soft", label="Bookkeeping failed (nothing merged)", condition="outcome=failed"]
+    file -> exit [label="Pass complete (budget)", condition="outcome=succeeded && nodes.select.generation >= 1"]
+    file -> select [label="Continue backlog", condition="outcome=succeeded && nodes.select.generation < 1"]
+    // Unconditional safety net (validator rule all_conditional_edges):
+    // an outcome shape none of the edges above matched routes as a soft
+    // exit — nothing merges, the next invocation retries the run.
+    file -> exit [x.kind="soft", label="Unrouted outcome (soft retry)"]
+}

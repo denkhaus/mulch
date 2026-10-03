@@ -1,0 +1,604 @@
+digraph Develop {
+    graph [
+        goal="Develop the project one seed per run: claim the next open seed, implement, gate, review, exit",
+        // fabro-06e0: credential-less in-flight PR guard — the planner
+        // reads run-linked PR state through the inspects-scoped
+        // fabro_run_search tool (server-side GitHub client), never gh.
+        x.inspects="develop",
+        rankdir=LR,
+        // fabro-0e11: legal blocking fabro_run_wait (60m) and long gate shells
+        // must not trip the default 1800s stall watchdog.
+        stall_timeout="63m",
+        max_node_visits=40,
+        // 24 KB (was 12): the reviewer's context usage peaked at 1.9% of
+        // the 1M window while a 14 KB evidence capture got blob-ref'd,
+        // forcing a tool round-trip per review. The window is not the
+        // constraint; the blob detour is (first auto-merge run review).
+        // Gate measurement (run 01M11P68SHF, fabro-29f7 step 3): with
+        // scoping + budget, stage.prompt sizes stayed CONSTANT across 3
+        // review cycles (planner 12.7-13.0k, implementer 13.2-13.5k,
+        // reviewer 12.8-13.7k chars) — the old linear growth (25.6k by
+        // cycle 3) is gone. Residual duplication (per-visit stage
+        // sections) is engine-side dedup work, not a budget problem.
+        // 48 KB (was 24) per fabro-1e9f: per-seed claim-base captures
+        // (~18 KB) must render inline, zero blob detours — compounding
+        // was fixed by claim-base diffing, the raise keeps the whole
+        // per-seed capture readable without a blob round-trip.
+        x.preamble_budget_kb=48,
+        // Deterministic cycle guards (fabro-45d0, petri rework in
+        // fabro-96c6): the engine's own node generations count loop
+        // visits — every back-edge re-entry increments
+        // nodes.<id>.generation, so the guard edges read them directly.
+        // Develop is one-seed-per-run, so per-run counts equal the legacy
+        // per-seed seed_cycles. The planner cannot read generations
+        // (expressions only) and needs none: the guards are graph-side,
+        // no model compliance involved.
+    ]
+
+    start [shape=Mdiamond, label="Start"]
+    // Exit kinds (fabro-b907, ADR-0010): distinct soft exits classify the
+    // terminal event — deadlock -> FailureReason::Deadlock (work preserved:
+    // seeds stay open, commits pushed; a human decides), soft -> SoftStop
+    // (infrastructure hiccup; the next run re-enters). Natural completion
+    // and hard errors stay on the untyped exit.
+    exit  [shape=Msquare, label="Exit"]
+
+    // Tracker guard (fabro-0da8): deterministic drained-tracker terminal
+    // check AFTER start, BEFORE the preflight and planner — proves tracker
+    // state in ~1-3 s of shell (seeds list open + in_progress, both
+    // `--assignee fabro --limit 200`) so the drained-tracker case costs
+    // ZERO planner tokens. Basis (run 01M0SFEYVC9TD6MP816RHEBFQY):
+    // planner@1 spent 27.7s / $0.0186 solely to discover 0 open seeds.
+    // Both lists empty -> routes the existing "Tracker empty" label
+    // contract (declared on the planner's exit edge below) straight to
+    // the exit; either non-empty or ANY seeds failure -> fail-open to the
+    // preflight/planner unchanged (never parks, never fails the run).
+    // The node produces no context value — nothing downstream needs one.
+    // Stale-claim requeue arm (fabro-d9f7): in_progress fabro seeds with
+    // no live claiming develop run older than the stale threshold
+    // (default 6h, FABRO_GUARD_STALE_HOURS) are reset to open here —
+    // requeued ids land in the stdout JSON's `requeued` array; the
+    // routing semantics are unchanged. internal.run_id on stdin gives
+    // the arm its self-run exclusion.
+    tracker_guard [
+        label="Tracker guard: empty-tracker fast exit + stale-claim requeue",
+        shape=parallelogram,
+        script="nu .fabro/workflows/develop/scripts/tracker-guard.nu",
+        output_schema="routing",
+        stdin_source="internal.run_id",
+        timeout="30s",
+        max_retries=0
+    ]
+
+    // Planner preflight: deterministic already-landed REPORT (fabro-a32f,
+    // report-only redesign fabro-83df, 2026-09-19). Runs BEFORE the
+    // planner LLM lap over the top `seeds ready --assignee fabro`
+    // candidates, grepping the merge-target base history via
+    // .fabro/scripts/dup-run-check.nu (filed-only revisor commits never
+    // count; Fabro-Run trailer identity; landed true-merge or squash
+    // `(#n)` commits count). Motivation (run 01M2Q2Q2NY211PVV0E44YDAAQN,
+    // PR #207): the planner re-derived a sub-second greppable fact
+    // (manual fix commit vs stale tracker row) across three probe rounds
+    // — 93.6s / $0.143. The script closes NOTHING and never exits early:
+    // it hands the per-candidate verdict table to the planner inline
+    // (`output.preflight`), and the planner's ALREADY LANDED arm (the
+    // fabro-d183 two-branch rule) owns the decision AND the closure —
+    // every close stays review-protected, and a deliberately reopened
+    // seed can no longer be mechanically re-closed by a subject match
+    // (incident 2026-09-19: fabro-29f7/fabro-6a78 auto-closed off
+    // reopen/verify commits, fabro-395b). Fail-open on every internal
+    // error (fetch/tracker/empty list): the unconditional edge routes
+    // the planner normally with the degraded mode recorded.
+    // gatebounce command-node idiom: output_schema="routing" lets the
+    // script emit preferred_next_label mechanically. Narrows, does not
+    // close, open fabro-a01f (claim race).
+    preflight [
+        label="Planner preflight: already-landed check",
+        shape=parallelogram,
+        script="nu .fabro/workflows/develop/scripts/planner-preflight.nu",
+        // The engine pipes the invoking run id (closure notes + --self
+        // closure identity in dup-run-check) through stdin.
+        stdin_source="internal.run_id",
+        output_schema="routing",
+        // fabro-900e producer declaration: declares `output.preflight`
+        // (the per-candidate verdict table rendered into the planner's
+        // ## Context).
+        x.context_allow_keys="output.preflight",
+        timeout="2m",
+        max_retries=1
+    ]
+
+    // Planner: reads the seeds tracker, handles the last review verdict,
+    // decides what is implemented next and hands a brief to the implementer.
+    //
+    // x.preamble_stages_ignore="planner,implementer,evidence": the planner
+    // keeps ONLY the tester and reviewer history sections — they are the
+    // cycle counters (3x review verdict / 3x gate-red => Blocked, see the
+    // prompt's cycle guards). Seed brief and review verdict arrive as
+    // context keys; the implementer's response and the evidence capture
+    // are not planning inputs.
+    planner [
+        label="Planner",
+        prompt="@prompts/planner.md",
+        // fabro-9ec3 arm 3 (fabro-017f teeth pattern): a JSON schema
+        // replaces the bare "routing" kind — it keeps the routing contract
+        // (required routing fields; preferred_next_label enum = this
+        // node's outgoing edge labels, matching the engine's
+        // routable_edge_labels) and additionally bans gate commands in
+        // context_updates.current_seed_brief: a brief naming `just
+        // qualitygate` or its byte-equivalent body (`nu
+        // scripts/qualitygate.nu`) fails validation and burns one of
+        // output_retries — never passes silently.
+        // fabro-0a4c: engine now merges file-schema context_updates into
+        // run context and applies routing fields exactly like the built-in
+        // routing kind, so the file schema is safe again (hotfix reverted
+        // it 2026-09-17 after run 01M2RJSBP8XS ran the implementer blind).
+        // The prompt-side gate-command hard rule in planner.md STAYS as
+        // defense in depth: the schema bans the gate command in
+        // current_seed_brief, the prompt bans running it outright.
+        output_schema="@schemas/planner-output.schema.json",
+        output_retries=2,
+        max_visits=20,
+        // NO goal_gate (fabro-92e2, 2026-09-19): the deterministic guard
+        // exits (tracker_guard -> exit) legitimately bypass the planner,
+        // and the gate made those runs die with "goal gate unsatisfied
+        // for node planner". Edge topology already forces planner-first
+        // on every non-deterministic path, so the gate protected nothing
+        // that routing does not already enforce.
+        retry_policy="standard",
+        // fabro-bbbb: reasoning_effort dropped high -> low. Basis: run
+        // 01M1XZCWNBR33BZGHQXNRA80J9 measured the planner at 83.6s wall
+        // = 40% of run, $0.080 = 45% of cost, 4,469 of 5,899 reasoning
+        // tokens — mostly tie-breaking two High seeds. `seeds ready
+        // --assignee fabro` is deterministic since fabro-5e09 (PR #38),
+        // removing the tie-break reasoning load that justified high.
+        // Static low for ALL planner passes including changes_requested
+        // re-plans: the engine resolves reasoning_effort as a static node
+        // attribute (no visit-conditional override exists), so per-visit
+        // conditional effort is unavailable; re-plan quality is preserved
+        // by the prompt's mechanical folding of review_feedback into
+        // current_seed_brief (brief-folding, not ambiguity resolution).
+        reasoning_effort="low",
+        x.preamble_stages_ignore="planner,implementer,evidence",
+        // fabro-699f (consumed inputs): the planner is the consumer of
+        // review_verdict/review_feedback (folded into the brief) and of a
+        // stale implementation_summary — the engine removes them from the
+        // durable context after the planner records, so later cycles'
+        // preambles never re-render stale values.
+        x.context_consume_keys="review_verdict,review_feedback,implementation_summary",
+        // fabro-1dae (stage envelope fs scope): planning never touches
+        // loop assets by FILE tools — but the tracker CLI claim mutates
+        // the working tree, and petri's checkpoint envelope judges the
+        // staged set, not the tool: the claim write is admitted here
+        // explicitly. A write glob under fs_hide is denied as hidden,
+        // so the tracker file leaves the hide list; every other loop
+        // asset stays hidden and writes stay pinned to the tracker file.
+        x.fs_hide=".fabro/**,.mulch/**,.agents/**,scripts/**,justfile",
+        x.fs_write=".seeds/issues.jsonl",
+        // fabro-900e (envelope write side): the planner's context_updates
+        // contract is stable — declare it so the preamble_allow_keys lint
+        // (fabro-e47c) can prove producers, and drift (an undocumented new
+        // key) drops visibly with a notice instead of leaking silently.
+        x.context_allow_keys="current_seed_id,current_seed_title,current_seed_brief,review_verdict,journal",
+        // fabro-06e0: in-flight PR check surface — read-only enumeration
+        // of develop runs incl. linked PR live state (open/closed/merged).
+        // seeds-a0fa: fabro_ask — read-only Q&A with the referenced run's
+        // analyst for unfamiliar fabro platform semantics (see planner.md).
+        x.fabro_tools="fabro_run_search,fabro_ask"
+    ]
+
+    // Implementer: builds exactly what the claimed seed specifies.
+    //
+    // x.preamble_stages_ignore="planner,reviewer,implementer": the brief and
+    // review feedback arrive as context keys; the implementer keeps the
+    // tester section (gate log on gate-red bounces) and the evidence
+    // section, and can always re-run the gate itself (it has tools).
+    // reasoning_effort="low": run 01M0T9B7T6 measured 8.2k reasoning
+    // tokens / 203s / $0.213 of $0.35 total for a fully-resolved brief.
+    // The planner (reasoning high) does the ambiguity resolution; the
+    // implementer executes a checkable bullet list — low effort keeps the
+    // PASS/FAIL report quality (proven across runs) at a fraction of the
+    // cost. glm-5.3 does not reliably honor medium on this call path.
+    implementer [
+        label="Implementer",
+        prompt="@prompts/implementer.md",
+        // fabro-f84f: opt into vendored-skill discovery — the
+        // session loads `.fabro/skills` (rust-style-guide and
+        // friends) through the UseSkill tool.
+        x.skills="discover",
+        output_schema="routing",
+        output_retries=2,
+        max_visits=10,
+        fidelity="summary:high",
+        reasoning_effort="low",
+        retry_policy="standard",
+        x.preamble_stages_ignore="planner,reviewer,implementer",
+        // fabro-699f: repeated tester/evidence visits across gate-bounce
+        // cycles collapse to their LATEST visit — one section per stage
+        // instead of one per cycle (render-only; history stays intact).
+        x.preamble_stages_latest_only=true,
+        // fabro-269d (fabro-47b5 adoption, user decision 2026-09-17 GO):
+        // per-node tool allow-list — exactly what this prompt demonstrably
+        // uses: the file tools, the shell (loop-asset escape hatch, just/seeds/
+        // ml/nu), and use_skill (x.skills="discover" loads the vendored style
+        // guide through it). spawn_agent, the web tools, and the fabro-run
+        // catalog are denied mechanically by the same list (question tools
+        // stay exempt engine-side). Restricting, never extending (ADR-0019).
+        x.tools="read_file,write_file,edit_file,glob,grep,shell,use_skill",
+        // seeds-a0fa: the one deliberate opt-in is fabro_ask — read-only
+        // Q&A with the referenced run's analyst for unfamiliar fabro
+        // platform semantics (see implementer.md). Every other fabro-run
+        // tool stays off the list; the explicit opt-in records the intent.
+        x.fabro_tools="fabro_ask",
+        // fabro-e47c pattern, closed on the implementer 2026-09-03: the ##
+        // Context section is a strict input contract — the seed trio the
+        // prompt names (review feedback rides INSIDE the brief the planner
+        // writes; gate log arrives via the kept tester SECTION, not a key)
+        // plus fabro-56f4's `output.gatebounce` — INLINE known-bug
+        // seed bodies matched deterministically from the gate failure tail
+        // on a red bounce (absent on first visits and green runs; additive
+        // enrichment, never a blob ref). Deliberately OUT: `journal` and
+        // `implementation_summary` (the implementer's OWN outputs echoing
+        // back), review_verdict (planner input) — and with them the planner's painpoints, which never were
+        // implementer inputs (stage_ignore alone cannot filter ## Context).
+        x.preamble_allow_keys="current_seed_id,current_seed_title,current_seed_brief,output.gatebounce",
+        // fabro-1dae (petri checkpoint semantics): the shell is the loop-
+        // asset escape hatch (just/seeds/ml/nu) and the checkpoint envelope
+        // judges the staged working-tree set, not the tool — the mulch
+        // CLI's expertise writes must be admitted explicitly. .mulch
+        // leaves the hide list (a write glob under fs_hide is denied as
+        // hidden; implementer envelope violation on the seeds-parity
+        // expertise write). fs_write stays UNSET — an explicit list
+        // would pin writes to the list alone and deny the PRODUCT writes
+        // (the implementer's whole job; a pinned .mulch-only list killed
+        // the next pass the same way). Unset + narrowed hide = hidden
+        // paths stay denied, every product path stays writable; the
+        // tracker stays hidden (the closeout command stage owns the seed
+        // write) and seed work may legitimately touch files outside
+        // the primary code areas (README,
+        // fixtures). Gate
+        // re-runs keep working through the shell escape hatch.
+        x.fs_hide=".fabro/**,.seeds/**,.agents/**,scripts/**,justfile",
+                // fabro-900e: stable context_updates contract (see planner).
+        // lesson_capture (run 01M1EGK6J8): the
+        // implementer prompt REQUIRES the mx-id-or-skip answer as data —
+        // the envelope dropped it once (visible notice) until declared here.
+        x.context_allow_keys="implementation_summary,lesson_capture,journal"
+    ]
+
+    // Tester: deterministic quality gate, no agent. The host project defines
+    // the gate as a `qualitygate` recipe in its justfile; the workflow stays
+    // agnostic about what the gate checks.
+    tester [
+        label="Quality Gate",
+        shape=parallelogram,
+        script="just qualitygate",
+        // 20m: the touched-crates gate
+        // measures ~15m worst-case COLD in the run container (build 8m46s
+        // + clippy + nextest at 8 CPU; scripts/gate-measure-8cpu.log).
+        timeout="20m",
+        max_retries=1
+    ]
+
+    // Gate-bounce known-bug enrichment (fabro-56f4): DETERMINISTIC script
+    // node on the Gate red path — never an LLM. Run 01M1XN2KWG6T0PHRTJWZ8R0AZX
+    // implementer@2 re-derived fabro-febd's root cause from a 186 KB log blob
+    // (704 s, $0.38); this pre-step matches the failure tail against OPEN
+    // workflows-labelled seeds so bounce passes start at the root cause.
+    // Delivery is the command-node output_schema mechanism: the script prints
+    // bounded JSON, the engine validates it and stores it under
+    // `output.gatebounce`, which the implementer's
+    // preamble_allow_keys renders INLINE in ## Context (no blob round-trip).
+    // stdin_source="command.output": the tester's captured output ref, still
+    // the last command output when this node starts (present on both the
+    // success and fail paths of the tester). Best-effort: the script exits 0
+    // with empty hits on any internal failure — the bounce must never be
+    // stranded; the unconditional edge below is the fallback either way.
+    // Complements fabro-febd (the build fix); this node does NOT fix the gate.
+    gatebounce [
+        label="Gate bounce: known-bug match",
+        shape=parallelogram,
+        script="nu .fabro/workflows/develop/scripts/gate-bounce.nu",
+        stdin_source="command.output",
+        output_schema="@schemas/gate-known-bug-hits.schema.json",
+        // fabro-900e producer declaration: declares `output.gatebounce`
+        // for the preamble_allow_keys lint on the implementer node.
+        x.context_allow_keys="output.gatebounce",
+        timeout="1m",
+        max_retries=1
+    ]
+
+    // Evidence: deterministic capture of what the read-only reviewer needs. of what the read-only reviewer needs.
+    // Compact and critical-first (integrity header, seed-work file list,
+    // complete seed-work diff, then loop-churn counts and worktree): at the
+    // default `compact` fidelity a downstream node renders only the FIRST
+    // ~300 chars of command output, so ordering must front-load what review
+    // verifies. The reviewer below lifts that cap via summary:high.
+    evidence [
+        label="Evidence",
+        shape=parallelogram,
+        script="nu .fabro/workflows/develop/scripts/evidence.nu",
+        // The engine feeds the claimed seed's id via stdin — the evidence
+        // capture resolves spec and diff base for EXACTLY this run's seed
+        // and exits non-zero on any mismatch, never a silent fallback to
+        // scanning in_progress claims (run 01M294HH quoted a different
+        // concurrent seed fabro-5082 as authoritative and the reviewer
+        // burned a re-cycle verifying the real one; fabro-189d).
+        stdin_source="current_seed_id",
+        timeout="2m",
+        max_retries=1
+    ]
+
+    // Reviewer: AGENT node — read-only BY ENGINE ENFORCEMENT (fabro-269d,
+    // user decision 2026-09-17 GO): the per-node tools allow-list admits
+    // exactly read_file, grep, glob; write_file/edit_file/shell/spawn_agent/
+    // web_* and the fabro-run catalog are denied mechanically, and the
+    // empty fs_write (fabro-1dae) denies every file-tool write.
+    // Run 01M0SS23MJ measured shape=tab (prompt handler): tool_time_ms 0
+    // on both visits while the prompt promised tools — blob-ref'd evidence
+    // and seed spec were UNREADABLE, and reviewer@1 rejected green work as
+    // "verification could not be completed". As an agent node read
+    // tools exist (blob-ref reads via read_file, diff inspection via
+    // grep/glob); shell-side needs (read-only git, gate re-runs) are
+    // intentionally sacrificed per the 2026-09-17 decision — a review
+    // that genuinely cannot complete without them surfaces as a
+    // verdict, not a workaround.
+    //
+    // fidelity="summary:high" is the evidence pipe: the default `compact`
+    // preamble truncates a command node's output to roughly the first 300
+    // characters (measured over four review cycles — the capture cut
+    // mid-header every time), which starved review of the diff.
+    // summary:high is "detailed summary including outputs" and carries the
+    // evidence capture in full.
+    //
+    // x.preamble_stages_ignore="planner,implementer,reviewer": the reviewer
+    // keeps EXACTLY two history sections — tester (its only view of the
+    // gate result; the evidence capture does not include gate output) and
+    // evidence (the full capture pipe). Seed spec and implementation
+    // summary arrive as context keys. Dropped: the planner's and
+    // implementer's verbose responses and the reviewer's own past verdicts
+    // — the accumulation that produced the 25.6k preamble at cycle 3.
+    // Render-only: ignored stages' context updates (seed_brief) still
+    // reach the reviewer via the ## Context section.
+    //
+    // No goal_gate: this node is legitimately skippable (tracker-empty runs
+    // never reach it), and an unvisited goal-gate node fails the whole run
+    // (engine semantics). Its genuine failures route to exit explicitly and
+    // leave the seed open; the next run re-enters the review cycle.
+    // reasoning_effort="low": 3,424 reasoning tokens (more than planner
+    // OR implementer) for a checklist verification — $0.059, second
+    // costliest stage (first auto-merge run). The inline PASS/FAIL report
+    // and the evidence capture do the heavy lifting; low keeps live
+    // verification (blob reads, byte-compares) which is tool work, not
+    // reasoning. Re-measured run 01M11P68SHF (3 seeds, 3/3 first-pass
+    // approvals): 346-595 reasoning tokens, $0.043-$0.078 per review —
+    // locked in as the steady state.
+    reviewer [
+        label="Reviewer",
+        prompt="@prompts/reviewer.md",
+        // fabro-f84f: opt into vendored-skill discovery — the
+        // session loads `.fabro/skills` (rust-style-guide and
+        // friends) through the UseSkill tool.
+        x.skills="discover",
+        fidelity="summary:high",
+        reasoning_effort="low",
+        x.preamble_stages_ignore="planner,implementer,reviewer",
+        // fabro-699f: repeated tester/evidence visits across review
+        // cycles collapse to their LATEST visit — one section per stage
+        // instead of one per cycle (render-only; history stays intact).
+        x.preamble_stages_latest_only=true,
+        // fabro-e47c (read side): the ## Context section is a strict input
+        // contract — exactly the keys the prompt names as inputs. Seed trio
+        // + implementation_summary + the evidence capture (command.output;
+        // deduped into the evidence stage section when that renders it).
+        // Deliberately OUT: review_verdict
+        // and review_feedback (the reviewer's own stale verdicts), and any
+        // future key another node starts writing — the section stays
+        // deterministic no matter how the graph grows.
+        x.preamble_allow_keys="current_seed_id,current_seed_title,current_seed_brief,implementation_summary,command.output",
+        // fabro-900e: stable context_updates contract (see planner).
+        x.context_allow_keys="review_verdict,review_feedback,journal",
+        // fabro-9467 (updated by fabro-269d): the reviewer is an agent
+        // node whose allow-list keeps read_file — a demoted evidence
+        // value (8KB default ceiling) opens via read_file paging.
+        // Evidence captures reach ~14KB (first auto-merge run), so
+        // 16KB inline keeps them whole. Graph budget is 24KB: no conflict
+        // with the aggregate demote pass (preamble_inline_max_within_budget
+        // stays quiet).
+        x.preamble_inline_max_kb=16,
+        // fabro-meta-c9f2: evidence.nu puts the integrity header and
+        // seed-work diff at the HEAD of its capture; the old 50-line
+        // tail cap dropped exactly that head ("119 lines omitted" hid
+        // the seed-work diff from this reviewer). 200 keeps ~120-line
+        // captures whole — zero "lines omitted" in the evidence section.
+        x.preamble_output_max_lines=200,
+        // fabro-1dae: read-only is a CAPABILITY, not just policy — an empty
+        // fs_write denies every file-tool write (deletes and patch targets
+        // included). Deliberately NO fs_hide: review must see every diff,
+        // including illegal loop-asset touches, to reject them. Shell is
+        // denied at the engine layer too (fabro-269d tools allow-list) —
+        // no escape hatch remains; the prompt line states the enforcement.
+        x.fs_write="",
+        // fabro-269d (fabro-47b5 adoption, user decision 2026-09-17 GO):
+        // the read-only allow-list. shell is EXCLUDED deliberately — the
+        // seed body proposed including it, but the user decision requires
+        // write/shell denied at the engine layer and the decision wins.
+        x.tools="read_file,grep,glob,use_skill",
+        // fabro-c760 (mirrors the implementer stanza, fabro-f84f/269d):
+        // use_skill is allowed and loads the vendored skills via
+        // discovery (x.skills="discover" above) — read-only direction,
+        // no other capability widened.
+        // fabro-269d: default-denied fabro-run catalog — before this, a
+        // reviewer invoked fabro_run_interact (run 01M2RDM3AZ seq 440).
+        // Effective denial is the tools allow-list above (stage_policy
+        // admits only listed names); the empty opt-in records the intent.
+        x.fabro_tools="",
+        output_schema="routing",
+        output_retries=2,
+        max_visits=20,
+        retry_policy="standard"
+    ]
+
+    // Refiner REMOVED (seed fabro-176b, ADR-0009 candidate): painpoint
+    // delivery no longer needs an in-graph fan-in node. The stage-journal
+    // hook writes .fabro/journal/<node>@<visit>.json at every stage
+    // completion; the checkpoint carries it durably; the improve workflow
+    // scans run branches for journals. Delivery is
+    // intrinsic — no exit-bound path can miss it.
+
+    // Closeout: DETERMINISTIC post-approval bookkeeping (ADR-0010). Never
+    // an LLM — run 01M0… measured planner@2 at 21s / $0.021 / ~7% wall
+    // time for pure `seeds close`. Closes exactly this run's seed (stdin),
+    // then the run exits: one seed per run.
+    closeout [
+        label="Closeout",
+        shape=parallelogram,
+        script="nu .fabro/workflows/develop/scripts/closeout.nu",
+        // The engine feeds the claimed seed's id via stdin — closeout closes
+        // EXACTLY this run's seed, never a stale first-in-progress claim
+        // (run 01M1NK4V3YG3AQAMEKDJ6V471F lesson: two wrong closures).
+        stdin_source="current_seed_id",
+        timeout="1m",
+        max_retries=1
+    ]
+
+    // Claim-contract gate (fabro-c42f stopgap): fails within seconds when
+    // the planner's structured output dropped current_seed_id (see the
+    // edges below for the routing rationale).
+    claim_check [
+        label="Claim check: seed id contract",
+        shape=parallelogram,
+        script="nu .fabro/workflows/develop/scripts/claim-check.nu",
+        stdin_source="current_seed_id",
+        timeout="30s",
+        max_retries=0
+    ]
+
+    start -> tracker_guard
+    // fabro-0da8: drained-tracker terminal exit — zero LLM tokens on this
+    // path. Plain edge, natural completion, same family as the planner's
+    // own "Tracker empty" edge below (the label contract predates this
+    // node; this edge reuses it).
+    tracker_guard -> exit [label="Tracker empty", condition="preferred_label=\"Tracker empty\""]
+    // Unconditional fail-open route: non-empty tracker OR any seeds failure
+    // all continue into the preflight (then the planner) unchanged.
+    tracker_guard -> preflight [label="Tracker non-empty"]
+    // Unconditional fail-open, report-only (fabro-83df): clean,
+    // degraded, or script failure all route the planner normally with
+    // the report inline. The former mechanical "Already landed" edge is
+    // GONE — a landed-but-open top candidate is the planner's decision
+    // (its own "Already landed" edge below), never a script exit.
+    preflight -> planner [label="Preflight done"]
+
+    // Tracker empty = the goal is achieved (NOT an error): the planner
+    // emits preferred_next_label "Tracker empty" when no open seed
+    // remains. Without this edge that case fell through to the
+    // unconditional "Seed claimed" edge and the loop re-entered
+    // implementation with no seed claimed (GRAPH-03, gate red since
+    // the journal-contract prompt). Plain edge: natural completion.
+    planner -> exit [label="Tracker empty", condition="preferred_label=\"Tracker empty\""]
+    // Already landed (fabro-d183): the planner's claim-time check found a
+    // fix commit referencing the seed already in base history with its
+    // acceptance criteria satisfied — it closes the seed via the
+    // superseded-close and exits here instead of burning a full
+    // verification cycle on a stale tracker row. Plain edge, natural
+    // completion, same family as "Tracker empty" above.
+    planner -> exit [label="Already landed", condition="preferred_label=\"Already landed\""]
+    // Cycle-guard exit (run 01M0SS23MJ): the planner prompt routes Blocked
+    // after the third review/gate cycle on one seed, but the graph had no
+    // matching edge — the guard could never fire. Seed stays open for a
+    // human; only an approved review closes it. Listed BEFORE the generic
+    // outcome=failed edge so the specific label wins the routing.
+    // Label is exactly "Blocked" — the prompt declares that string and
+    // the label contract requires an exact match (GRAPH-03).
+    planner -> exit [x.kind="deadlock", label="Blocked", condition="preferred_label=\"Blocked\""]
+    // Capability-block soft exit (seeds-a77c, HITL pilot): a seed that
+    // needs host/operator capability (docker host, gh write:packages)
+    // must NOT classify as deadlock — CONTRAST the deadlock "Blocked"
+    // edge directly above. The planner routes here WITHOUT claiming;
+    // the seed stays open and unassigned, and the journal observation
+    // `parked: needs operator <seed-id>` is the conductor's routing
+    // key. Soft exit (SoftStop, not Deadlock): the conductor's develop
+    // leg reads this terminal label and routes its "Needs operator"
+    // human gate instead of "Develop child failed", so the class can
+    // never reach the scheduler's 3-strike auto-disable.
+    planner -> exit [x.kind="soft", label="Needs operator", condition="preferred_label=\"Needs operator\""]
+    planner -> exit        [label="Planner failed", condition="outcome=failed"]
+    // Verification-only fast path (fabro-9d26; basis run
+    // 01M2N1G834RTCSZNX7EK40G3SE re-verified already-satisfied criteria
+    // through implementer + tester three times, ~60s / ~30% per run): a
+    // verification-only claim (two-branch-rule branch (b) — criteria
+    // satisfied, no referencing commit) skips the implementer and tester
+    // entirely and goes straight to evidence -> reviewer. The conditional
+    // edge outranks the unconditional "Seed claimed" edge below
+    // (conditions beat unconditional edges in this engine). Reviewer
+    // tolerance: on this route the implementer never runs, so
+    // implementation_summary is legitimately absent (allow-keys is a
+    // whitelist, not a presence requirement) and the planner brief in the
+    // evidence capture is the criteria source.
+    planner -> evidence [label="Verification-only", condition="preferred_label=\"Verification-only\""]
+    // Claim-contract gate (fabro-c42f stopgap): a cheap script node that
+    // fails deterministically within seconds when current_seed_id is
+    // missing from the context (the engine resolves stdin_source before
+    // running the script). Without it, a planner response that validates
+    // routing but drops its context_updates parks the run at the evidence
+    // node AFTER a full implementer cycle (3x on 2026-09-18, breaker
+    // latched). The soft exit parks cheaply; the next fire retries.
+    planner -> claim_check [label="Seed claimed"]
+    claim_check -> implementer [label="Seed id present"]
+    // Contract retry: the planner's context_updates drop is intermittent
+    // per attempt (~50% observed 2026-09-18) — re-entering the planner
+    // gives the claim a second (third, ...) chance instead of parking the
+    // pass cheap-but-counted toward the schedule breaker. Bounds: the
+    // graph max_node_visits=20 and the 63m stall watchdog cap the retry
+    // loop; a planner hard failure exits via its own goal-gate edge.
+    claim_check -> planner [label="Claim contract failed, re-plan", condition="outcome=failed"]
+
+    implementer -> planner  [label="Blocked", condition="outcome=failed"]
+    implementer -> tester   [label="Implemented"]
+
+    tester -> evidence    [label="Gate green", condition="outcome=succeeded"]
+    // Structural gate-guard (fabro-6baf): third consecutive red routes to
+    // the human instead of another implementer round.
+    tester -> exit [x.kind="deadlock", label="Gate deadlock (3 reds, needs a human)", condition="nodes.tester.generation >= 3"]
+    // fabro-56f4: the red bounce passes through the deterministic
+    // gatebounce node first (edge pre-step idiom — the engine has no edge
+    // pre-steps, the closeout-pattern node is the established way).
+    tester -> gatebounce [label="Gate red"]
+    gatebounce -> implementer [label="Bounce (known-bug hits attached, if any)"]
+
+    evidence -> reviewer [label="Evidence ready", condition="outcome=succeeded"]
+    // Explicit outcome condition: an unconditional fallback edge makes the
+    // terminal semantics of a twice-failed capture invisible to routing and
+    // notifications. Failure exits the run (notifying); the seed stays open
+    // for the next run to re-enter the cycle.
+    // (engine rule: a node needs one unconditional edge; an unmatched
+    // capture outcome retries once then falls through here) — SOFT exit:
+    // infrastructure hiccup, work preserved, the next run re-enters.
+    evidence -> exit [x.kind="soft", label="Capture failed (next run re-enters)"]
+
+    reviewer -> closeout  [label="Approved", condition="preferred_label=\"Approved\""]
+    // Structural review-guard (fabro-6baf): conditions outrank unconditional
+    // edges, so at nodes.reviewer.generation >= 3 the deadlock exit wins over
+    // re-planning — the loop terminates without model compliance.
+    reviewer -> exit [x.kind="deadlock", label="Review deadlock (3 cycles, needs a human)", condition="nodes.reviewer.generation >= 3"]
+    reviewer -> planner   [label="Changes requested"]
+    // Fast re-review path (run 01M0SS23MJ): a procedural rejection
+    // ("verification could not be completed" — evidence delivery, not code)
+    // must NOT burn a full implementer+gate cycle on an unchanged tree
+    // (~3.5 min, 5 visits observed). Re-capture only; the reviewer prompt
+    // bounds this to one retry per seed, then it must decide.
+    // Bounded re-capture (fabro-6baf): the prompt says "at most once per
+    // seed"; the edge makes it provable — a second Verification-blocked
+    // verdict cannot re-enter evidence and must decide (Approved / Changes
+    // requested via the unconditional fallback).
+    reviewer -> evidence  [label="Verification blocked", condition="preferred_label=\"Verification blocked\" && nodes.evidence.generation < 2"]
+    reviewer -> exit [x.kind="soft", label="Reviewer failed (next run re-enters)", condition="outcome=failed"]
+
+    // One seed per run (user directive 2026-09-04): after the approved
+    // seed is closed the run EXITS — natural completion, publish-eligible
+    // (the work passed gate + review). The next seed is the next run's
+    // job; bounded runs give the revisor a single-seed working field.
+    closeout -> exit [label="Seed closed"]
+    closeout -> exit [x.kind="soft", label="Closeout failed (seed stays open)", condition="outcome=failed"]
+}

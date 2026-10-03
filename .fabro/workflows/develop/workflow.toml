@@ -1,0 +1,93 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+# Stage journal (seed fabro-176b): one durable JSON per stage execution,
+# engine provenance, checkpointed with the run. Non-blocking; failures
+# must never affect the run (side-effect only).
+[[run.hooks]]
+name = "stage-journal"
+event = "stage_complete"
+script = "nu .fabro/scripts/stage-journal.nu"
+blocking = false
+timeout = "10s"
+sandbox = true
+
+# ── Runtime contract (fabro-03ef) ──────────────────────────────────────
+# Since upstream v0.345, `fabro run`/`fabro create` build runs from
+# immutable workflow intents and no longer transmit project-level
+# [run]/[environments] settings: workflow behavior lives HERE, placement
+# is server-managed. Starts go through `just run develop` which passes
+# --environment mise (the intent's environment override outranks any pin
+# here, and a local `fabro preflight` cannot resolve server-managed
+# environment ids — placement is therefore NOT pinned in this file; the
+# wrapper flag is the single source).
+#
+# Default model (moved from project.toml).
+[run.model]
+provider = "zai"
+name = "glm-5.3"
+
+# NO prepare steps: the toolchain environment bakes
+# everything (rust nightly pin, clippy/rustfmt, nextest, just, nu, rg, bun,
+# seeds/ml, pytest — .fabro/Dockerfile.toolchain). Runs start instantly; a
+# prepare no-op check would only burn tester time.
+
+# Full-history clone: the petri engine's checkpoint publishing bundles
+# the workspace commit and traverses its whole ancestry; a depth cut
+# breaks every git-target run at its first checkpoint (fabro-b6c5).
+[run.clone]
+depth = 0
+
+# Dev-cycle: push checkpoint/metadata branches to the fork (local feature
+# testing keeps them pushable so the PR cycle can engage).
+[run.run_branch]
+push = true
+
+[run.meta_branch]
+push = true
+
+# Merge-back (run -> PR -> base branch): every successful run with a
+# non-empty diff opens a PR against the base branch. Without this,
+# scheduled runs would re-implement the same seed every run (observed:
+# three parallel -pretty implementations on orphaned run branches).
+# auto_merge = true (REVERTED fabro-6a5a, user decision 2026-09-09
+# "automerge muss bleiben"): the 6a5a premise was STALE — the
+# enableAutoMerge call works on this repo (setting allow_auto_merge=true;
+# PRs #102 and #107 itself carried active auto-merge enabled by the
+# engine and GitHub merged them). The failure evidence cited by fabro-6a5a
+# came from 2026-09-02 (run 01M0WWKAQCWZC0Q0JK019H0ZC7, pre-setting era).
+# The other half of fabro-6a5a (resolve_pr_model fix + tests) stays.
+[run.pull_request]
+enabled = true
+draft = false
+auto_merge = true
+merge_strategy = "squash"
+# glm-4.7: non-reasoning (catalog features.reasoning = false) — cheap,
+# clean JSON for PR titling; no reasoning_effort needed (and "off" is not
+# a valid value: the enum is low|medium|high|xhigh|max).
+# Model-mismatch note (fabro-6a5a, run 01M0WWKAQCWZC0Q0JK019H0ZC7): the
+# failure log named model=glm-5.3 because glm-4.7 was not yet in the
+# catalog on 2026-09-02, so resolve_pr_model warned and fell back to the
+# run model (a reasoning model whose output broke structured JSON). The
+# catalog gained glm-4.7 on 2026-09-03 (fabro-cd27); the configured
+# model now routes. If this ever regresses, the fallback is the run
+# model plus the deterministic skeleton body.
+model = "zai:glm-4.7"
+
+# NO [run.integrations.github.permissions] (ADR-0019, user directive 2026-09-08):
+# the legacy write token is vestigial - the ENGINE performs all forge
+# operations (branch push, PR create, auto-merge, waits) with its own
+# credentials; agent shells get NO GITHUB_TOKEN (empty permissions =
+# no_token path in initialize.rs). Forge reads go through engine-mediated
+# tools (fabro_runs_list), never raw clients.
+
+# Terminal-failure visibility (run 01M0T9B7T review, rec 5): one Slack
+# route for terminal lifecycle events is enough to notice credential rot.
+# Channel: #dev-fabro exists (provisioned 2026-08-27, phase 1).
+# Terminal-failure notifications disabled at bootstrap (2026-09-26):
+# the fabro workflow's channel (#dev-fabro) must not receive seeds-repo
+# events. Re-enable with this repo's own channel once provisioned.
+[run.notifications.terminal]
+enabled = false

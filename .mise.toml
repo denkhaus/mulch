@@ -1,0 +1,23 @@
+# Local development toolset, managed by mise. Mirrors the SHARED
+# toolchain image (ghcr.io/denkhaus/seeds-toolchain, owned and built by
+# denkhaus/seeds — this repo deliberately owns no Dockerfile; the
+# server-managed `mulch-toolchain` environment pins that image). The
+# Rust toolchain is owned by rustup (pinned nightly-2026-09-22, see
+# AGENTS.md). The tracker is the external `seeds` binary (denkhaus/
+# seeds): globally installed already, on PATH — no mise entry needed
+# (curl install script: https://github.com/denkhaus/seeds/releases).
+
+[tools]
+just = "1.58.0"
+bun = "1.4.0"
+"aqua:nushell/nushell" = "0.115.0"
+"aqua:BurntSushi/ripgrep" = "15.2.0"
+# Bootstrap phase remainder (ADR-0023 in denkhaus/fabro): the jayminwest
+# mulch CLI, the read+write compatible expertise target, until this
+# repo's own `mulch` binary replaces it at the self-hosting cutover.
+"npm:@os-eco/mulch-cli" = "0.10.7"
+
+[settings.npm]
+# Non-TTY installs abort on the default backend's interactive approval
+# prompt; bun is the verified path for these script-less CLIs.
+package_manager = "bun"

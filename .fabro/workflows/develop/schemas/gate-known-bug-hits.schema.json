@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "required": ["hits"],
+  "properties": {
+    "hits": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "description"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "description": {
+            "type": "string",
+            "description": "Seed body, truncated at ~1200 chars by gate-bounce.nu to bound the enrichment at ~4 KB."
+          }
+        }
+      }
+    },
+    "warning": {
+      "type": "string",
+      "description": "Reserved for best-effort notices; gate-bounce.nu currently warns on stderr only."
+    }
+  }
+}

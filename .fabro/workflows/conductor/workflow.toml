@@ -1,0 +1,50 @@
+_version = 1
+
+[workflow]
+graph = "workflow.fabro"
+
+# conductor (ADR-0015 architecture, ported from denkhaus/fabro at
+# bootstrap 2026-09-26, no upstream variant): the serialized line as a
+# workflow. ONE cron automation fires it (UI: schedule, environment
+# `mulch-toolchain`); each pass runs ONE develop+revisor cycle — this
+# repository has no upstream mirror, so there is no merge leg.
+# Serialization is structural: child runs are created via
+# fabro_run_create (parent-scoped) only after the previous child's PR
+# auto-merged, and every child run clones origin/main fresh at
+# creation. 429/budget-exhaustion: LLM retries are exponential with
+# Retry-After; a node that still fails ends this pass, and the CRON is
+# the deterministic reviver — the next fire retries with a reset budget.
+[run.agent]
+fabro_tools = true
+
+[[run.hooks]]
+name = "stage-journal"
+event = "stage_complete"
+script = "nu .fabro/scripts/stage-journal.nu"
+blocking = false
+timeout = "10s"
+sandbox = true
+
+[run.model]
+provider = "zai"
+name = "glm-5.3"
+
+# Orchestration run: no diff, no PR. Its value is the journal.
+# Full-history clone: the petri engine's checkpoint publishing bundles
+# the workspace commit and traverses its whole ancestry; a depth cut
+# breaks every git-target run at its first checkpoint (fabro-b6c5
+# pass 4/5). No upstream drift count exists here (no merge leg), but
+# the checkpoint contract makes full history the only safe depth.
+[run.clone]
+depth = 0
+
+[run.run_branch]
+push = true
+
+[run.pull_request]
+enabled = false
+
+# Terminal-failure notifications disabled at bootstrap (2026-09-26):
+# re-enable with this repo's own channel once provisioned.
+[run.notifications.terminal]
+enabled = false

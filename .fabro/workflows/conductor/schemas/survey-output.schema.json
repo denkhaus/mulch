@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Conductor survey output",
+  "description": "Routing contract with teeth: preferred_next_label restricted to the survey's outgoing edge labels (the fabro-9ec3 planner pattern). A drifted label (node name, invented label) fails validation, burns a repair turn, and never rides the Unrouted catch-all to a green exit.",
+  "type": "object",
+  "required": ["outcome", "preferred_next_label"],
+  "properties": {
+    "outcome": {"type": "string"},
+    "preferred_next_label": {
+      "type": "string",
+      "enum": ["Work", "Nothing to do"],
+      "description": "The survey's outgoing EDGE labels; never a node name."
+    },
+    "failure_reason": {"type": "string"},
+    "suggested_next_ids": {"type": ["array", "null"]},
+    "context_updates": {
+      "type": "object",
+      "properties": {
+        "develop_workflow_version_id": {"type": "string"},
+        "revisor_workflow_version_id": {"type": "string"}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

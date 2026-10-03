@@ -1,0 +1,9 @@
+_version = 1
+
+# Run behavior is workflow-owned: `.fabro/workflows/*/workflow.toml` carries
+# model, PR, branch-push, and notification settings. Placement is
+# server-managed: environment resources (`default`, `local`, `mise`,
+# `toolchain`) live in the server's environment store, selected per run via
+# `--environment`. `fabro run` / `fabro create` do not transmit `[run.*]` or
+# `[environments.*]` from this file; keeping them here only triggers the
+# untransmitted-settings warning on every run start.
