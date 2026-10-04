@@ -3,15 +3,16 @@
 //! Each branch = the registry row's ajv schema (reference
 //! `builtins.ts`): required keys, `additionalProperties: false`, and
 //! per-property subschemas in the reference's declaration order (base
-//! keys first, then the type const, then the payload fields, then
-//! `files` where the branch declares it). A branch reports its FIRST
-//! failure in evaluation order: required → additionalProperties →
-//! properties in declaration order (probe-fitted 2026-10-04 vs
-//! ml 0.10.7; mulch-b8ca). Sub-errors are structured ([`SubError`])
-//! and render with their ajv path — a leading space for the empty
-//! path, `/{path}` otherwise — joined with [`SUB_SEP`]. Records with a
-//! present-but-unregistered `type` fail with `Unknown record \`X\``
-//! instead of the oneOf blob.
+//! keys first, then the type const, then the payload fields, then the
+//! branch's `optional` fields). A branch reports its FIRST failing
+//! property in evaluation order: required → additionalProperties →
+//! properties in declaration order; a property with several failing
+//! keywords reports all of them (ajv's per-branch errors are composite
+//! — probe-fitted 2026-10-04 vs ml 0.10.7; mulch-b8ca). Sub-errors are
+//! structured ([`SubError`]) and render with their ajv path — a
+//! leading space for the empty path, `/{path}` otherwise — joined
+//! with [`SUB_SEP`]. Records with a present-but-unregistered `type`
+//! fail with ``Unknown record `X` `` instead of the oneOf blob.
 
 /// The separator between oneOf sub-errors (reference join).
 pub(crate) const SUB_SEP: &str = "; ";
@@ -72,8 +73,8 @@ pub(crate) enum SubError {
     Pattern { path: String },
     /// The record's `type` differs from the branch's const.
     TypeConst,
-    /// The oneOf summary line (validate/doctor omit it; the built/
-    /// batch surfaces and `move` carry it).
+    /// The oneOf summary line — every surface carries it (validate
+    /// plain/json, doctor, batch entries, `move`).
     OneOfTail,
 }
 
@@ -108,7 +109,7 @@ impl SubError {
     }
 }
 
-/// Renders the sub-error list (validate, doctor and the batch entries
+/// Renders the sub-error list (validate, doctor, batch and `move`
 /// share this).
 pub(crate) fn render_subs(subs: &[SubError]) -> Vec<String> {
     subs.iter().map(SubError::render).collect()
@@ -144,13 +145,12 @@ pub(crate) fn verdict(record: &serde_json::Value) -> Verdict {
 }
 
 /// The per-branch sub-errors plus the oneOf summary line — `None` when
-/// a branch matched. Every surface (validate, doctor, batch, move)
-/// carries the tail.
+/// a branch matched. Every surface carries the tail.
 fn one_of_subs(object: &serde_json::Map<String, serde_json::Value>) -> Option<Vec<SubError>> {
-    let mut subs = mulch::REGISTRY
-        .iter()
-        .map(|spec| branch_error(spec, object))
-        .collect::<Option<Vec<SubError>>>()?;
+    let mut subs = Vec::new();
+    for spec in mulch::REGISTRY {
+        subs.extend(branch_error(&spec, object)?);
+    }
     subs.push(SubError::OneOfTail);
     Some(subs)
 }
@@ -164,130 +164,168 @@ fn required_keys(spec: &mulch::TypeSpec) -> Vec<&'static str> {
 }
 
 /// The branch's declared property set (the additionalProperties
-/// guard).
+/// guard): the base keys, `type`, the payload fields and the branch's
+/// optional fields.
 fn declared_properties(spec: &mulch::TypeSpec) -> Vec<&'static str> {
-    let mut declared: Vec<&'static str> = BASE_PROPERTIES
+    BASE_PROPERTIES
         .iter()
         .copied()
         .chain(["type"])
         .chain(spec.payload.iter().copied())
-        .collect();
-    // `files` is declared only where the branch schema declares it
-    // (pattern, reference); elsewhere it is an additional property.
-    if spec.declares_files {
-        declared.push("files");
-    }
-    declared
+        .chain(spec.optional.iter().copied())
+        .collect()
 }
 
-/// One branch's first failing check, `None` when the branch matches.
+/// One branch's failing sub-errors, `None` when the branch matches:
+/// the FIRST failing property contributes ALL its failing keywords.
 fn branch_error(
     spec: &mulch::TypeSpec,
     object: &serde_json::Map<String, serde_json::Value>,
-) -> Option<SubError> {
+) -> Option<Vec<SubError>> {
     // 1. required — key presence, in required-array order.
     let required = required_keys(spec);
     if let Some(field) = required.iter().find(|field| !object.contains_key(**field)) {
-        return Some(SubError::Missing(field));
+        return Some(vec![SubError::Missing(field)]);
     }
 
     // 2. additionalProperties — only the branch's declared keys.
     let declared = declared_properties(spec);
     let has_additional = object.keys().any(|key| !declared.contains(&key.as_str()));
     if has_additional {
-        return Some(SubError::Additional);
+        return Some(vec![SubError::Additional]);
     }
 
     // 3. properties in declaration order: base keys first…
     for key in BASE_PROPERTIES {
-        if let Some(value) = object.get(key)
-            && let Some(error) = base_property_error(key, value)
-        {
-            return Some(error);
+        if let Some(value) = object.get(key) {
+            let errors = base_property_errors(key, value);
+            if !errors.is_empty() {
+                return Some(errors);
+            }
         }
     }
-    // …then the type const…
-    if object.get("type").and_then(serde_json::Value::as_str) != Some(spec.name) {
-        return Some(SubError::TypeConst);
+    // …then the type const (both keywords when the value is not even a
+    // string)…
+    match object.get("type") {
+        Some(serde_json::Value::String(kind)) if kind == spec.name => {}
+        Some(serde_json::Value::String(_)) => return Some(vec![SubError::TypeConst]),
+        _ => {
+            return Some(vec![
+                SubError::Type {
+                    path:     "type".into(),
+                    expected: "string",
+                },
+                SubError::TypeConst,
+            ]);
+        }
     }
     // …then the payload fields (strings)…
     for field in spec.payload {
         if let Some(value) = object.get(*field)
             && !value.is_string()
         {
-            return Some(SubError::Type {
+            return Some(vec![SubError::Type {
                 path:     (*field).into(),
                 expected: "string",
-            });
+            }]);
         }
     }
-    // …then `files` where the branch declares it (pattern, reference).
-    if spec.declares_files
-        && let Some(value) = object.get("files")
-        && let Some(error) = string_array_error("files", value)
-    {
-        return Some(error);
+    // …then the branch's optional fields (`files` is a string array,
+    // `date` a plain string).
+    for field in spec.optional {
+        let Some(value) = object.get(*field) else {
+            continue;
+        };
+        let error = if *field == "files" {
+            string_array_error(field, value)
+        } else {
+            (!value.is_string()).then(|| SubError::Type {
+                path:     (*field).into(),
+                expected: "string",
+            })
+        };
+        if let Some(error) = error {
+            return Some(vec![error]);
+        }
     }
     None
 }
 
-/// The base property's first failing subschema check.
-fn base_property_error(key: &str, value: &serde_json::Value) -> Option<SubError> {
+/// The base property's failing subschema checks. A property with two
+/// failing keywords reports BOTH (probe: `"type": true` yields
+/// `must be string` AND `must be equal to constant`; a non-string
+/// `classification`/`status` yields the type error AND the enum one);
+/// sibling properties still stop the branch at the first failing one.
+fn base_property_errors(key: &str, value: &serde_json::Value) -> Vec<SubError> {
     match key {
         "id" => match value {
             serde_json::Value::String(text) if !id_matches(text) => {
-                Some(SubError::Pattern { path: "id".into() })
+                vec![SubError::Pattern { path: "id".into() }]
             }
-            serde_json::Value::String(_) => None,
-            _ => Some(SubError::Type {
+            serde_json::Value::String(_) => Vec::new(),
+            _ => vec![SubError::Type {
                 path:     "id".into(),
                 expected: "string",
-            }),
+            }],
         },
         "classification" => match value {
-            serde_json::Value::String(text) => {
-                if CLASSIFICATIONS.contains(&text.as_str()) {
-                    None
-                } else {
-                    Some(SubError::Enum {
-                        path: "classification",
-                    })
-                }
+            serde_json::Value::String(text) if CLASSIFICATIONS.contains(&text.as_str()) => {
+                Vec::new()
             }
-            _ => Some(SubError::Type {
-                path:     "classification".into(),
-                expected: "string",
-            }),
+            serde_json::Value::String(_) => vec![SubError::Enum {
+                path: "classification",
+            }],
+            _ => vec![
+                SubError::Type {
+                    path:     "classification".into(),
+                    expected: "string",
+                },
+                SubError::Enum {
+                    path: "classification",
+                },
+            ],
         },
         "status" => match value {
-            serde_json::Value::String(text) => {
-                if STATUSES.contains(&text.as_str()) {
-                    None
-                } else {
-                    Some(SubError::Enum { path: "status" })
-                }
-            }
-            _ => Some(SubError::Type {
-                path:     "status".into(),
-                expected: "string",
-            }),
+            serde_json::Value::String(text) if STATUSES.contains(&text.as_str()) => Vec::new(),
+            serde_json::Value::String(_) => vec![SubError::Enum { path: "status" }],
+            _ => vec![
+                SubError::Type {
+                    path:     "status".into(),
+                    expected: "string",
+                },
+                SubError::Enum { path: "status" },
+            ],
         },
-        "evidence" => (!value.is_object()).then(|| SubError::Type {
-            path:     "evidence".into(),
-            expected: "object",
-        }),
-        "outcomes" => (!value.is_array()).then(|| SubError::Type {
-            path:     "outcomes".into(),
-            expected: "array",
-        }),
-        "tags" | "dir_anchors" => string_array_error(key, value),
-        "relates_to" | "supersedes" => link_array_error(key, value),
-        // recorded_at, supersession_demoted_at, anchor_decay_demoted_at,
-        // owner: plain strings.
-        _ => (!value.is_string()).then(|| SubError::Type {
+        "evidence" => (!value.is_object())
+            .then(|| SubError::Type {
+                path:     "evidence".into(),
+                expected: "object",
+            })
+            .into_iter()
+            .collect(),
+        "outcomes" => (!value.is_array())
+            .then(|| SubError::Type {
+                path:     "outcomes".into(),
+                expected: "array",
+            })
+            .into_iter()
+            .collect(),
+        "tags" | "dir_anchors" => string_array_error(key, value).into_iter().collect(),
+        "relates_to" | "supersedes" => link_array_error(key, value).into_iter().collect(),
+        // The four plain-string base keys, named so a new
+        // BASE_PROPERTIES entry cannot slip through unchecked (the
+        // coverage test pins the pairing).
+        "recorded_at" | "supersession_demoted_at" | "anchor_decay_demoted_at" | "owner" => (!value
+            .is_string())
+        .then(|| SubError::Type {
             path:     key.into(),
             expected: "string",
-        }),
+        })
+        .into_iter()
+        .collect(),
+        // Not a base property: the payload/type/optional checks own
+        // those keys.
+        _ => Vec::new(),
     }
 }
 
@@ -319,14 +357,13 @@ fn link_array_error(key: &str, value: &serde_json::Value) -> Option<SubError> {
         });
     };
     for (index, item) in items.iter().enumerate() {
-        let text = item.as_str();
-        if text.is_none() {
+        let Some(text) = item.as_str() else {
             return Some(SubError::Type {
                 path:     format!("{key}/{index}"),
                 expected: "string",
             });
-        }
-        if text.is_some_and(|text| !ref_matches(text)) {
+        };
+        if !ref_matches(text) {
             return Some(SubError::Pattern {
                 path: format!("{key}/{index}"),
             });
@@ -337,10 +374,7 @@ fn link_array_error(key: &str, value: &serde_json::Value) -> Option<SubError> {
 
 /// Lowercase-hex tail check of the id pattern.
 fn id_matches(text: &str) -> bool {
-    match text.strip_prefix("mx-") {
-        Some(hex) => id_hex_ok(hex),
-        None => false,
-    }
+    text.strip_prefix("mx-").is_some_and(id_hex_ok)
 }
 
 /// 4-8 lowercase hex digits.
@@ -447,22 +481,16 @@ mod tests {
 
     #[test]
     fn evaluation_order_is_required_then_additional_then_properties() {
-        // required wins over everything (missing content + enum +
-        // const all failing on the convention branch)
         let subs = subs_for(r#"{"type":"guide","name":"g","description":"d","recorded_at":"x"}"#);
         assert_eq!(subs[0], " must have required property 'content'");
-        // additionalProperties before property errors (bogus + weird
-        // classification: pattern branch reports the additional)
         let subs = subs_for(
             r#"{"type":"guide","name":"g","description":"d","classification":"weird","recorded_at":"x","bogus":1}"#,
         );
         assert_eq!(subs[1], " must NOT have additional properties");
-        // declaration order: id before classification before type const
         let subs = subs_for(
             r#"{"type":"guide","name":"g","description":123,"classification":"weird","recorded_at":"x","id":"XX-bad"}"#,
         );
         assert_eq!(subs[1], "/id must match pattern \"^mx-[0-9a-f]{4,8}$\"");
-        // …classification enum before the const…
         let subs = subs_for(
             r#"{"type":"guide","name":"g","description":"d","classification":"weird","recorded_at":"x"}"#,
         );
@@ -470,7 +498,6 @@ mod tests {
             subs[1],
             "/classification must be equal to one of the allowed values"
         );
-        // …const before the payload field type.
         let subs = subs_for(
             r#"{"type":"guide","name":"g","description":123,"classification":"tactical","recorded_at":"x"}"#,
         );
@@ -478,29 +505,96 @@ mod tests {
     }
 
     #[test]
+    fn a_property_with_two_failing_keywords_reports_both() {
+        // type: true -> must be string AND must be equal to constant
+        let subs = subs_for(
+            r#"{"type":true,"name":"g","description":"d","classification":"tactical","recorded_at":"x"}"#,
+        );
+        // entry 0 is the convention branch's missing content; the
+        // pattern branch reports the type property's two keywords
+        assert_eq!(subs[1], "/type must be string");
+        assert_eq!(subs[2], "/type must be equal to constant");
+        // classification: 5 -> type error AND enum error
+        let subs = subs_for(
+            r#"{"type":"guide","name":"g","description":"d","classification":5,"recorded_at":"x"}"#,
+        );
+        assert_eq!(subs[1], "/classification must be string");
+        assert_eq!(
+            subs[2],
+            "/classification must be equal to one of the allowed values"
+        );
+    }
+
+    #[test]
+    fn every_base_property_is_checked() {
+        let wrong: [(&str, &str); 13] = [
+            ("id", "\"XX-bad\""),
+            ("classification", "\"weird\""),
+            ("recorded_at", "123"),
+            ("evidence", "\"nope\""),
+            ("tags", "\"nope\""),
+            ("relates_to", "\"nope\""),
+            ("supersedes", "\"nope\""),
+            ("outcomes", "\"nope\""),
+            ("dir_anchors", "\"nope\""),
+            ("supersession_demoted_at", "123"),
+            ("anchor_decay_demoted_at", "123"),
+            ("owner", "123"),
+            ("status", "\"weird\""),
+        ];
+        assert_eq!(wrong.len(), BASE_PROPERTIES.len());
+        for (key, value) in wrong {
+            let line = format!(
+                r#"{{"type":"guide","name":"g","description":"d","classification":"tactical","recorded_at":"x","{key}":{value}}}"#
+            );
+            let subs = subs_for(&line);
+            let guide_branch = &subs[5];
+            assert!(
+                guide_branch.contains("must be")
+                    || guide_branch.contains("must match")
+                    || guide_branch.contains("allowed values"),
+                "base key {key} produced no check: {guide_branch}"
+            );
+        }
+    }
+
+    #[test]
     fn null_counts_as_present_and_fails_the_type_check() {
         let subs = subs_for(
             r#"{"type":"guide","name":null,"description":"d","classification":"tactical","recorded_at":"x"}"#,
         );
-        // the guide branch (index 5; the tail is last) reports the
-        // payload type error
         assert_eq!(subs[5], "/name must be string");
     }
 
     #[test]
-    fn files_is_declared_only_where_the_reference_declares_it() {
+    fn optional_fields_are_declared_where_the_reference_declares_them() {
         // files on a guide record: additional for guide's own branch
-        // (index 5 of 6; the tail is last)
         let subs = subs_for(
             r#"{"type":"guide","name":"g","description":"d","classification":"tactical","recorded_at":"x","files":[]}"#,
         );
         assert_eq!(subs[5], " must NOT have additional properties");
-        // …but declared (and type-checked) on pattern: the pattern
-        // branch (index 1) reports before the const
+        // …declared on pattern, and type-checked there
         let subs = subs_for(
             r#"{"type":"pattern","name":"g","description":"d","classification":"tactical","recorded_at":"x","files":"oops"}"#,
         );
         assert_eq!(subs[1], "/files must be array");
+        // decision's `date` is optional: a valid record with it passes…
+        let record: serde_json::Value = serde_json::from_str(
+            r#"{"type":"decision","title":"t","rationale":"r","classification":"tactical","recorded_at":"x","date":"2026-01-01"}"#,
+        )
+        .expect("json");
+        assert!(matches!(verdict(&record), Verdict::Valid));
+        // …a wrong-typed date fails on the decision branch (index 3 in
+        // registry order)…
+        let subs = subs_for(
+            r#"{"type":"decision","title":"t","rationale":"r","classification":"tactical","recorded_at":"x","date":5}"#,
+        );
+        assert_eq!(subs[3], "/date must be string");
+        // …and a wrong-typed date on a guide is an ADDITIONAL property
+        let subs = subs_for(
+            r#"{"type":"guide","name":"g","description":"d","classification":"tactical","recorded_at":"x","date":"2026-01-01"}"#,
+        );
+        assert_eq!(subs[5], " must NOT have additional properties");
     }
 
     #[test]
@@ -508,7 +602,6 @@ mod tests {
         let subs = subs_for(
             r#"{"type":"pattern","name":"g","description":"d","classification":"tactical","recorded_at":"x","relates_to":["ok:mx-abcd12","bad"]}"#,
         );
-        // the pattern branch (index 1) reports its first failing property
         assert_eq!(
             subs[1],
             "/relates_to/1 must match pattern \"^([a-z0-9-]+:)?mx-[0-9a-f]{4,8}$\""

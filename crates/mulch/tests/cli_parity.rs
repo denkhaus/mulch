@@ -2842,6 +2842,32 @@ fn required_common_fields_match_reference() {
         }
     }
 
+    // `--files` on a type that does not declare it is DROPPED (the
+    // reference collects required ∪ optional fields only)
+    for (index, kind) in ["guide", "failure", "decision"].iter().enumerate() {
+        let (ours, theirs) = twin_seeded(&format!("b8cafiles{index}"), None, &[("alpha", "")], &[]);
+        let payload = match *kind {
+            "guide" => vec!["guide", "--name", "g", "--description", "d"],
+            "failure" => vec!["failure", "--description", "d", "--resolution", "r"],
+            _ => vec!["decision", "--title", "t", "--rationale", "r"],
+        };
+        let mut args = vec!["record", "alpha", "--type"];
+        args.extend(payload);
+        args.extend(["--files", "a.ts"]);
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_in(&theirs.0, &ml, &args);
+        assert_eq!(our.code, their.code, "{kind} --files exit");
+        assert_eq!(our.code, 0, "{kind} --files must succeed");
+        assert_eq!(our.stdout, their.stdout, "{kind} --files stdout");
+        let ours_store = read_store_file(&ours.0, "expertise/alpha.jsonl");
+        let theirs_store = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+        assert!(
+            !ours_store.contains("files"),
+            "{kind} must drop --files: {ours_store}"
+        );
+        assert_eq!(normalize_line(&ours_store), normalize_line(&theirs_store));
+    }
+
     // Flag-path json failure: the envelope carries the validate-style
     // text (not the plain rendering).
     let (ours, theirs) = twin_seeded("reqflagjson", None, &[("alpha", "")], &[]);

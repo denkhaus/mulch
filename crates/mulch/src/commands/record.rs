@@ -104,7 +104,12 @@ fn build_record(
             Value::String(provided(field).unwrap_or_default()),
         );
     }
-    if let Some(files) = split_list(args.files.as_deref()) {
+    // The reference collects fields from `def.required ∪ def.optional`
+    // only: `--files` on a type that does not declare it is DROPPED
+    // (mulch-b8ca; `files` is declared by pattern and reference).
+    let declares_files =
+        mulch::type_spec(&record_type).is_some_and(|spec| spec.optional.contains(&"files"));
+    if declares_files && let Some(files) = split_list(args.files.as_deref()) {
         record.insert("files".into(), strings_value(&files));
     }
 
