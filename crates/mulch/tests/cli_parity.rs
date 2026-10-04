@@ -2864,6 +2864,112 @@ fn required_common_fields_match_reference() {
     assert_eq!(our.stderr, their.stderr, "flag-path json envelope");
 }
 
+// ---- sprint 11 (mulch-ca49): batch summary surfaces + compact rewrite ----
+
+#[test]
+fn batch_summary_surfaces_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // canonical store: a pattern (named-dup target) + a convention
+    // (anon-dup target)
+    let seed = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"name\":\"p\",\"description\":\"d\",\"id\":\"mx-f16294\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"same\",\"id\":\"mx-ef8fb3\"}\n";
+    // batch: 2 creates + 1 named dup (update) + 1 anon dup (skip)
+    let mixed = "[{\"type\":\"guide\",\"name\":\"g1\",\"description\":\"gd\"},{\"type\":\"failure\",\"description\":\"f1\",\"resolution\":\"r1\"},{\"type\":\"pattern\",\"name\":\"p\",\"description\":\"up\"},{\"type\":\"convention\",\"content\":\"same\"}]";
+    let empty = "[]";
+
+    // dry-run plain: Would process counts created+updated; Create/
+    // Update/Skip lines only when non-zero
+    let (ours, theirs) = twin_seeded("bs-dry", None, &[("d", seed)], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("mixed.json"), mixed).expect("batch file");
+    }
+    let args = ["record", "d", "--batch", "mixed.json", "--dry-run"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout, "dry-run summary lines");
+    assert_eq!(
+        our.stdout,
+        "✓ Dry-run complete. Would process 3 record(s) in d:\n  Create: 2\n  Update: 1\n  Skip: 1\n  Run without --dry-run to apply changes.\n"
+    );
+
+    // normal plain: created/updated/skipped lines, store identical
+    let (ours, theirs) = twin_seeded("bs-run", None, &[("d", seed)], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("mixed.json"), mixed).expect("batch file");
+    }
+    let args = ["record", "d", "--batch", "mixed.json"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout, "normal summary lines");
+    assert_eq!(
+        our.stdout,
+        "✓ Created 2 record(s) in d\n✓ Updated 1 record(s) in d\nSkipped 1 duplicate(s) in d\n"
+    );
+    assert_eq!(
+        normalize_line(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize_line(&read_store_file(&theirs.0, "expertise/d.jsonl"))
+    );
+
+    // empty batch: nothing in normal mode, the notice in dry-run
+    let (ours, theirs) = twin_seeded("bs-empty", None, &[("d", seed)], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("empty.json"), empty).expect("batch file");
+    }
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--batch",
+        "empty.json",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["record", "d", "--batch", "empty.json"]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout);
+    assert_eq!(our.stdout, "", "zero batch prints nothing");
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--batch",
+        "empty.json",
+        "--dry-run",
+    ]);
+    let their = run_in(&theirs.0, &ml, &[
+        "record",
+        "d",
+        "--batch",
+        "empty.json",
+        "--dry-run",
+    ]);
+    assert_eq!(our.stdout, their.stdout);
+    assert_eq!(our.stdout, "No records would be processed.\n");
+
+    // create-only batch on a commented store rewrites compactly on
+    // both sides (comments and blank lines drop)
+    let commented = format!("# banner\n\n{seed}\n\n");
+    let (ours, theirs) = twin_seeded("bs-compact", None, &[("d", &commented)], &[]);
+    let one = "[{\"type\":\"guide\",\"name\":\"g2\",\"description\":\"gd2\"}]";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("one.json"), one).expect("batch file");
+    }
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record", "d", "--batch", "one.json",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["record", "d", "--batch", "one.json"]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout);
+    let ours_store = read_store_file(&ours.0, "expertise/d.jsonl");
+    let theirs_store = read_store_file(&theirs.0, "expertise/d.jsonl");
+    assert!(!ours_store.contains("# banner"), "comments drop");
+    assert_eq!(
+        normalize_line(&ours_store),
+        normalize_line(&theirs_store),
+        "compact rewrite identical"
+    );
+}
+
 // ---- sprint 9 (mulch-351d): edit/outcome identifier resolution ----
 
 #[test]

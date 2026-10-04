@@ -526,7 +526,6 @@ fn stdin_batch(
     // duplicates upsert too. Dry-run never mutates it (the reference
     // counts a within-batch duplicate as another create there).
     let mut working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
-    let mut pending: Vec<String> = Vec::new();
     let mut created = 0usize;
     let mut updated = 0usize;
     let mut skipped = 0usize;
@@ -618,7 +617,6 @@ fn stdin_batch(
             }
             None => {
                 line.entry("id").or_insert_with(|| Value::String(id));
-                pending.push(Value::Object(line.clone()).to_string());
                 working.push(Value::Object(line));
                 created += 1;
             }
@@ -639,14 +637,30 @@ fn stdin_batch(
             fields.insert("warnings".into(), Value::Array(Vec::new()));
             print_json(&success_envelope("record", fields), false);
         } else {
-            print_line(
-                opts.quiet,
-                &format!(
-                    "✓ Dry-run complete. Would process {} record(s) in {}:\n  Create: {created}\n  Run without --dry-run to apply changes.",
-                    created + skipped,
+            // Reference summary: `Would process` counts created+updated;
+            // the per-action lines print only when non-zero, and an
+            // all-zero batch says so instead.
+            let total = created + updated;
+            if total > 0 || skipped > 0 {
+                let mut text = format!(
+                    "✓ Dry-run complete. Would process {total} record(s) in {}:",
                     args.domain
-                ),
-            );
+                );
+                if created > 0 {
+                    use std::fmt::Write as _;
+                    let _ = write!(text, "\n  Create: {created}");
+                }
+                if updated > 0 {
+                    let _ = write!(text, "\n  Update: {updated}");
+                }
+                if skipped > 0 {
+                    let _ = write!(text, "\n  Skip: {skipped}");
+                }
+                text.push_str("\n  Run without --dry-run to apply changes.");
+                print_line(opts.quiet, &text);
+            } else {
+                print_line(opts.quiet, "No records would be processed.");
+            }
         }
         return Ok(());
     }
@@ -694,23 +708,13 @@ fn stdin_batch(
         return Err(failure);
     }
 
-    if updated > 0 {
-        // Any upsert replaced lines in place, so the whole file
-        // rewrites compactly (reference `writeExpertiseFile`).
-        // Create-only batches keep the append path; compact-rewrite
-        // parity for them is mulch-ca49.
-        store
-            .rewrite_domain(&args.domain, &working)
-            .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
-    } else {
-        for line in &pending {
-            store
-                .append_domain_line(&args.domain, line)
-                .map_err(|source| {
-                    Failure::handled("record", crate::output::chain_message(&source))
-                })?;
-        }
-    }
+    // The batch path always rewrites through the compact writer
+    // (reference `writeExpertiseFile`): comments and blank lines drop,
+    // id-less survivors get ids, and create-only batches rewrite too
+    // (mulch-ca49; the FLAG path keeps its verbatim append).
+    store
+        .rewrite_domain(&args.domain, &working)
+        .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();
@@ -723,10 +727,26 @@ fn stdin_batch(
         fields.insert("warnings".into(), Value::Array(Vec::new()));
         print_json(&success_envelope("record", fields), false);
     } else {
-        print_line(
-            opts.quiet,
-            &format!("✓ Created {created} record(s) in {}", args.domain),
-        );
+        // Reference order: created, updated, then the duplicates line —
+        // each only when non-zero (a zero-batch prints nothing).
+        if created > 0 {
+            print_line(
+                opts.quiet,
+                &format!("✓ Created {created} record(s) in {}", args.domain),
+            );
+        }
+        if updated > 0 {
+            print_line(
+                opts.quiet,
+                &format!("✓ Updated {updated} record(s) in {}", args.domain),
+            );
+        }
+        if skipped > 0 {
+            print_line(
+                opts.quiet,
+                &format!("Skipped {skipped} duplicate(s) in {}", args.domain),
+            );
+        }
     }
     Ok(())
 }
