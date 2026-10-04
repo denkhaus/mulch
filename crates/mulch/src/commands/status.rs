@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
-use mulch::Record;
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -78,7 +77,7 @@ struct DomainStatus {
 impl DomainStatus {
     fn compute(
         domain: &str,
-        records: &[Record],
+        records: &[Value],
         mtime: Option<Timestamp>,
         now: Timestamp,
         rule: &StaleRule,
@@ -90,19 +89,16 @@ impl DomainStatus {
         let mut stale_count = 0;
 
         for record in records {
-            if let Some(kind) = record
-                .record_type()
-                .and_then(|t| TYPES.iter().find(|k| **k == t))
-            {
+            let field = |name: &str| record.get(name).and_then(Value::as_str);
+            if let Some(kind) = field("type").and_then(|t| TYPES.iter().find(|k| **k == t)) {
                 *type_counts.entry(*kind).or_insert(0) += 1;
             }
-            if let Some(class) = record
-                .classification()
-                .and_then(|c| CLASSIFICATIONS.iter().find(|k| **k == c))
+            if let Some(class) =
+                field("classification").and_then(|c| CLASSIFICATIONS.iter().find(|k| **k == c))
             {
                 *classification_counts.entry(*class).or_insert(0) += 1;
             }
-            if let Ok(Some(recorded)) = parse_timestamp(record.recorded_at()) {
+            if let Ok(Some(recorded)) = parse_timestamp(field("recorded_at")) {
                 if oldest_recorded.is_none_or(|o| recorded < o) {
                     oldest_recorded = Some(recorded);
                 }
@@ -186,20 +182,23 @@ impl DomainStatus {
     }
 }
 
-/// Reads a domain's records for reporting: every parseable line counts,
-/// malformed lines are skipped (status never fails on them). The seam
-/// supplies the raw lines and the modification time.
+/// Reads a domain's records for reporting: every parseable object line
+/// counts, malformed lines are skipped (status never fails on them).
+/// The seam supplies the raw lines and the modification time.
 fn read_domain(
     store: &mulch::StoreFiles,
     domain: &str,
-) -> Result<(Vec<Record>, Option<Timestamp>), Failure> {
+) -> Result<(Vec<Value>, Option<Timestamp>), Failure> {
     let lines = store
         .read_lines(domain)
         .map_err(|source| Failure::handled("status", crate::output::chain_message(&source)))?;
     let records = lines
         .iter()
         .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| Record::parse(line).ok())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        // only object lines are records (the old Record::parse required
+        // a JSON object — bare scalars stay skipped)
+        .filter(Value::is_object)
         .collect();
     let mtime = store
         .domain_modified(domain)
@@ -217,8 +216,11 @@ fn parse_timestamp(raw: Option<&str>) -> Result<Option<Timestamp>, jiff::Error> 
 }
 
 /// The record's classification, defaulting like the reference writer.
-fn classification_of(record: &Record) -> &str {
-    record.classification().unwrap_or("tactical")
+fn classification_of(record: &Value) -> &str {
+    record
+        .get("classification")
+        .and_then(Value::as_str)
+        .unwrap_or("tactical")
 }
 
 /// Relative-time rendering ("just now", "2m ago", "3h ago", "4d ago").

@@ -96,18 +96,6 @@ pub enum Error {
         record_type: String,
     },
 
-    /// An expertise JSONL line is not valid JSON or not an object.
-    #[error("parsing record {path} line {line}")]
-    RecordParse {
-        /// The JSONL file being parsed.
-        path:   PathBuf,
-        /// The 1-based line number.
-        line:   usize,
-        /// The underlying JSON failure.
-        #[source]
-        source: serde_json::Error,
-    },
-
     /// A record is missing a field the format requires.
     #[error("record {path} line {line} is missing required field `{field}`")]
     MissingField {
@@ -126,13 +114,6 @@ pub enum Error {
         version:   String,
         /// The versions this build understands.
         supported: &'static str,
-    },
-
-    /// A record id does not match the `mx-<6 hex>` format.
-    #[error("invalid record id `{value}`: expected `mx-` followed by 6 hex digits")]
-    InvalidRecordId {
-        /// The rejected value.
-        value: String,
     },
 
     /// No record with the given id exists where the operation looks.

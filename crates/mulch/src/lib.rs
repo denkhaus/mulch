@@ -13,20 +13,16 @@
 mod config;
 mod error;
 mod ids;
-mod record;
 mod records;
-mod store;
 mod store_files;
 
 pub use config::{Config, Governance, Prime, SUPPORTED_VERSION, Search, ShelfLife, TierWeights};
 pub use error::{Error, Result};
 pub use ids::{PAYLOAD_TYPES, id_key_field, is_named_type, payload_fields, record_id};
-pub use record::{Record, RecordId};
 pub use records::{
     LineRecord, ResolveError, assign_missing_id, find_duplicate, merge_outcomes, read_strict,
     record_summary, resolve_record_id, upsert_record, write_records,
 };
-pub use store::Store;
 pub use store_files::{StoreFiles, StoreLocation};
 
 /// The reference implementation this crate is read+write compatible with

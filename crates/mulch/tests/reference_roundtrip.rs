@@ -5,6 +5,11 @@
 //! reader re-reads the result — and every additive/unknown field we
 //! wrote survives the reference's rewrites.
 //!
+//! Works entirely on the one store owner ([`mulch::StoreFiles`]) and
+//! the one record shape (`serde_json::Value`); the sprint-7
+//! store-dual-owner collapse (mulch-bf22) deleted the parallel
+//! `Store`/`Record` API this test used to exercise.
+//!
 //! Skipped (with a note) when no `ml` binary is on PATH, so the unit
 //! suite stays runnable in bare toolchain images.
 
@@ -12,7 +17,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mulch::{Config, Record, RecordId, Store};
+use mulch::{Config, StoreFiles, StoreLocation};
+use serde_json::{Value, json};
 
 fn reference_ml() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -58,39 +64,61 @@ impl Drop for TempDir {
 
 const NOW: &str = "2026-10-03T10:12:14.018Z";
 
-fn additive_record() -> Record {
-    let mut record = Record::new("convention", "foundational", NOW);
-    record.set("evidence", serde_json::json!({ "commit": "abc123" }));
-    record.set("tags", serde_json::json!(["a", "b"]));
-    record.set("dir_anchors", serde_json::json!(["crates/x"]));
-    record.set("content", serde_json::Value::String("body text".into()));
-    record.set_id(RecordId::parse("mx-e4f59f").unwrap());
-    // Additive extension field (the sanctioned ADR-0023 mechanism).
-    record.append(
-        "fabricated_by",
-        serde_json::Value::String("mulch-rs".into()),
-    );
-    record
+/// Opens the store through the one seam the CLI uses.
+fn open_store(dir: &Path) -> StoreFiles {
+    match StoreFiles::locate(dir).expect("store locates") {
+        StoreLocation::Open(store) => store,
+        StoreLocation::Missing | StoreLocation::NoConfig => {
+            panic!("store under {} must exist", dir.display())
+        }
+    }
+}
+
+/// The corpus' convention record as a compact JSONL line — field order
+/// pinned from the old `Record` builder (canonical slots, additive
+/// fields at the end).
+fn convention_line(with_additive: bool) -> String {
+    let mut record = json!({
+        "type": "convention",
+        "classification": "foundational",
+        "recorded_at": NOW,
+        "evidence": { "commit": "abc123" },
+        "tags": ["a", "b"],
+        "dir_anchors": ["crates/x"],
+        "content": "body text",
+        "id": "mx-e4f59f",
+    });
+    if with_additive {
+        // Additive extension field (the sanctioned ADR-0023 mechanism).
+        record["fabricated_by"] = json!("mulch-rs");
+    }
+    serde_json::to_string(&record).expect("compact line")
+}
+
+fn failure_line() -> String {
+    serde_json::to_string(&json!({
+        "type": "failure",
+        "classification": "tactical",
+        "recorded_at": NOW,
+        "description": "fail desc",
+        "resolution": "fixed it",
+        "id": "mx-7b33dd",
+    }))
+    .expect("compact line")
 }
 
 fn write_corpus(dir: &Path, with_additive: bool) {
+    std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
     let mut config = Config::default();
     config.add_domain("rust");
-    let mut store = Store::create(dir, config).expect("store created");
-    let mut convention = additive_record();
-    if !with_additive {
-        convention.remove("fabricated_by");
-    }
-    store
-        .append_record("rust", convention)
-        .expect("convention written");
+    std::fs::write(dir.join(".mulch/mulch.config.yaml"), config.to_yaml()).expect("config written");
 
-    let mut failure = Record::new("failure", "tactical", NOW);
-    failure.set("description", serde_json::Value::String("fail desc".into()));
-    failure.set("resolution", serde_json::Value::String("fixed it".into()));
-    failure.set_id(RecordId::parse("mx-7b33dd").unwrap());
+    let store = open_store(dir);
     store
-        .append_record("rust", failure)
+        .append_domain_line("rust", &convention_line(with_additive))
+        .expect("convention written");
+    store
+        .append_domain_line("rust", &failure_line())
         .expect("failure written");
 }
 
@@ -112,25 +140,24 @@ fn reference_accepts_our_corpus_and_additive_fields_survive() {
     // on its own records, but the mutating commands accept and preserve
     // them — that is the acceptance gate.
     {
-        let store = Store::open(&dir.0).expect("reopen");
-        let mut convention = store.records("rust").expect("rust domain")[0].clone();
-        convention.append(
-            "fabricated_by",
-            serde_json::Value::String("mulch-rs".into()),
-        );
-        let mut failure = store.records("rust").expect("rust domain")[1].clone();
-        failure.append(
-            "fabricated_by",
-            serde_json::Value::String("mulch-rs".into()),
-        );
-        let root = dir.0.join(".mulch/expertise/rust.jsonl");
+        let store = open_store(&dir.0);
+        let mut lines: Vec<Value> = store
+            .read_records("rust", false)
+            .expect("rust domain")
+            .into_iter()
+            .map(|line| line.record)
+            .collect();
+        for record in &mut lines {
+            record["fabricated_by"] = json!("mulch-rs");
+        }
+        let text = lines
+            .iter()
+            .map(|record| serde_json::to_string(record).expect("compact line"))
+            .collect::<Vec<_>>()
+            .join("\n");
         std::fs::write(
-            &root,
-            format!(
-                "{}\n{}\n",
-                convention.to_json_line(),
-                failure.to_json_line()
-            ),
+            dir.0.join(".mulch/expertise/rust.jsonl"),
+            format!("{text}\n"),
         )
         .expect("rewrite with additive fields");
     }
@@ -172,45 +199,44 @@ fn reference_accepts_our_corpus_and_additive_fields_survive() {
     ml(&dir.0, &["restore", "mx-7b33dd"]);
 
     // Our reader re-reads the mutated store.
-    let store = Store::open(&dir.0).expect("reopen after reference mutations");
+    let store = open_store(&dir.0);
     assert_eq!(store.domains(), vec!["rust"]);
-    let records = store.records("rust").expect("rust domain");
+    let records: Vec<Value> = store
+        .read_records("rust", false)
+        .expect("rust domain")
+        .into_iter()
+        .map(|line| line.record)
+        .collect();
     let convention = records
         .iter()
-        .find(|record| record.get("id").and_then(serde_json::Value::as_str) == Some("mx-e4f59f"))
+        .find(|record| record.get("id").and_then(Value::as_str) == Some("mx-e4f59f"))
         .expect("convention record survives");
     // ADR-0023 acceptance gate: the additive field outlived the
     // reference's rewrite of the file.
     assert_eq!(
-        convention
-            .get("fabricated_by")
-            .and_then(serde_json::Value::as_str),
+        convention.get("fabricated_by").and_then(Value::as_str),
         Some("mulch-rs")
     );
     let outcomes = convention
         .get("outcomes")
         .expect("reference outcome visible");
     assert_eq!(
-        outcomes
-            .pointer("/0/status")
-            .and_then(serde_json::Value::as_str),
+        outcomes.pointer("/0/status").and_then(Value::as_str),
         Some("success")
     );
     let restored = records
         .iter()
-        .find(|record| record.get("id").and_then(serde_json::Value::as_str) == Some("mx-7b33dd"))
+        .find(|record| record.get("id").and_then(Value::as_str) == Some("mx-7b33dd"))
         .expect("restored failure is live again");
     assert_eq!(
-        restored
-            .get("fabricated_by")
-            .and_then(serde_json::Value::as_str),
+        restored.get("fabricated_by").and_then(Value::as_str),
         Some("mulch-rs")
     );
     assert!(restored.get("status").is_none(), "archive fields stripped");
     assert!(
         records
             .iter()
-            .any(|record| record.get("name").and_then(serde_json::Value::as_str) == Some("pat")),
+            .any(|record| record.get("name").and_then(Value::as_str) == Some("pat")),
         "reference-written pattern record is readable"
     );
 }
@@ -237,8 +263,14 @@ fn our_reader_rewrites_reference_corpus_byte_identically() {
     let live_path = dir.0.join(".mulch/expertise/rust.jsonl");
     let after_reference = std::fs::read_to_string(&live_path).expect("live file");
 
-    let store = Store::open(&dir.0).expect("reopen");
-    store.write_all().expect("rewrite");
+    let store = open_store(&dir.0);
+    let payload: Vec<Value> = store
+        .read_records("rust", false)
+        .expect("rust domain")
+        .into_iter()
+        .map(|line| line.record)
+        .collect();
+    store.rewrite_domain("rust", &payload).expect("rewrite");
 
     let after_us = std::fs::read_to_string(&live_path).expect("rewritten file");
     assert_eq!(after_reference, after_us, "our rewrite is byte-identical");
