@@ -75,6 +75,21 @@ pub fn read_strict(path: &Path, allow_unknown: bool) -> Result<Vec<LineRecord>> 
                 reason: source.to_string(),
             }
         })?;
+        // Scalars and null crash the reference reader (`"outcome" in
+        // raw` on a non-object); objects and arrays pass (arrays count
+        // as records there). Clean error instead — README DEVIATIONS.
+        if !matches!(record, Value::Object(_) | Value::Array(_)) {
+            let preview = if trimmed.len() > 80 {
+                format!("{}...", &trimmed[..77])
+            } else {
+                trimmed.to_string()
+            };
+            return Err(Error::NotAnObject {
+                path: path.to_path_buf(),
+                line: index + 1,
+                preview,
+            });
+        }
         normalize_legacy_outcome(&mut record);
         let kind = record.get("type").and_then(Value::as_str).unwrap_or("");
         if !allow_unknown && !kind.is_empty() && !PAYLOAD_TYPES.contains(&kind) {
@@ -249,6 +264,42 @@ pub enum ResolveError {
     },
 }
 
+/// One lenient line finding (reference `validate`/`doctor` readers):
+/// blank and comment lines are skipped silently, every other line
+/// carries its parse outcome. Line numbers are 1-based and physical.
+#[derive(Debug)]
+pub enum LenientLine {
+    /// A parsed record — any JSON value; shape checks belong to the
+    /// consumer.
+    Record { line: usize, record: Value },
+    /// An unparsable line.
+    Malformed { line: usize },
+}
+
+/// Reads a record file leniently, per line (reference validate/doctor
+/// semantics): parse failures are findings, not errors. A missing file
+/// reads as empty; other I/O problems read as empty too (the lenient
+/// readers never fail the command).
+pub fn read_lenient(path: &Path) -> Vec<LenientLine> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut lines = Vec::new();
+    for (index, line) in text.split('\n').enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let finding = match serde_json::from_str::<Value>(trimmed) {
+            Ok(record) => LenientLine::Record {
+                line: index + 1,
+                record,
+            },
+            Err(_) => LenientLine::Malformed { line: index + 1 },
+        };
+        lines.push(finding);
+    }
+    lines
+}
+
 /// Reference `resolveRecordId`: exact match on `mx-<hash>` or a bare
 /// hash, then a unique prefix match.
 ///
@@ -419,5 +470,63 @@ mod upsert_record_tests {
             Value::Object(upserted),
             json!({"name": "p", "id": "mx-explicit"})
         );
+    }
+}
+
+#[cfg(test)]
+mod lenient_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn read_lenient_reports_parse_outcomes_with_line_numbers() {
+        let dir = std::env::temp_dir().join(format!("mulch-lenient-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("d.jsonl");
+        std::fs::write(
+            &path,
+            "# banner\n{\"type\":\"convention\"}\n\nnot json\n[1,2]\n",
+        )
+        .expect("writable");
+
+        let findings = read_lenient(&path);
+        assert_eq!(findings.len(), 3, "banner and blank lines skip");
+        assert!(matches!(findings[0], LenientLine::Record { line: 2, .. }));
+        assert!(matches!(findings[1], LenientLine::Malformed { line: 4 }));
+        assert!(matches!(findings[2], LenientLine::Record { line: 5, .. }));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_strict_rejects_scalars_but_keeps_arrays() {
+        let dir = std::env::temp_dir().join(format!("mulch-strict-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("d.jsonl");
+
+        std::fs::write(&path, "[1,2,3]\n").expect("writable");
+        let records = read_strict(&path, false).expect("arrays are records");
+        assert_eq!(records.len(), 1);
+
+        std::fs::write(&path, "5\n").expect("writable");
+        let error = read_strict(&path, false).expect_err("scalars are errors");
+        assert!(matches!(error, Error::NotAnObject { line: 1, .. }));
+
+        std::fs::write(&path, "null\n").expect("writable");
+        assert!(matches!(
+            read_strict(&path, false),
+            Err(Error::NotAnObject { .. })
+        ));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_lenient_missing_file_reads_empty() {
+        let missing = std::path::Path::new("/nonexistent-mulch-probe/d.jsonl");
+        assert!(read_lenient(missing).is_empty());
+        // the json! import keeps this module honest about shapes
+        let _ = json!({});
     }
 }

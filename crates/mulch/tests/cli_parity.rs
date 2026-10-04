@@ -1249,6 +1249,111 @@ fn outcome_read_only_matches_reference() {
     assert_eq!(ours_missing.stderr, theirs_missing.stderr);
 }
 
+// ---- sprint 8 (mulch-00aa): status reads strictly, lenient seam ----
+
+#[test]
+fn status_reader_surfaces_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("stat-rd-ours");
+    let theirs = TempDir::new("stat-rd-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "d1"]);
+        let _ = run_in(dir, &ml, &["add", "d2"]);
+    }
+    // fixed, far-apart recorded_at stamps keep the "Xd ago -> Xh ago"
+    // buckets stable for the test duration; the array line counts.
+    let corpus = "{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-09-30T08:00:00.000Z\",\"content\":\"old\",\"id\":\"mx-bbbbbb\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T04:00:00.000Z\",\"content\":\"new\",\"id\":\"mx-cccccc\"}\n[1,2,3]\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            corpus,
+        )
+        .expect("corpus writable");
+        // d2 keeps its empty file; a file-less domain renders "never"
+        std::fs::remove_file(dir.join(".mulch").join("expertise").join("d2.jsonl"))
+            .expect("d2 file removable");
+    }
+
+    // plain: count includes the array line, the recorded range renders,
+    // the file-less domain says "never"
+    let ours_plain = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    let theirs_plain = run_in(&theirs.0, &ml, &["status"]);
+    assert_eq!(ours_plain.code, theirs_plain.code);
+    assert_eq!(ours_plain.stdout, theirs_plain.stdout);
+
+    // json: same story (timestamps normalized)
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "status"]);
+    let theirs_json = run_in(&theirs.0, &ml, &["--json", "status"]);
+    assert_eq!(ours_json.code, theirs_json.code);
+    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
+
+    // scalar line: both exit 1; the reference stack-traces (DEVIATIONS:
+    // ours is a clean error), so only the code is comparable
+    let scalar = "5\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            scalar,
+        )
+        .expect("scalar writable");
+    }
+    let ours_scalar = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    let theirs_scalar = run_in(&theirs.0, &ml, &["status"]);
+    assert_eq!(ours_scalar.code, theirs_scalar.code);
+    assert_eq!(ours_scalar.code, 1);
+    assert!(
+        ours_scalar.stderr.contains("non-object record at"),
+        "clean scalar error, got: {}",
+        ours_scalar.stderr
+    );
+
+    // malformed line: same class (reference stack-traces)
+    let malformed = "{\"type\":\"convention\" ...\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            malformed,
+        )
+        .expect("malformed writable");
+    }
+    let ours_bad = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    let theirs_bad = run_in(&theirs.0, &ml, &["status"]);
+    assert_eq!(ours_bad.code, theirs_bad.code);
+    assert_eq!(ours_bad.code, 1);
+    assert!(
+        ours_bad.stderr.contains("Malformed JSONL at"),
+        "clean malformed error, got: {}",
+        ours_bad.stderr
+    );
+
+    // unknown type: both exit 1 (reference stack-traces; ours clean)
+    let unknown = "{\"type\":\"wat\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"x\",\"id\":\"mx-dddddd\"}\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            unknown,
+        )
+        .expect("unknown writable");
+    }
+    let ours_unknown = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    let theirs_unknown = run_in(&theirs.0, &ml, &["status"]);
+    assert_eq!(ours_unknown.code, theirs_unknown.code);
+    assert_eq!(ours_unknown.code, 1);
+
+    // --allow-unknown-types keeps status alive (reference flag too)
+    let ours_flag = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "status",
+        "--allow-unknown-types",
+    ]);
+    let theirs_flag = run_in(&theirs.0, &ml, &["status", "--allow-unknown-types"]);
+    assert_eq!(ours_flag.code, theirs_flag.code);
+    assert_eq!(ours_flag.stdout, theirs_flag.stdout);
+}
+
 // ---- sprint 6 (mulch-ccf6): record upsert semantics ----
 
 #[test]

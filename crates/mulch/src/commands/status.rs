@@ -1,6 +1,5 @@
 //! `mulch status` — domain statistics, plain and `--json`.
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
@@ -35,7 +34,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let mut domain_lines = Vec::new();
     let mut domains_json = Vec::new();
     for domain in store.domains() {
-        let (records, mtime) = read_domain(&store, &domain)?;
+        let (records, mtime) = read_domain(opts, &store, &domain)?;
         let status = DomainStatus::compute(&domain, &records, mtime, now, &rule);
 
         domain_lines.push(status.plain_line(now));
@@ -70,8 +69,8 @@ struct DomainStatus {
     oldest_recorded:       Option<Timestamp>,
     newest_recorded:       Option<Timestamp>,
     stale_count:           usize,
-    type_counts:           BTreeMap<&'static str, usize>,
-    classification_counts: BTreeMap<&'static str, usize>,
+    type_counts:           Map<String, Value>,
+    classification_counts: Map<String, Value>,
 }
 
 impl DomainStatus {
@@ -82,22 +81,44 @@ impl DomainStatus {
         now: Timestamp,
         rule: &StaleRule,
     ) -> Self {
-        let mut type_counts = BTreeMap::new();
-        let mut classification_counts = BTreeMap::new();
+        // Ordered distributions with the reference's JS key semantics:
+        // seeded known keys first, then extras in first-seen order; a
+        // non-string (undefined) field lands under the literal key
+        // "undefined", and classification counters beyond the seeded
+        // three are NaN in the reference — JSON `null`.
+        let mut type_counts = Map::new();
+        for kind in TYPES {
+            type_counts.insert((*kind).into(), json_num(0));
+        }
+        let mut classification_counts = Map::new();
+        for class in CLASSIFICATIONS {
+            classification_counts.insert((*class).into(), json_num(0));
+        }
         let mut oldest_recorded = None;
         let mut newest_recorded = None;
         let mut stale_count = 0;
 
         for record in records {
             let field = |name: &str| record.get(name).and_then(Value::as_str);
-            if let Some(kind) = field("type").and_then(|t| TYPES.iter().find(|k| **k == t)) {
-                *type_counts.entry(*kind).or_insert(0) += 1;
-            }
-            if let Some(class) =
-                field("classification").and_then(|c| CLASSIFICATIONS.iter().find(|k| **k == c))
-            {
-                *classification_counts.entry(*class).or_insert(0) += 1;
-            }
+            let type_key = field("type").unwrap_or("undefined");
+            let counted = match type_counts.get(type_key) {
+                Some(Value::Number(number)) => number.as_u64().map_or(1, |counted| counted + 1),
+                _ => 1,
+            };
+            type_counts.insert(type_key.into(), json_num(counted));
+            let class_key = field("classification").unwrap_or("undefined");
+            let next_class = if CLASSIFICATIONS.contains(&class_key) {
+                match classification_counts.get(class_key) {
+                    Some(Value::Number(number)) => {
+                        number.as_u64().map_or(Value::Null, |n| json_num(n + 1))
+                    }
+                    _ => Value::Null,
+                }
+            } else {
+                // NaN -> null in the reference's JSON
+                Value::Null
+            };
+            classification_counts.insert(class_key.into(), next_class);
             if let Ok(Some(recorded)) = parse_timestamp(field("recorded_at")) {
                 if oldest_recorded.is_none_or(|o| recorded < o) {
                     oldest_recorded = Some(recorded);
@@ -130,10 +151,16 @@ impl DomainStatus {
             self.domain,
             self.count,
             self.last_updated
-                .map_or_else(|| "unknown".into(), |t| relative(t, now))
+                .map_or_else(|| "never".into(), |t| relative(t, now))
         );
-        if let Some(newest) = self.newest_recorded {
-            let _ = write!(line, " — recorded {}", relative(newest, now));
+        if let (Some(oldest), Some(newest)) = (self.oldest_recorded, self.newest_recorded) {
+            let oldest_ago = relative(oldest, now);
+            let newest_ago = relative(newest, now);
+            if oldest_ago == newest_ago {
+                let _ = write!(line, " — recorded {oldest_ago}");
+            } else {
+                let _ = write!(line, " — recorded {oldest_ago} → {newest_ago}");
+            }
         }
         line
     }
@@ -143,13 +170,10 @@ impl DomainStatus {
         let mut health = Map::new();
         health.insert("governance_utilization".into(), json_num(self.count as u64));
         health.insert("stale_count".into(), json_num(self.stale_count as u64));
-        health.insert(
-            "type_distribution".into(),
-            distribution(&self.type_counts, &TYPES),
-        );
+        health.insert("type_distribution".into(), Value::Object(self.type_counts));
         health.insert(
             "classification_distribution".into(),
-            distribution(&self.classification_counts, &CLASSIFICATIONS),
+            Value::Object(self.classification_counts),
         );
         health.insert(
             "oldest_timestamp".into(),
@@ -182,23 +206,23 @@ impl DomainStatus {
     }
 }
 
-/// Reads a domain's records for reporting: every parseable object line
-/// counts, malformed lines are skipped (status never fails on them).
-/// The seam supplies the raw lines and the modification time.
+/// Reads a domain's records for reporting through the strict reader
+/// (the reference status uses `readExpertiseFile`): arrays count as
+/// records, scalar/null lines are a clean error where the reference
+/// crashes, unknown types error unless allowed. The seam supplies the
+/// modification time.
 fn read_domain(
+    opts: &GlobalOpts,
     store: &mulch::StoreFiles,
     domain: &str,
 ) -> Result<(Vec<Value>, Option<Timestamp>), Failure> {
-    let lines = store
-        .read_lines(domain)
-        .map_err(|source| Failure::handled("status", crate::output::chain_message(&source)))?;
-    let records = lines
-        .iter()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        // only object lines are records (the old Record::parse required
-        // a JSON object — bare scalars stay skipped)
-        .filter(Value::is_object)
+    let records = store
+        .read_records(domain, opts.allow_unknown_types)
+        .map_err(|source| {
+            Failure::handled_on_stderr("status", crate::commands::render_core_error(&source))
+        })?
+        .into_iter()
+        .map(|line| line.record)
         .collect();
     let mtime = store
         .domain_modified(domain)
@@ -243,18 +267,6 @@ fn timestamp_json(time: Option<Timestamp>) -> Value {
         None => Value::Null,
         Some(t) => Value::String(t.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
     }
-}
-
-/// The always-complete ordered distribution object.
-fn distribution<'a>(counts: &BTreeMap<&'a str, usize>, order: &[&'a str]) -> Value {
-    let mut map = Map::new();
-    for key in order {
-        map.insert(
-            (*key).into(),
-            json_num(counts.get(key).copied().unwrap_or(0) as u64),
-        );
-    }
-    Value::Object(map)
 }
 
 /// Governance defaults block (absent config → reference defaults).

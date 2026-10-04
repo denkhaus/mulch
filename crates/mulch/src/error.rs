@@ -96,6 +96,18 @@ pub enum Error {
         record_type: String,
     },
 
+    /// A JSONL line parsed to a scalar or `null` (the reference reader
+    /// crashes on such lines — README DEVIATIONS: clean error).
+    #[error("non-object record at {path} line {line}")]
+    NotAnObject {
+        /// The JSONL file being parsed.
+        path:    PathBuf,
+        /// The 1-based line number.
+        line:    usize,
+        /// The offending line (truncated like [`Error::MalformedLine`]).
+        preview: String,
+    },
+
     /// A record is missing a field the format requires.
     #[error("record {path} line {line} is missing required field `{field}`")]
     MissingField {

@@ -21,22 +21,17 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let mut findings = Vec::new();
     let mut total_records = 0;
     for domain in store.domains() {
-        let text = std::fs::read_to_string(store.domain_path(&domain)).unwrap_or_default();
-        // Physical 1-based line numbers: blank lines are skipped as
-        // records but still counted by position (reference addressing).
-        for (index, line) in text.lines().enumerate() {
-            let line_no = index + 1;
-            if line.trim().is_empty() {
-                continue;
-            }
+        // The one lenient reader (lib seam): parse outcomes are
+        // findings, physical line numbers preserved.
+        for finding in store.read_lenient(&domain) {
             total_records += 1;
-            match serde_json::from_str::<Value>(line) {
-                Err(_) => findings.push(Finding {
-                    domain:  domain.clone(),
-                    line:    line_no,
+            match finding {
+                mulch::LenientLine::Malformed { line } => findings.push(Finding {
+                    domain: domain.clone(),
+                    line,
                     message: "Invalid JSON: failed to parse".into(),
                 }),
-                Ok(record) => {
+                mulch::LenientLine::Record { line, record } => {
                     let unknown = matches!(
                         crate::commands::schema::verdict(&record),
                         crate::commands::schema::Verdict::Unknown(_)
@@ -47,7 +42,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
                     if let Some(message) = validate_message(&record) {
                         findings.push(Finding {
                             domain: domain.clone(),
-                            line: line_no,
+                            line,
                             message,
                         });
                     }
