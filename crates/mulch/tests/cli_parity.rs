@@ -2741,6 +2741,118 @@ fn edit_outcome_identifier_resolution_matches_reference() {
         &error_envelope("edit", ambiguous),
     );
 
+    // outcome LISTING (no --status) resolves prefixes too and prints
+    // the resolved id in its header
+    let (ours, theirs) = twin_seeded(
+        "eolist",
+        None,
+        &[(
+            "alpha",
+            format!("{ALPHA_ONE}\nmx-ab1111-placeholder\n").as_str(),
+        )],
+        &[],
+    );
+    // craft a store where the first record carries an outcome array
+    let with_outcome = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"name\":\"Alpha One\",\"description\":\"d\",\"id\":\"mx-1bb21d\",\"outcomes\":[{\"status\":\"success\"}]}\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("alpha.jsonl"),
+            with_outcome,
+        )
+        .expect("store writable");
+    }
+    let list_prefix = ["outcome", "alpha", "1bb21d"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &list_prefix);
+    let their = run_in(&theirs.0, &ml, &list_prefix);
+    assert_eq!(our.code, their.code, "listing resolves the prefix");
+    assert_eq!(our.stdout, their.stdout, "listing stdout");
+    assert_eq!(our.stdout, "Outcomes for mx-1bb21d (1):\n  1. success\n");
+
+    // a non-object record under a prefix input: both sides report the
+    // non-object clean error (reference crashes — DEVIATIONS)
+    let scalar_store = "5\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("alpha.jsonl"),
+            scalar_store,
+        )
+        .expect("scalar store writable");
+    }
+    let our_scalar = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "edit",
+        "alpha",
+        "1bb",
+        "--description",
+        "x",
+    ]);
+    assert_eq!(our_scalar.code, 1);
+    assert!(
+        our_scalar.stderr.contains("non-object record at"),
+        "clean scalar error, got: {}",
+        our_scalar.stderr
+    );
+
+    // json surfaces carry the resolved id too: edit success, outcome
+    // append success, outcome listing, and the ambiguous envelope
+    let (ours, theirs) = twin_seeded("eojson", None, &[("alpha", seed.as_str())], &[]);
+    let edit_json = [
+        "--json",
+        "edit",
+        "alpha",
+        "1bb21d",
+        "--description",
+        "touched",
+    ];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &edit_json);
+    let their = run_in(&theirs.0, &ml, &edit_json);
+    assert_eq!(our.code, their.code);
+    assert_eq!(
+        normalize(&our.stdout),
+        normalize(&their.stdout),
+        "edit json"
+    );
+    assert!(
+        our.stdout.contains("\"id\": \"mx-1bb21d\""),
+        "{}",
+        our.stdout
+    );
+
+    let (ours, theirs) = twin_seeded("eojson2", None, &[("alpha", seed.as_str())], &[]);
+    let out_json = [
+        "--json", "outcome", "alpha", "1bb21d", "--status", "success",
+    ];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &out_json);
+    let their = run_in(&theirs.0, &ml, &out_json);
+    assert_eq!(our.code, their.code);
+    assert_eq!(
+        normalize(&our.stdout),
+        normalize(&their.stdout),
+        "outcome json"
+    );
+
+    let listing_json = ["--json", "outcome", "alpha", "mx-1b"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &listing_json);
+    let their = run_in(&theirs.0, &ml, &listing_json);
+    assert_eq!(our.code, their.code);
+    assert_eq!(
+        normalize(&our.stdout),
+        normalize(&their.stdout),
+        "outcome listing json"
+    );
+
+    let (ours, theirs) = twin_seeded("eoambout", None, &[("alpha", seed.as_str())], &[]);
+    let amb_out_json = ["--json", "outcome", "alpha", "mx-", "--status", "success"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &amb_out_json);
+    let their = run_in(&theirs.0, &ml, &amb_out_json);
+    assert_eq!(our.code, 1);
+    assert_same_stderr(
+        &ours,
+        &our,
+        &theirs,
+        &their,
+        &error_envelope("outcome", ambiguous),
+    );
+
     // Unknown identifier keeps the not-found text.
     for (index, args) in [
         &["edit", "alpha", "zzz", "--description", "x"] as &[&str],

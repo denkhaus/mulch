@@ -30,10 +30,14 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     // Identifier resolution like delete/move: exact id, bare hash, or
     // a unique prefix (reference `resolveRecordId`; mulch-351d).
     let position = mulch::resolve_record_id(&records, &args.id)
-        .map_err(|error| crate::commands::resolve_failure("edit", &args.id, error))?;
+        .map_err(|error| crate::commands::resolve_failure("edit", error))?;
     // Output surfaces carry the resolved record's own id (reference
-    // `record.id`), not the input prefix.
-    let resolved_id = records[position].id().unwrap_or(&args.id).to_string();
+    // `record.id`; its `?? id` fallback is dead — resolution matches
+    // only identified records).
+    let resolved_id = records[position]
+        .id()
+        .expect("resolve_record_id matches only identified records")
+        .to_string();
     let mut record: Map<String, Value> = match records[position].record.as_object().cloned() {
         Some(object) => object,
         None => {

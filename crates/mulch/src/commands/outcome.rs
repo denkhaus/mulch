@@ -36,8 +36,9 @@ pub(super) fn run(
     }
 }
 
-/// Reads the domain strictly and locates the record whose `id` equals
-/// `id` exactly (identifier resolution stays mulch-351d's scope).
+/// Reads the domain strictly and resolves `id` like delete/move
+/// (exact id, bare hash, or a unique prefix — reference
+/// `resolveRecordId`).
 fn read_and_locate(
     store: &mulch::StoreFiles,
     domain: &str,
@@ -51,7 +52,7 @@ fn read_and_locate(
         })?;
     // Identifier resolution like delete/move (mulch-351d).
     let position = mulch::resolve_record_id(&records, id)
-        .map_err(|error| crate::commands::resolve_failure("outcome", id, error))?;
+        .map_err(|error| crate::commands::resolve_failure("outcome", error))?;
     Ok((records, position))
 }
 
@@ -66,9 +67,12 @@ fn list(
     id: &str,
 ) -> Result<(), Failure> {
     let (records, position) = read_and_locate(store, domain, id, opts.allow_unknown_types)?;
-    // The header carries the record's own id (the input id only when
-    // the record has none — impossible while matching is exact).
-    let record_id = records[position].id().unwrap_or(id);
+    // The header carries the record's own id: resolution only ever
+    // matches records that have one (the reference's `record.id ?? id`
+    // fallback is equally dead there).
+    let record_id = records[position]
+        .id()
+        .expect("resolve_record_id matches only identified records");
     // `record.outcomes ?? []`: absent and null both behave as empty;
     // any other value passes through raw (the json envelope echoes it
     // verbatim, the plain listing trips over it below).
@@ -180,9 +184,13 @@ fn append(
     flags: &OutcomeFlags,
 ) -> Result<(), Failure> {
     let (mut records, position) = read_and_locate(store, domain, id, opts.allow_unknown_types)?;
-    // Output surfaces carry the resolved record's own id (reference
-    // `record.id ?? id`).
-    let resolved_id = records[position].id().unwrap_or(id).to_string();
+    // Output surfaces carry the resolved record's own id (the
+    // reference's `record.id ?? id` fallback is dead: resolution
+    // matches only identified records).
+    let resolved_id = records[position]
+        .id()
+        .expect("resolve_record_id matches only identified records")
+        .to_string();
     let mut record: Map<String, Value> = match records[position].record.as_object().cloned() {
         Some(object) => object,
         None => {

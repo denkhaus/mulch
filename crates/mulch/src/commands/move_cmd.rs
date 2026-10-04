@@ -48,7 +48,7 @@ pub(super) fn run(
             Failure::handled_on_stderr("move", crate::commands::render_core_error(&source_err))
         })?;
     let index = resolve_record_id(&lines, id)
-        .map_err(|error| crate::commands::resolve_failure("move", id, error))?;
+        .map_err(|error| crate::commands::resolve_failure("move", error))?;
     let record = lines[index].record.clone();
     let kind = lines[index].record_type();
     let record_id = lines[index].id().map(str::to_string);

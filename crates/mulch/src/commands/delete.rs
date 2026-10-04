@@ -231,8 +231,7 @@ pub(super) fn run(
 
 /// Resolves one identifier against the domain's records.
 fn resolve(lines: &[mulch::LineRecord], id: &str) -> Result<usize, Failure> {
-    resolve_record_id(lines, id)
-        .map_err(|error| crate::commands::resolve_failure("delete", id, error))
+    resolve_record_id(lines, id).map_err(|error| crate::commands::resolve_failure("delete", error))
 }
 
 /// The unknown-domain failure (plain and json texts differ).

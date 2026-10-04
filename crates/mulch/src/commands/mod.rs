@@ -160,7 +160,7 @@ pub(crate) fn domain_not_found_json(command: &str, domain: &str, available: &[St
 /// The shared identifier-resolution failure: the reference's
 /// not-found and ambiguous texts (identical across the record
 /// commands; `command` selects the envelope's command field).
-pub(crate) fn resolve_failure(command: &'static str, id: &str, error: ResolveError) -> Failure {
+pub(crate) fn resolve_failure(command: &str, error: ResolveError) -> Failure {
     match error {
         ResolveError::NotFound(identifier) => Failure::handled_on_stderr(
             command,
@@ -168,10 +168,14 @@ pub(crate) fn resolve_failure(command: &'static str, id: &str, error: ResolveErr
                 "Error: Record \"{identifier}\" not found. Run `mulch query` to see record IDs."
             ),
         ),
-        ResolveError::Ambiguous { count, ids } => Failure::handled_on_stderr(
+        ResolveError::Ambiguous {
+            identifier,
+            count,
+            ids,
+        } => Failure::handled_on_stderr(
             command,
             format!(
-                "Error: Ambiguous identifier \"{id}\" matches {count} records: {}. Use more characters to disambiguate.",
+                "Error: Ambiguous identifier \"{identifier}\" matches {count} records: {}. Use more characters to disambiguate.",
                 ids.join(", ")
             ),
         ),

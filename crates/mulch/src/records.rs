@@ -278,10 +278,12 @@ pub enum ResolveError {
     NotFound(String),
     /// Several records matched the prefix.
     Ambiguous {
+        /// The queried identifier.
+        identifier: String,
         /// How many matched.
-        count: usize,
+        count:      usize,
         /// The matching ids.
-        ids:   Vec<String>,
+        ids:        Vec<String>,
     },
 }
 
@@ -350,8 +352,9 @@ pub fn resolve_record_id(
         [single] => Ok(*single),
         [] => Err(ResolveError::NotFound(identifier.to_string())),
         many => Err(ResolveError::Ambiguous {
-            count: many.len(),
-            ids:   many
+            identifier: identifier.to_string(),
+            count:      many.len(),
+            ids:        many
                 .iter()
                 .filter_map(|index| records[*index].id().map(str::to_string))
                 .collect(),
