@@ -647,7 +647,6 @@ fn stdin_batch(
                     args.domain
                 );
                 if created > 0 {
-                    use std::fmt::Write as _;
                     let _ = write!(text, "\n  Create: {created}");
                 }
                 if updated > 0 {
@@ -708,13 +707,17 @@ fn stdin_batch(
         return Err(failure);
     }
 
-    // The batch path always rewrites through the compact writer
-    // (reference `writeExpertiseFile`): comments and blank lines drop,
-    // id-less survivors get ids, and create-only batches rewrite too
-    // (mulch-ca49; the FLAG path keeps its verbatim append).
-    store
-        .rewrite_domain(&args.domain, &working)
-        .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
+    // The batch path rewrites through the compact writer whenever
+    // anything was written (reference guard `created > 0 || updated >
+    // 0`; record.ts:419): comments and blank lines drop, id-less
+    // survivors get ids — but a skip-only or empty batch leaves the
+    // file byte-identical (mulch-ca49; the FLAG path keeps its
+    // verbatim append).
+    if created > 0 || updated > 0 {
+        store
+            .rewrite_domain(&args.domain, &working)
+            .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
+    }
 
     if opts.json {
         let mut fields = serde_json::Map::new();

@@ -2914,6 +2914,33 @@ fn batch_summary_surfaces_match_reference() {
         normalize_line(&read_store_file(&theirs.0, "expertise/d.jsonl"))
     );
 
+    // all-duplicates dry-run: Would process 0 with only a Skip line
+    let (ours, theirs) = twin_seeded("bs-alldup", None, &[("d", seed)], &[]);
+    let alldup = "[{\"type\":\"convention\",\"content\":\"same\"},{\"type\":\"pattern\",\"name\":\"p\",\"description\":\"again\"}]";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("alldup.json"), alldup).expect("batch file");
+    }
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--batch",
+        "alldup.json",
+        "--dry-run",
+    ]);
+    let their = run_in(&theirs.0, &ml, &[
+        "record",
+        "d",
+        "--batch",
+        "alldup.json",
+        "--dry-run",
+    ]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout, "all-duplicates dry-run");
+    assert_eq!(
+        our.stdout,
+        "✓ Dry-run complete. Would process 1 record(s) in d:\n  Update: 1\n  Skip: 1\n  Run without --dry-run to apply changes.\n"
+    );
+
     // empty batch: nothing in normal mode, the notice in dry-run
     let (ours, theirs) = twin_seeded("bs-empty", None, &[("d", seed)], &[]);
     for dir in [&ours.0, &theirs.0] {
@@ -2946,9 +2973,33 @@ fn batch_summary_surfaces_match_reference() {
     assert_eq!(our.stdout, their.stdout);
     assert_eq!(our.stdout, "No records would be processed.\n");
 
+    let commented = format!("# banner\n\n{seed}\n\n");
+
+    // skip-only batch: the reference does NOT write (guard
+    // `created > 0 || updated > 0`), so comments survive untouched
+    let (ours, theirs) = twin_seeded("bs-skiponly", None, &[("d", &commented)], &[]);
+    let skiponly = "[{\"type\":\"convention\",\"content\":\"same\"}]";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("skiponly.json"), skiponly).expect("batch file");
+    }
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--batch",
+        "skiponly.json",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["record", "d", "--batch", "skiponly.json"]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout, "skip-only summary");
+    assert_eq!(our.stdout, "Skipped 1 duplicate(s) in d\n");
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        commented,
+        "skip-only batch must not write"
+    );
+
     // create-only batch on a commented store rewrites compactly on
     // both sides (comments and blank lines drop)
-    let commented = format!("# banner\n\n{seed}\n\n");
     let (ours, theirs) = twin_seeded("bs-compact", None, &[("d", &commented)], &[]);
     let one = "[{\"type\":\"guide\",\"name\":\"g2\",\"description\":\"gd2\"}]";
     for dir in [&ours.0, &theirs.0] {
