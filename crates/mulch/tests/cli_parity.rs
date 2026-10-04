@@ -1068,6 +1068,672 @@ fn outcome_matches_reference() {
     assert_eq!(ours_missing.stderr, theirs_missing.stderr);
 }
 
+// ---- sprint 5 (mulch-b88b): outcome without --status is read-only ----
+
+#[test]
+fn outcome_read_only_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("outc-ro-ours");
+    let theirs = TempDir::new("outc-ro-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "d",
+            "--type",
+            "pattern",
+            "--name",
+            "p",
+            "--description",
+            "d",
+        ]);
+    }
+    let id = pattern_p_id();
+
+    // empty listing: same notice on both sides, store untouched
+    let ours_before = read_store_file(&ours.0, "expertise/d.jsonl");
+    let theirs_before = read_store_file(&theirs.0, "expertise/d.jsonl");
+    let listing = ["outcome", "d", &id];
+    let ours_empty = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    let theirs_empty = run_in(&theirs.0, &ml, &listing);
+    assert_eq!(ours_empty.code, theirs_empty.code);
+    assert_eq!(ours_empty.stdout, theirs_empty.stdout);
+    assert_eq!(ours_empty.stderr, theirs_empty.stderr);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        ours_before,
+        "read-only listing must not write"
+    );
+    assert_eq!(
+        read_store_file(&theirs.0, "expertise/d.jsonl"),
+        theirs_before
+    );
+
+    // json envelope of the empty listing: outcomes stays []
+    let json_empty = ["--json", "outcome", "d", &id];
+    let ours_json_empty = run_in(&ours.0, Path::new(mulch_bin()), &json_empty);
+    let theirs_json_empty = run_in(&theirs.0, &ml, &json_empty);
+    assert_eq!(ours_json_empty.code, theirs_json_empty.code);
+    assert_eq!(ours_json_empty.stdout, theirs_json_empty.stdout);
+
+    // two outcomes with different field shapes, then the populated listing
+    for outcome in [
+        vec![
+            "outcome",
+            "d",
+            &id,
+            "--status",
+            "success",
+            "--agent",
+            "probe-agent",
+            "--duration",
+            "42",
+            "--notes",
+            "went fine",
+            "--test-results",
+            "3 passed",
+        ],
+        vec![
+            "outcome", "d", &id, "--status", "failure", "--notes", "second",
+        ],
+    ] {
+        let ours_add = run_in(&ours.0, Path::new(mulch_bin()), &outcome);
+        let theirs_add = run_in(&theirs.0, &ml, &outcome);
+        assert_eq!(ours_add.code, theirs_add.code);
+        assert_eq!(ours_add.stdout, theirs_add.stdout);
+    }
+    let ours_before = read_store_file(&ours.0, "expertise/d.jsonl");
+    let ours_list = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    let theirs_list = run_in(&theirs.0, &ml, &listing);
+    assert_eq!(ours_list.code, theirs_list.code);
+    assert_eq!(
+        normalize(&ours_list.stdout),
+        normalize(&theirs_list.stdout),
+        "populated listing must render every detail line"
+    );
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        ours_before,
+        "populated listing must not write"
+    );
+
+    // json listing carries the raw outcomes array (key order preserved)
+    let json = ["--json", "outcome", "d", &id];
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &json);
+    let theirs_json = run_in(&theirs.0, &ml, &json);
+    assert_eq!(ours_json.code, theirs_json.code);
+    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
+
+    // quiet suppresses the plain listing entirely
+    let quiet = ["--quiet", "outcome", "d", &id];
+    let ours_quiet = run_in(&ours.0, Path::new(mulch_bin()), &quiet);
+    let theirs_quiet = run_in(&theirs.0, &ml, &quiet);
+    assert_eq!(ours_quiet.code, theirs_quiet.code);
+    assert_eq!(ours_quiet.stdout, theirs_quiet.stdout);
+    assert_eq!(ours_quiet.stdout, "");
+
+    // crafted stores pin the odd read-only surfaces: a legacy singular
+    // `outcome` object (reader normalization) and a hand-corrupted
+    // non-array `outcomes` value (header + engine error, raw json)
+    let legacy = serde_json::json!({
+        "type": "pattern",
+        "classification": "tactical",
+        "recorded_at": "2026-10-04T08:00:00.000Z",
+        "name": "p",
+        "description": "d",
+        "id": id.clone(),
+        "outcome": {"status": "success", "agent": "legacy"}
+    });
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d.jsonl"),
+            format!("{legacy}\n"),
+        )
+        .expect("crafted store writable");
+    }
+    let ours_legacy = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    let theirs_legacy = run_in(&theirs.0, &ml, &listing);
+    assert_eq!(ours_legacy.code, theirs_legacy.code);
+    assert_eq!(ours_legacy.stdout, theirs_legacy.stdout);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        format!("{legacy}\n"),
+        "legacy listing must not write"
+    );
+
+    let corrupt = serde_json::json!({
+        "type": "pattern",
+        "classification": "tactical",
+        "recorded_at": "2026-10-04T08:00:00.000Z",
+        "name": "p",
+        "description": "d",
+        "id": id.clone(),
+        "outcomes": "not-an-array"
+    });
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d.jsonl"),
+            format!("{corrupt}\n"),
+        )
+        .expect("crafted store writable");
+    }
+    let ours_corrupt = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    let theirs_corrupt = run_in(&theirs.0, &ml, &listing);
+    assert_eq!(ours_corrupt.code, theirs_corrupt.code);
+    assert_eq!(ours_corrupt.stdout, theirs_corrupt.stdout);
+    assert_eq!(ours_corrupt.stderr, theirs_corrupt.stderr);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        format!("{corrupt}\n"),
+        "corrupted-store listing must not write"
+    );
+    let corrupt_json = ["--json", "outcome", "d", &id];
+    let ours_corrupt_json = run_in(&ours.0, Path::new(mulch_bin()), &corrupt_json);
+    let theirs_corrupt_json = run_in(&theirs.0, &ml, &corrupt_json);
+    assert_eq!(ours_corrupt_json.code, theirs_corrupt_json.code);
+    assert_eq!(ours_corrupt_json.stdout, theirs_corrupt_json.stdout);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        format!("{corrupt}\n"),
+        "corrupted-store json listing must not write"
+    );
+
+    // unknown id stays an error in read-only mode
+    let missing = ["outcome", "d", "mx-deadbe"];
+    let ours_missing = run_in(&ours.0, Path::new(mulch_bin()), &missing);
+    let theirs_missing = run_in(&theirs.0, &ml, &missing);
+    assert_eq!(ours_missing.code, theirs_missing.code);
+    assert_eq!(ours_missing.stderr, theirs_missing.stderr);
+}
+
+// ---- sprint 8 (mulch-00aa): status reads strictly, lenient seam ----
+
+#[test]
+fn status_reader_surfaces_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("stat-rd-ours");
+    let theirs = TempDir::new("stat-rd-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "d1"]);
+        let _ = run_in(dir, &ml, &["add", "d2"]);
+    }
+    // fixed, far-apart recorded_at stamps keep the "Xd ago" buckets
+    // stable for the test duration AND cross the observational shelf
+    // life (rotting); the array line counts, the numeric type line
+    // pins the integer-first distribution key order.
+    let corpus = "{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-08-26T08:00:00.000Z\",\"content\":\"old\",\"id\":\"mx-bbbbbb\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-08-27T08:00:00.000Z\",\"content\":\"new\",\"id\":\"mx-cccccc\"}\n[1,2,3]\n{\"type\":5,\"classification\":\"tactical\",\"recorded_at\":\"2026-08-26T08:00:00.000Z\",\"content\":\"numtype\",\"id\":\"mx-333333\"}\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            corpus,
+        )
+        .expect("corpus writable");
+        // d2 keeps its empty file; a file-less domain renders "never"
+        std::fs::remove_file(dir.join(".mulch").join("expertise").join("d2.jsonl"))
+            .expect("d2 file removable");
+    }
+
+    // plain: count includes the array line, the recorded range renders,
+    // the file-less domain says "never"
+    let ours_plain = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    let theirs_plain = run_in(&theirs.0, &ml, &["status"]);
+    assert_eq!(ours_plain.code, theirs_plain.code);
+    assert_eq!(ours_plain.stdout, theirs_plain.stdout);
+
+    // json: same story (timestamps normalized)
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "status"]);
+    let theirs_json = run_in(&theirs.0, &ml, &["--json", "status"]);
+    assert_eq!(ours_json.code, theirs_json.code);
+    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
+
+    // scalar line: both exit 1; the reference stack-traces (DEVIATIONS:
+    // ours is a clean error), so only the code is comparable
+    let scalar = "5\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            scalar,
+        )
+        .expect("scalar writable");
+    }
+    let ours_scalar = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    let theirs_scalar = run_in(&theirs.0, &ml, &["status"]);
+    assert_eq!(ours_scalar.code, theirs_scalar.code);
+    assert_eq!(ours_scalar.code, 1);
+    assert!(
+        ours_scalar.stderr.contains("non-object record at"),
+        "clean scalar error, got: {}",
+        ours_scalar.stderr
+    );
+
+    // malformed line: same class (reference stack-traces)
+    let malformed = "{\"type\":\"convention\" ...\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            malformed,
+        )
+        .expect("malformed writable");
+    }
+    let ours_bad = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    let theirs_bad = run_in(&theirs.0, &ml, &["status"]);
+    assert_eq!(ours_bad.code, theirs_bad.code);
+    assert_eq!(ours_bad.code, 1);
+    assert!(
+        ours_bad.stderr.contains("Malformed JSONL at"),
+        "clean malformed error, got: {}",
+        ours_bad.stderr
+    );
+
+    // unknown type: both exit 1 (reference stack-traces; ours clean)
+    let unknown = "{\"type\":\"wat\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"x\",\"id\":\"mx-dddddd\"}\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            unknown,
+        )
+        .expect("unknown writable");
+    }
+    let ours_unknown = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    let theirs_unknown = run_in(&theirs.0, &ml, &["status"]);
+    assert_eq!(ours_unknown.code, theirs_unknown.code);
+    assert_eq!(ours_unknown.code, 1);
+
+    // comment lines are findings for the raw-loop readers (validate,
+    // doctor jsonl-integrity) — only the strict reader skips them
+    // ...plus a legacy singular-outcome record: warning, not error
+    let commented = "# ARCHIVED — not for active use.\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"ok\",\"id\":\"mx-aaaaaa\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"legacy\",\"id\":\"mx-444444\",\"outcome\":{\"status\":\"success\"}}\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            commented,
+        )
+        .expect("commented writable");
+    }
+    let ours_validate = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    let theirs_validate = run_in(&theirs.0, &ml, &["validate"]);
+    assert_eq!(ours_validate.code, theirs_validate.code);
+    assert_eq!(ours_validate.stdout, theirs_validate.stdout);
+    assert_eq!(ours_validate.stderr, theirs_validate.stderr);
+
+    // --allow-unknown-types keeps status alive (reference flag too)
+    let ours_flag = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "status",
+        "--allow-unknown-types",
+    ]);
+    let theirs_flag = run_in(&theirs.0, &ml, &["status", "--allow-unknown-types"]);
+    assert_eq!(ours_flag.code, theirs_flag.code);
+    assert_eq!(ours_flag.stdout, theirs_flag.stdout);
+}
+
+// ---- sprint 6 (mulch-ccf6): record upsert semantics ----
+
+#[test]
+fn record_upsert_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("ccf6-ours");
+    let theirs = TempDir::new("ccf6-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "d",
+            "--type",
+            "pattern",
+            "--name",
+            "p",
+            "--description",
+            "v1",
+        ]);
+    }
+    let id = pattern_p_id();
+    let compare = |ours: (&Run, String), theirs: (&Run, String)| {
+        assert_eq!(ours.0.code, theirs.0.code);
+        assert_eq!(normalize(&ours.0.stdout), normalize(&theirs.0.stdout));
+        assert_eq!(normalize(&ours.0.stderr), normalize(&theirs.0.stderr));
+        assert_eq!(
+            normalize_line(&ours.1),
+            normalize_line(&theirs.1),
+            "store diverged"
+        );
+    };
+
+    // named duplicate upserts in place
+    let up = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v2",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &up),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &up),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // json updated envelope + outcomes carried into the upsert
+    let up_outcome = [
+        "--json",
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v3",
+        "--outcome-status",
+        "success",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &up_outcome),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &up_outcome),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // second outcome merges after the existing one
+    let up_outcome2 = [
+        "--json",
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v4",
+        "--outcome-status",
+        "failure",
+        "--outcome-agent",
+        "second-agent",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &up_outcome2),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &up_outcome2),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // anonymous duplicate skips with the advisory
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "same",
+    ]);
+    let _ = run_in(&theirs.0, &ml, &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "same",
+    ]);
+    let anon = ["record", "d", "--type", "convention", "--content", "same"];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &anon),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &anon),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // json skipped envelope carries the record number
+    let anon_json = [
+        "--json",
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "same",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &anon_json),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &anon_json),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // --force appends anyway
+    let force = [
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "same",
+        "--force",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &force),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &force),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // dry-run mirrors the decision without writing (plain + json)
+    let dry_named = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v9",
+        "--dry-run",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &dry_named),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &dry_named),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+    let dry_json = [
+        "--json",
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v9",
+        "--dry-run",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &dry_json),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &dry_json),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // a renamed record still dedupes (dedup field, not id) and the
+    // upsert corrects the stale id in place
+    let rename = ["edit", "d", &id, "--name", "p2"];
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &rename);
+    let _ = run_in(&theirs.0, &ml, &rename);
+    let renamed_up = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p2",
+        "--description",
+        "v10",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &renamed_up),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &renamed_up),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // batch: one new guide + one named duplicate -> created 1, updated 1
+    let batch = serde_json::json!([
+        {"type": "guide", "name": "g1", "description": "gd"},
+        {"type": "pattern", "name": "p2", "description": "batch-v11"}
+    ]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch.json"), format!("{batch}")).expect("batch file");
+    }
+    let run_batch = ["record", "d", "--batch", "batch.json", "--json"];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &run_batch),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &run_batch),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // within-batch duplicate in dry-run counts as another create
+    // (dedupe runs against the store only, never the batch)
+    let batch2 = serde_json::json!([
+        {"type": "pattern", "name": "q", "description": "q1"},
+        {"type": "pattern", "name": "q", "description": "q2"}
+    ]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch2.json"), format!("{batch2}")).expect("batch file");
+    }
+    let run_batch2 = [
+        "record",
+        "d",
+        "--batch",
+        "batch2.json",
+        "--json",
+        "--dry-run",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &run_batch2),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &run_batch2),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // non-dry within-batch duplicate upserts the batch's own record
+    let run_batch3 = ["record", "d", "--batch", "batch2.json", "--json"];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &run_batch3),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &run_batch3),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // an explicit batch id survives upsert AND create (generated ids
+    // only fill gaps — spec-review blocker F1)
+    let batch3 = serde_json::json!([
+        {"type": "pattern", "name": "p2", "description": "keep-id", "id": "mx-abcd1234"},
+        {"type": "guide", "name": "g2", "description": "gd2", "id": "mx-feed1234"}
+    ]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch3.json"), format!("{batch3}")).expect("batch file");
+    }
+    let run_batch4 = ["record", "d", "--batch", "batch3.json", "--json"];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &run_batch4),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &run_batch4),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // flag-path key order: outcomes precede dir_anchors on the
+    // rewritten line (spec-review minor F2)
+    let anchored = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p2",
+        "--description",
+        "v12",
+        "--dir-anchor",
+        "src/lib",
+        "--outcome-status",
+        "partial",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &anchored),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &anchored),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+}
+
 // ---- sprint 2 review round: json error channels, stdin/batch matrix ----
 
 #[test]
@@ -1993,6 +2659,676 @@ fn identifier_resolution_matches_reference() {
         &their,
         &error_envelope("move", ambiguous),
     );
+}
+
+// ---- sprint 10 (mulch-5f8a): required common fields + batch enrichment ----
+
+#[test]
+fn required_common_fields_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Hand-written stores (the `ml record` fixture would always carry
+    // classification + recorded_at, which hid this gap for 9 sprints).
+    let stores: [(&str, &str); 4] = [
+        (
+            "missing-both",
+            "{\"type\":\"convention\",\"content\":\"c\",\"id\":\"mx-aaaaaa\"}\n",
+        ),
+        (
+            "missing-recorded",
+            "{\"type\":\"pattern\",\"name\":\"n\",\"description\":\"d\",\"classification\":\"tactical\",\"id\":\"mx-bbbbbb\"}\n",
+        ),
+        (
+            "const-mix",
+            "{\"type\":\"convention\",\"name\":\"n\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"id\":\"mx-cccccc\"}\n",
+        ),
+        (
+            "no-type",
+            "{\"name\":\"n\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"id\":\"mx-dddddd\"}\n",
+        ),
+    ];
+    for (index, (tag, corpus)) in stores.iter().enumerate() {
+        // Plain `doctor` also runs the network update check (a known
+        // deviation), so it is compared by exit code only; the json
+        // shape is byte-comparable.
+        let (ours, theirs) = twin_seeded(&format!("req{index}"), None, &[("alpha", *corpus)], &[]);
+        for args in [
+            &["validate"] as &[&str],
+            &["--json", "validate"],
+            &["--json", "doctor"],
+            &["doctor"],
+        ] {
+            let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+            let their = run_in(&theirs.0, &ml, args);
+            assert_eq!(our.code, their.code, "{tag} {args:?} exit code");
+            assert_eq!(our.code, 1, "{tag} {args:?} must fail like the reference");
+            if args.contains(&"doctor") && !args.contains(&"--json") {
+                // doctor also runs the network update check (known
+                // deviation): compare only the failure line
+                assert!(
+                    our.stdout.contains("failed schema validation"),
+                    "{tag} plain doctor reports the failure"
+                );
+            } else if args.contains(&"doctor") {
+                // json doctor: compare the schema-validation check and
+                // the fail count (the upgrade check is network-bound)
+                let ours_json: serde_json::Value =
+                    serde_json::from_str(&our.stdout).expect("our json");
+                let theirs_json: serde_json::Value =
+                    serde_json::from_str(&their.stdout).expect("their json");
+                let pick = |value: &serde_json::Value| {
+                    value["checks"]
+                        .as_array()
+                        .expect("checks")
+                        .iter()
+                        .find(|check| check["name"] == "schema-validation")
+                        .cloned()
+                        .expect("schema-validation check")
+                };
+                assert_eq!(
+                    pick(&ours_json),
+                    pick(&theirs_json),
+                    "{tag} schema-validation check"
+                );
+                assert_eq!(
+                    ours_json["summary"]["fail"], theirs_json["summary"]["fail"],
+                    "{tag} fail count"
+                );
+            } else {
+                assert_eq!(
+                    normalize_dir(&our.stdout, &ours.0),
+                    normalize_dir(&their.stdout, &theirs.0),
+                    "{tag} {args:?} stdout"
+                );
+                // plain validate renders the details on STDERR — the
+                // gap that hid the const-mix spacing regression
+                assert_eq!(
+                    normalize_dir(&our.stderr, &ours.0),
+                    normalize_dir(&their.stderr, &theirs.0),
+                    "{tag} {args:?} stderr"
+                );
+            }
+        }
+    }
+
+    // A batch record without the common fields is ENRICHED before
+    // validation (reference `processStdinRecords`), so it is accepted.
+    let batch = "[{\"type\":\"guide\",\"name\":\"g\",\"description\":\"gd\"}]";
+    let (ours, theirs) = twin_seeded("reqbatch", None, &[("alpha", "")], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch.json"), batch).expect("batch file");
+    }
+    let args = ["record", "alpha", "--batch", "batch.json", "--json"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(normalize(&our.stdout), normalize(&their.stdout));
+    let ours_store = read_store_file(&ours.0, "expertise/alpha.jsonl");
+    let theirs_store = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+    assert_eq!(normalize_line(&ours_store), normalize_line(&theirs_store));
+    assert!(
+        ours_store.contains("\"classification\":\"tactical\""),
+        "batch enrichment fills classification: {ours_store}"
+    );
+
+    // an explicit recorded_at/classification survive the enrichment
+    // (`if (!("recorded_at" in record))` — the values must not be
+    // overwritten; timestamps are masked by normalize, so assert the
+    // literal string survives on BOTH sides)
+    let fixed = "2019-01-02T03:04:05.678Z";
+    let batch_kept = format!(
+        "[{{\"type\":\"guide\",\"name\":\"g2\",\"description\":\"gd2\",\"recorded_at\":\"{fixed}\",\"classification\":\"foundational\"}}]"
+    );
+    let (ours, theirs) = twin_seeded("reqbatch2", None, &[("alpha", "")], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch.json"), &batch_kept).expect("batch file");
+    }
+    let args = ["record", "alpha", "--batch", "batch.json", "--json"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(normalize(&our.stdout), normalize(&their.stdout));
+    let ours_store = read_store_file(&ours.0, "expertise/alpha.jsonl");
+    let theirs_store = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+    assert!(
+        ours_store.contains(fixed),
+        "our enrichment must keep the explicit recorded_at: {ours_store}"
+    );
+    assert!(
+        theirs_store.contains(fixed),
+        "reference keeps the explicit recorded_at: {theirs_store}"
+    );
+    assert!(
+        ours_store.contains("\"classification\":\"foundational\""),
+        "our enrichment must keep the explicit classification: {ours_store}"
+    );
+    assert_eq!(normalize_line(&ours_store), normalize_line(&theirs_store));
+
+    // Batch FAILURE surfaces: the entry carries the sub-errors without
+    // a prefix, a type hint only for registered types, and non-object
+    // items read `must be object`.
+    let failing = [
+        ("notype", "[{\"name\":\"n\",\"description\":\"d\"}]"),
+        ("typed", "[{\"type\":\"pattern\",\"name\":\"n\"}]"),
+        ("notobj", "[\"oops\"]"),
+    ];
+    for (index, (tag, batch)) in failing.iter().enumerate() {
+        let (ours, theirs) = twin_seeded(&format!("reqfail{index}"), None, &[("alpha", "")], &[]);
+        for dir in [&ours.0, &theirs.0] {
+            std::fs::write(dir.join("batch.json"), batch).expect("batch file");
+        }
+        for args in [&["record", "alpha", "--batch", "batch.json"] as &[&str], &[
+            "--json",
+            "record",
+            "alpha",
+            "--batch",
+            "batch.json",
+        ]] {
+            let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+            let their = run_in(&theirs.0, &ml, args);
+            assert_eq!(our.code, their.code, "{tag} {args:?} exit");
+            assert_eq!(
+                normalize_dir(&our.stdout, &ours.0),
+                normalize_dir(&their.stdout, &theirs.0),
+                "{tag} {args:?} stdout"
+            );
+            assert_eq!(
+                normalize_dir(&our.stderr, &ours.0),
+                normalize_dir(&their.stderr, &theirs.0),
+                "{tag} {args:?} stderr"
+            );
+        }
+    }
+
+    // `--files` on a type that does not declare it is DROPPED (the
+    // reference collects required ∪ optional fields only)
+    for (index, kind) in ["guide", "failure", "decision"].iter().enumerate() {
+        let (ours, theirs) = twin_seeded(&format!("b8cafiles{index}"), None, &[("alpha", "")], &[]);
+        let payload = match *kind {
+            "guide" => vec!["guide", "--name", "g", "--description", "d"],
+            "failure" => vec!["failure", "--description", "d", "--resolution", "r"],
+            _ => vec!["decision", "--title", "t", "--rationale", "r"],
+        };
+        let mut args = vec!["record", "alpha", "--type"];
+        args.extend(payload);
+        args.extend(["--files", "a.ts"]);
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_in(&theirs.0, &ml, &args);
+        assert_eq!(our.code, their.code, "{kind} --files exit");
+        assert_eq!(our.code, 0, "{kind} --files must succeed");
+        assert_eq!(our.stdout, their.stdout, "{kind} --files stdout");
+        let ours_store = read_store_file(&ours.0, "expertise/alpha.jsonl");
+        let theirs_store = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+        assert!(
+            !ours_store.contains("files"),
+            "{kind} must drop --files: {ours_store}"
+        );
+        assert_eq!(normalize_line(&ours_store), normalize_line(&theirs_store));
+    }
+
+    // Flag-path json failure: the envelope carries the validate-style
+    // text (not the plain rendering).
+    let (ours, theirs) = twin_seeded("reqflagjson", None, &[("alpha", "")], &[]);
+    let args = [
+        "--json",
+        "record",
+        "alpha",
+        "--type",
+        "pattern",
+        "--name",
+        "n",
+        "--description",
+        "d",
+        "--relates-to",
+        "bogus",
+    ];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stderr, their.stderr, "flag-path json envelope");
+}
+
+// ---- sprint 14 (mulch-b8ca): full subschema model ----
+
+#[test]
+fn schema_suberrors_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Each case was probe-fitted against ml 0.10.7: the branch reports
+    // its FIRST failure in required -> additionalProperties ->
+    // properties(declaration order) order.
+    let cases: [(&str, &str); 9] = [
+        (
+            "additional",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"bogus\":1}\n",
+        ),
+        (
+            "files-on-guide",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"files\":[]}\n",
+        ),
+        (
+            "classification-enum",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"weird\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\"}\n",
+        ),
+        (
+            "description-type",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":123,\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\"}\n",
+        ),
+        (
+            "name-null",
+            "{\"type\":\"guide\",\"name\":null,\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\"}\n",
+        ),
+        (
+            "id-pattern",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"id\":\"XX-bad\"}\n",
+        ),
+        (
+            "tags-type",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"tags\":\"nope\"}\n",
+        ),
+        (
+            "relates-to-item",
+            "{\"type\":\"pattern\",\"name\":\"p\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"relates_to\":[\"ok:mx-abcd12\",\"bad\"]}\n",
+        ),
+        (
+            "status-enum",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"status\":\"weird\"}\n",
+        ),
+    ];
+    for (index, (tag, corpus)) in cases.iter().enumerate() {
+        for args in [&["validate"] as &[&str], &["--json", "validate"]] {
+            let (ours, theirs) = twin_seeded(&format!("b8ca{index}"), None, &[("d", *corpus)], &[]);
+            let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+            let their = run_in(&theirs.0, &ml, args);
+            assert_eq!(our.code, their.code, "{tag} {args:?} exit");
+            assert_eq!(our.code, 1, "{tag} {args:?} must fail like the reference");
+            assert_eq!(
+                normalize_dir(&our.stdout, &ours.0),
+                normalize_dir(&their.stdout, &theirs.0),
+                "{tag} {args:?} stdout"
+            );
+            assert_eq!(
+                normalize_dir(&our.stderr, &ours.0),
+                normalize_dir(&their.stderr, &theirs.0),
+                "{tag} {args:?} stderr"
+            );
+        }
+    }
+}
+
+// ---- sprint 11 (mulch-ca49): batch summary surfaces + compact rewrite ----
+
+#[test]
+fn batch_summary_surfaces_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // canonical store: a pattern (named-dup target) + a convention
+    // (anon-dup target)
+    let seed = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"name\":\"p\",\"description\":\"d\",\"id\":\"mx-f16294\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"same\",\"id\":\"mx-ef8fb3\"}\n";
+    // batch: 2 creates + 1 named dup (update) + 1 anon dup (skip)
+    let mixed = "[{\"type\":\"guide\",\"name\":\"g1\",\"description\":\"gd\"},{\"type\":\"failure\",\"description\":\"f1\",\"resolution\":\"r1\"},{\"type\":\"pattern\",\"name\":\"p\",\"description\":\"up\"},{\"type\":\"convention\",\"content\":\"same\"}]";
+    let empty = "[]";
+
+    // dry-run plain: Would process counts created+updated; Create/
+    // Update/Skip lines only when non-zero
+    let (ours, theirs) = twin_seeded("bs-dry", None, &[("d", seed)], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("mixed.json"), mixed).expect("batch file");
+    }
+    let args = ["record", "d", "--batch", "mixed.json", "--dry-run"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout, "dry-run summary lines");
+    assert_eq!(
+        our.stdout,
+        "✓ Dry-run complete. Would process 3 record(s) in d:\n  Create: 2\n  Update: 1\n  Skip: 1\n  Run without --dry-run to apply changes.\n"
+    );
+
+    // normal plain: created/updated/skipped lines, store identical
+    let (ours, theirs) = twin_seeded("bs-run", None, &[("d", seed)], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("mixed.json"), mixed).expect("batch file");
+    }
+    let args = ["record", "d", "--batch", "mixed.json"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout, "normal summary lines");
+    assert_eq!(
+        our.stdout,
+        "✓ Created 2 record(s) in d\n✓ Updated 1 record(s) in d\nSkipped 1 duplicate(s) in d\n"
+    );
+    assert_eq!(
+        normalize_line(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize_line(&read_store_file(&theirs.0, "expertise/d.jsonl"))
+    );
+
+    // all-duplicates dry-run: Would process 0 with only a Skip line
+    let (ours, theirs) = twin_seeded("bs-alldup", None, &[("d", seed)], &[]);
+    let alldup = "[{\"type\":\"convention\",\"content\":\"same\"},{\"type\":\"pattern\",\"name\":\"p\",\"description\":\"again\"}]";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("alldup.json"), alldup).expect("batch file");
+    }
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--batch",
+        "alldup.json",
+        "--dry-run",
+    ]);
+    let their = run_in(&theirs.0, &ml, &[
+        "record",
+        "d",
+        "--batch",
+        "alldup.json",
+        "--dry-run",
+    ]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout, "all-duplicates dry-run");
+    assert_eq!(
+        our.stdout,
+        "✓ Dry-run complete. Would process 1 record(s) in d:\n  Update: 1\n  Skip: 1\n  Run without --dry-run to apply changes.\n"
+    );
+
+    // empty batch: nothing in normal mode, the notice in dry-run
+    let (ours, theirs) = twin_seeded("bs-empty", None, &[("d", seed)], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("empty.json"), empty).expect("batch file");
+    }
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--batch",
+        "empty.json",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["record", "d", "--batch", "empty.json"]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout);
+    assert_eq!(our.stdout, "", "zero batch prints nothing");
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--batch",
+        "empty.json",
+        "--dry-run",
+    ]);
+    let their = run_in(&theirs.0, &ml, &[
+        "record",
+        "d",
+        "--batch",
+        "empty.json",
+        "--dry-run",
+    ]);
+    assert_eq!(our.stdout, their.stdout);
+    assert_eq!(our.stdout, "No records would be processed.\n");
+
+    let commented = format!("# banner\n\n{seed}\n\n");
+
+    // skip-only batch: the reference does NOT write (guard
+    // `created > 0 || updated > 0`), so comments survive untouched
+    let (ours, theirs) = twin_seeded("bs-skiponly", None, &[("d", &commented)], &[]);
+    let skiponly = "[{\"type\":\"convention\",\"content\":\"same\"}]";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("skiponly.json"), skiponly).expect("batch file");
+    }
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--batch",
+        "skiponly.json",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["record", "d", "--batch", "skiponly.json"]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout, "skip-only summary");
+    assert_eq!(our.stdout, "Skipped 1 duplicate(s) in d\n");
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        commented,
+        "skip-only batch must not write"
+    );
+
+    // create-only batch on a commented store rewrites compactly on
+    // both sides (comments and blank lines drop)
+    let (ours, theirs) = twin_seeded("bs-compact", None, &[("d", &commented)], &[]);
+    let one = "[{\"type\":\"guide\",\"name\":\"g2\",\"description\":\"gd2\"}]";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("one.json"), one).expect("batch file");
+    }
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record", "d", "--batch", "one.json",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["record", "d", "--batch", "one.json"]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, their.stdout);
+    let ours_store = read_store_file(&ours.0, "expertise/d.jsonl");
+    let theirs_store = read_store_file(&theirs.0, "expertise/d.jsonl");
+    assert!(!ours_store.contains("# banner"), "comments drop");
+    assert_eq!(
+        normalize_line(&ours_store),
+        normalize_line(&theirs_store),
+        "compact rewrite identical"
+    );
+}
+
+// ---- sprint 9 (mulch-351d): edit/outcome identifier resolution ----
+
+#[test]
+fn edit_outcome_identifier_resolution_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let seed = format!("{ALPHA_ONE}\n{ALPHA_TWO}\n");
+
+    // edit and outcome resolve bare hashes and unique prefixes; their
+    // output surfaces carry the RESOLVED id, not the input.
+    for (index, id) in ["1bb21d", "mx-1b", "1bb21"].iter().enumerate() {
+        let (ours, theirs) = twin_seeded(
+            &format!("eoed{index}"),
+            None,
+            &[("alpha", seed.as_str())],
+            &[],
+        );
+        let args = ["edit", "alpha", id, "--description", "touched"];
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_in(&theirs.0, &ml, &args);
+        assert_eq!(our.code, 0, "{args:?} resolves");
+        assert_eq!(our.stdout, their.stdout, "{args:?} stdout");
+        assert_eq!(our.stdout, "✓ Updated pattern mx-1bb21d in alpha\n");
+        assert_same_file(&ours, &theirs, "expertise/alpha.jsonl");
+    }
+    for (index, id) in ["1bb21d", "mx-1b"].iter().enumerate() {
+        let (ours, theirs) = twin_seeded(
+            &format!("eoout{index}"),
+            None,
+            &[("alpha", seed.as_str())],
+            &[],
+        );
+        let args = ["outcome", "alpha", id, "--status", "success"];
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_in(&theirs.0, &ml, &args);
+        assert_eq!(our.code, 0, "{args:?} resolves");
+        assert_eq!(our.stdout, their.stdout, "{args:?} stdout");
+        assert_eq!(our.stdout, "✓ Outcome recorded: success on mx-1bb21d\n");
+        let ours_file = read_store_file(&ours.0, "expertise/alpha.jsonl");
+        let theirs_file = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+        assert_eq!(normalize_line(&ours_file), normalize_line(&theirs_file));
+    }
+
+    // Ambiguous prefix: the shared text, nothing written, plain + json.
+    let ambiguous = "Ambiguous identifier \"mx-\" matches 2 records: mx-1bb21d, mx-c7129f. Use more characters to disambiguate.";
+    let expected = format!("Error: {ambiguous}\n");
+    for (index, args) in [
+        &["edit", "alpha", "mx-", "--description", "x"] as &[&str],
+        &["outcome", "alpha", "mx-", "--status", "success"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (ours, theirs) = twin_seeded(
+            &format!("eoamb{index}"),
+            None,
+            &[("alpha", seed.as_str())],
+            &[],
+        );
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, 1, "{args:?} aborts");
+        assert_same_stderr(&ours, &our, &theirs, &their, &expected);
+        assert_eq!(read_store_file(&ours.0, "expertise/alpha.jsonl"), seed);
+    }
+    let (ours, theirs) = twin_seeded("eoambj", None, &[("alpha", seed.as_str())], &[]);
+    let args = ["edit", "alpha", "mx-", "--description", "x", "--json"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, 1);
+    assert_same_stderr(
+        &ours,
+        &our,
+        &theirs,
+        &their,
+        &error_envelope("edit", ambiguous),
+    );
+
+    // outcome LISTING (no --status) resolves prefixes too and prints
+    // the resolved id in its header
+    let (ours, theirs) = twin_seeded(
+        "eolist",
+        None,
+        &[(
+            "alpha",
+            format!("{ALPHA_ONE}\nmx-ab1111-placeholder\n").as_str(),
+        )],
+        &[],
+    );
+    // craft a store where the first record carries an outcome array
+    let with_outcome = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"name\":\"Alpha One\",\"description\":\"d\",\"id\":\"mx-1bb21d\",\"outcomes\":[{\"status\":\"success\"}]}\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("alpha.jsonl"),
+            with_outcome,
+        )
+        .expect("store writable");
+    }
+    let list_prefix = ["outcome", "alpha", "1bb21d"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &list_prefix);
+    let their = run_in(&theirs.0, &ml, &list_prefix);
+    assert_eq!(our.code, their.code, "listing resolves the prefix");
+    assert_eq!(our.stdout, their.stdout, "listing stdout");
+    assert_eq!(our.stdout, "Outcomes for mx-1bb21d (1):\n  1. success\n");
+
+    // a non-object record under a prefix input: both sides report the
+    // non-object clean error (reference crashes — DEVIATIONS)
+    let scalar_store = "5\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("alpha.jsonl"),
+            scalar_store,
+        )
+        .expect("scalar store writable");
+    }
+    let our_scalar = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "edit",
+        "alpha",
+        "1bb",
+        "--description",
+        "x",
+    ]);
+    assert_eq!(our_scalar.code, 1);
+    assert!(
+        our_scalar.stderr.contains("non-object record at"),
+        "clean scalar error, got: {}",
+        our_scalar.stderr
+    );
+
+    // json surfaces carry the resolved id too: edit success, outcome
+    // append success, outcome listing, and the ambiguous envelope
+    let (ours, theirs) = twin_seeded("eojson", None, &[("alpha", seed.as_str())], &[]);
+    let edit_json = [
+        "--json",
+        "edit",
+        "alpha",
+        "1bb21d",
+        "--description",
+        "touched",
+    ];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &edit_json);
+    let their = run_in(&theirs.0, &ml, &edit_json);
+    assert_eq!(our.code, their.code);
+    assert_eq!(
+        normalize(&our.stdout),
+        normalize(&their.stdout),
+        "edit json"
+    );
+    assert!(
+        our.stdout.contains("\"id\": \"mx-1bb21d\""),
+        "{}",
+        our.stdout
+    );
+
+    let (ours, theirs) = twin_seeded("eojson2", None, &[("alpha", seed.as_str())], &[]);
+    let out_json = [
+        "--json", "outcome", "alpha", "1bb21d", "--status", "success",
+    ];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &out_json);
+    let their = run_in(&theirs.0, &ml, &out_json);
+    assert_eq!(our.code, their.code);
+    assert_eq!(
+        normalize(&our.stdout),
+        normalize(&their.stdout),
+        "outcome json"
+    );
+
+    let listing_json = ["--json", "outcome", "alpha", "mx-1b"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &listing_json);
+    let their = run_in(&theirs.0, &ml, &listing_json);
+    assert_eq!(our.code, their.code);
+    assert_eq!(
+        normalize(&our.stdout),
+        normalize(&their.stdout),
+        "outcome listing json"
+    );
+
+    let (ours, theirs) = twin_seeded("eoambout", None, &[("alpha", seed.as_str())], &[]);
+    let amb_out_json = ["--json", "outcome", "alpha", "mx-", "--status", "success"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &amb_out_json);
+    let their = run_in(&theirs.0, &ml, &amb_out_json);
+    assert_eq!(our.code, 1);
+    assert_same_stderr(
+        &ours,
+        &our,
+        &theirs,
+        &their,
+        &error_envelope("outcome", ambiguous),
+    );
+
+    // Unknown identifier keeps the not-found text.
+    for (index, args) in [
+        &["edit", "alpha", "zzz", "--description", "x"] as &[&str],
+        &["outcome", "alpha", "zzz", "--status", "success"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (ours, theirs) = twin_seeded(
+            &format!("eomiss{index}"),
+            None,
+            &[("alpha", seed.as_str())],
+            &[],
+        );
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, 1);
+        assert_eq!(our.stderr, their.stderr, "{args:?} stderr");
+        assert_eq!(read_store_file(&ours.0, "expertise/alpha.jsonl"), seed);
+    }
 }
 
 #[test]

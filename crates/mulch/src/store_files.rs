@@ -2,11 +2,11 @@
 //! mutations, and the explicit read/write policies the commands declare.
 //!
 //! Read policies (reference semantics):
-//! - [`ReadPolicy::Lenient`] — status/validate/doctor: malformed lines and
-//!   unregistered types are findings, not failures.
-//! - [`ReadPolicy::Strict`] — every mutating command: unparsable lines and
-//!   unregistered types are typed errors *before* any write (reference
-//!   `readExpertiseFile`).
+//! - Lenient (documented policy, not yet a type — mulch-00aa): status/
+//!   validate/doctor: malformed lines and unregistered types are findings, not
+//!   failures.
+//! - Strict — every mutating command: unparsable lines and unregistered types
+//!   are typed errors *before* any write (reference `readExpertiseFile`).
 //!
 //! Write policies:
 //! - [`StoreFiles::rewrite_domain`] — compact canonical re-serialization with
@@ -25,7 +25,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::records::{LineRecord, read_strict, write_records};
+use crate::records::{LenientLine, LineRecord, read_strict, write_records};
 
 /// Where a store lookup landed.
 #[derive(Debug)]
@@ -73,6 +73,15 @@ impl StoreFiles {
         let config = Config::parse(&text)?;
         config.ensure_supported()?;
         Ok(StoreLocation::Open(Self { root, config }))
+    }
+
+    /// Lenient per-line read of one domain file (reference validate/
+    /// doctor raw loops): parse outcomes are findings — including
+    /// `#` comment lines, which those loops flag as invalid JSON
+    /// (only the strict reader skips them). Missing files read
+    /// empty.
+    pub fn read_lenient(&self, domain: &str) -> Vec<LenientLine> {
+        crate::records::read_lenient(&self.domain_path(domain))
     }
 
     /// The `.mulch` directory.
@@ -155,31 +164,21 @@ impl StoreFiles {
         std::fs::write(&path, self.config.to_yaml()).map_err(|source| Error::Write { path, source })
     }
 
-    /// A domain's physical lines (blanks included); a missing file reads
-    /// as empty, real I/O failures propagate.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Read`] for I/O failures other than a missing file.
-    pub fn read_lines(&self, domain: &str) -> Result<Vec<String>> {
-        let path = self.domain_path(domain);
-        match std::fs::read_to_string(&path) {
-            Ok(text) => Ok(text.lines().map(String::from).collect()),
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(source) => Err(Error::Read { path, source }),
-        }
-    }
-
     /// A domain's records, STRICT (the reference `readExpertiseFile`):
     /// unparsable lines and unregistered types are typed errors, so a
-    /// caller never mutates a store it could not read. `allow_unknown`
-    /// is the CLI's `--allow-unknown-types` escape hatch (worktree/CI
-    /// lag): it tolerates unregistered types but never malformed lines.
+    /// caller never mutates a store it could not read. Scalar and
+    /// `null` lines are errors too (the reference reader crashes on
+    /// them — README DEVIATIONS); blank and `#` comment lines are
+    /// skipped, arrays pass as records. `allow_unknown` is the CLI's
+    /// `--allow-unknown-types` escape hatch (worktree/CI lag): it
+    /// tolerates unregistered types but never malformed lines.
     ///
     /// # Errors
     ///
-    /// [`Error::MalformedLine`] / [`Error::UnknownRecordType`] for bad
-    /// lines, [`Error::Read`] for I/O failures.
+    /// [`Error::MalformedLine`] for unparsable lines,
+    /// [`Error::NotAnObject`] for scalar/`null` lines,
+    /// [`Error::UnknownRecordType`] for unregistered types (unless
+    /// `allow_unknown`), [`Error::Read`] for I/O failures.
     pub fn read_records(&self, domain: &str, allow_unknown: bool) -> Result<Vec<LineRecord>> {
         read_strict(&self.domain_path(domain), allow_unknown)
     }

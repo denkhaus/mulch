@@ -6,7 +6,12 @@ use crate::cli::GlobalOpts;
 use crate::commands::schema::{plain_detail_lines, validate_message};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
+/// The legacy-outcome warning text (reference validate.ts).
+const LEGACY_OUTCOME_WARNING: &str =
+    "Legacy \"outcome\" field (singular); run `mulch doctor --fix` to migrate to \"outcomes[]\"";
+
 /// One validation finding (`domain:line` addressed).
+#[derive(Clone)]
 struct Finding {
     domain:  String,
     line:    usize,
@@ -18,25 +23,22 @@ struct Finding {
 pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let store = crate::commands::open_store("validate", false)?;
 
-    let mut findings = Vec::new();
+    // Findings in encounter order: the reference prints each line's
+    // error or warning inline, interleaved by line number.
+    let mut stream: Vec<(bool, Finding)> = Vec::new();
     let mut total_records = 0;
     for domain in store.domains() {
-        let text = std::fs::read_to_string(store.domain_path(&domain)).unwrap_or_default();
-        // Physical 1-based line numbers: blank lines are skipped as
-        // records but still counted by position (reference addressing).
-        for (index, line) in text.lines().enumerate() {
-            let line_no = index + 1;
-            if line.trim().is_empty() {
-                continue;
-            }
+        // The one lenient reader (lib seam): parse outcomes are
+        // findings, physical line numbers preserved.
+        for finding in store.read_lenient(&domain) {
             total_records += 1;
-            match serde_json::from_str::<Value>(line) {
-                Err(_) => findings.push(Finding {
-                    domain:  domain.clone(),
-                    line:    line_no,
+            match finding {
+                mulch::LenientLine::Malformed { line } => stream.push((false, Finding {
+                    domain: domain.clone(),
+                    line,
                     message: "Invalid JSON: failed to parse".into(),
-                }),
-                Ok(record) => {
+                })),
+                mulch::LenientLine::Record { line, record } => {
                     let unknown = matches!(
                         crate::commands::schema::verdict(&record),
                         crate::commands::schema::Verdict::Unknown(_)
@@ -44,18 +46,42 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
                     if unknown && opts.allow_unknown_types {
                         continue;
                     }
-                    if let Some(message) = validate_message(&record) {
-                        findings.push(Finding {
+                    // Legacy singular outcome: a warning, and it
+                    // REPLACES the schema check for that record
+                    // (reference else-if).
+                    let legacy = record.as_object().is_some_and(|object| {
+                        object.contains_key("outcome") && !object.contains_key("outcomes")
+                    });
+                    if legacy {
+                        stream.push((true, Finding {
                             domain: domain.clone(),
-                            line: line_no,
+                            line,
+                            message: LEGACY_OUTCOME_WARNING.into(),
+                        }));
+                        continue;
+                    }
+                    if let Some(message) = validate_message(&record) {
+                        stream.push((false, Finding {
+                            domain: domain.clone(),
+                            line,
                             message,
-                        });
+                        }));
                     }
                 }
             }
         }
     }
 
+    let findings: Vec<Finding> = stream
+        .iter()
+        .filter(|(warning, _)| !warning)
+        .map(|(_, finding)| finding.clone())
+        .collect();
+    let warnings: Vec<Finding> = stream
+        .iter()
+        .filter(|(warning, _)| *warning)
+        .map(|(_, finding)| finding.clone())
+        .collect();
     let total_errors = findings.len();
     if opts.json {
         let errors: Vec<Value> = findings
@@ -81,9 +107,25 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
             "totalErrors".into(),
             Value::from(u64::try_from(total_errors).unwrap_or(0)),
         );
-        fields.insert("totalWarnings".into(), Value::from(0));
+        fields.insert(
+            "totalWarnings".into(),
+            Value::from(u64::try_from(warnings.len()).unwrap_or(0)),
+        );
         fields.insert("errors".into(), Value::Array(errors));
-        fields.insert("warnings".into(), Value::Array(Vec::new()));
+        let warnings_json: Vec<Value> = warnings
+            .iter()
+            .map(|f| {
+                let mut item = Map::new();
+                item.insert("domain".into(), Value::String(f.domain.clone()));
+                item.insert(
+                    "line".into(),
+                    Value::from(u64::try_from(f.line).unwrap_or(0)),
+                );
+                item.insert("message".into(), Value::String(f.message.clone()));
+                Value::Object(item)
+            })
+            .collect();
+        fields.insert("warnings".into(), Value::Array(warnings_json));
         let envelope = if findings.is_empty() {
             success_envelope("validate", fields)
         } else {
@@ -96,12 +138,27 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
         print_json(&envelope, false);
     } else {
         // The reference prints the validate summary even under --quiet.
-        print_line(
-            false,
-            &format!("{total_records} records validated, {total_errors} errors found"),
-        );
-        #[allow(clippy::print_stderr, reason = "error details render on stderr")]
-        for finding in &findings {
+        // The warning suffix only shows when NO errors were found
+        // (reference else-if chain).
+        let summary = if total_errors > 0 {
+            format!("{total_records} records validated, {total_errors} errors found")
+        } else if warnings.is_empty() {
+            format!("{total_records} records validated, 0 errors found")
+        } else {
+            format!(
+                "{total_records} records validated, 0 errors found, {} warning(s)",
+                warnings.len()
+            )
+        };
+        print_line(false, &summary);
+        for (is_warning, finding) in &stream {
+            if *is_warning {
+                #[allow(clippy::print_stderr, reason = "warnings render on stderr")]
+                {
+                    eprintln!("{}:{} - {}", finding.domain, finding.line, finding.message);
+                }
+                continue;
+            }
             let prefix = format!("{}:{} - ", finding.domain, finding.line);
             let lines = plain_detail_lines(&finding.message);
             #[allow(clippy::print_stderr, reason = "error details render on stderr")]

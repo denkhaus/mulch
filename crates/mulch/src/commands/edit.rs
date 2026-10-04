@@ -13,11 +13,13 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == &args.domain) {
-        return Err(if opts.json {
-            crate::commands::domain_not_found_json("edit", &args.domain, &domains)
-        } else {
-            crate::commands::domain_not_found("edit", &args.domain, &domains)
-        });
+        return Err(crate::commands::unknown_domain_failure(
+            "edit",
+            &args.domain,
+            &domains,
+            opts.json,
+            crate::commands::DomainFailure::Standard,
+        ));
     }
 
     // Strict read (reference `readExpertiseFile`): malformed lines and
@@ -27,15 +29,17 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
         .map_err(|source| {
             Failure::handled_on_stderr("edit", crate::commands::render_core_error(&source))
         })?;
-    let Some(position) = records
-        .iter()
-        .position(|line| line.id() == Some(args.id.as_str()))
-    else {
-        return Err(Failure::handled_on_stderr(
-            "edit",
-            crate::commands::record_not_found_text(&args.id),
-        ));
-    };
+    // Identifier resolution like delete/move: exact id, bare hash, or
+    // a unique prefix (reference `resolveRecordId`; mulch-351d).
+    let position = mulch::resolve_record_id(&records, &args.id)
+        .map_err(|error| crate::commands::resolve_failure("edit", error))?;
+    // Output surfaces carry the resolved record's own id (reference
+    // `record.id`; its `?? id` fallback is dead — resolution matches
+    // only identified records).
+    let resolved_id = records[position]
+        .id()
+        .expect("resolve_record_id matches only identified records")
+        .to_string();
     let mut record: Map<String, Value> = match records[position].record.as_object().cloned() {
         Some(object) => object,
         None => {
@@ -96,14 +100,14 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     if opts.json {
         let mut fields = serde_json::Map::new();
         fields.insert("domain".into(), Value::String(args.domain.clone()));
-        fields.insert("id".into(), Value::String(args.id.clone()));
+        fields.insert("id".into(), Value::String(resolved_id.clone()));
         fields.insert("type".into(), Value::String(record_type));
         fields.insert("record".into(), Value::Object(record));
         print_json(&success_envelope("edit", fields), false);
     } else {
         print_line(
             opts.quiet,
-            &format!("✓ Updated {} {} in {}", record_type, args.id, args.domain),
+            &format!("✓ Updated {} {resolved_id} in {}", record_type, args.domain),
         );
     }
     Ok(())
@@ -158,4 +162,30 @@ fn set_end_list(record: &mut Map<String, Value>, key: &str, raw: Option<&str>) {
     // Replace-or-append is the same insert for an order-preserving map
     // when the position at line end is the desired one for new keys.
     record.insert(key.into(), Value::Array(parsed));
+}
+
+#[cfg(test)]
+mod flag_table_tests {
+    /// edit's `updates` table pins to the same registry payload
+    /// universe as record's (mulch-a3de probe-diff).
+    #[test]
+    fn updates_table_covers_the_registry_payload_universe() {
+        let mut universe: Vec<&str> = mulch::REGISTRY
+            .iter()
+            .flat_map(|spec| spec.payload.iter().copied())
+            .collect();
+        universe.sort_unstable();
+        universe.dedup();
+        let mut table = vec![
+            "content",
+            "name",
+            "description",
+            "resolution",
+            "title",
+            "rationale",
+        ];
+        table.sort_unstable();
+        table.dedup();
+        assert_eq!(universe, table);
+    }
 }

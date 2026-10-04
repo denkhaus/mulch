@@ -49,7 +49,7 @@ impl Status {
 /// A domain's live file parsed line-by-line (`Err` = malformed line).
 struct DomainLines {
     domain: String,
-    lines:  Vec<(usize, Result<Value, ()>)>,
+    lines:  Vec<mulch::LenientLine>,
 }
 
 /// Runs `doctor`: the report always prints (even with failures);
@@ -159,25 +159,24 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
 /// failures are carried as `Err` (doctor reports them instead of
 /// crashing like the reference — README DEVIATIONS).
 fn read_domains(store: &mulch::StoreFiles) -> Vec<DomainLines> {
+    // The one lenient reader (lib seam) — apply_fixes works on these
+    // already-read lines, no second read+parse pass.
     store
         .domains()
         .into_iter()
-        .map(|domain| {
-            let text = std::fs::read_to_string(store.domain_path(&domain)).unwrap_or_default();
-            let lines = text
-                .lines()
-                .filter(|l| !l.trim().is_empty())
-                .enumerate()
-                .map(|(index, line)| {
-                    (
-                        index + 1,
-                        serde_json::from_str::<Value>(line).map_err(|_| ()),
-                    )
-                })
-                .collect();
-            DomainLines { domain, lines }
+        .map(|domain| DomainLines {
+            lines: store.read_lenient(&domain),
+            domain,
         })
         .collect()
+}
+
+/// Iterates a domain's parsed records with their line numbers.
+fn records_of(domain: &DomainLines) -> impl Iterator<Item = (usize, &Value)> {
+    domain.lines.iter().filter_map(|line| match line {
+        mulch::LenientLine::Record { line, record } => Some((*line, record)),
+        mulch::LenientLine::Malformed { .. } => None,
+    })
 }
 
 /// Runs the 17 checks in the reference's fixed order.
@@ -268,10 +267,10 @@ fn jsonl_integrity(domains: &[DomainLines]) -> Check {
     let bad: Vec<String> = domains
         .iter()
         .flat_map(|d| {
-            d.lines
-                .iter()
-                .filter(|(_, parsed)| parsed.is_err())
-                .map(|(line, _)| format!("{}:{}", d.domain, line))
+            d.lines.iter().filter_map(|line| match line {
+                mulch::LenientLine::Malformed { line } => Some(format!("{}:{}", d.domain, line)),
+                mulch::LenientLine::Record { .. } => None,
+            })
         })
         .collect();
     if bad.is_empty() {
@@ -297,12 +296,11 @@ fn legacy_outcome(domains: &[DomainLines]) -> Check {
     let bad: Vec<String> = domains
         .iter()
         .flat_map(|d| {
-            d.lines.iter().filter_map(|(line, parsed)| {
-                let record = parsed.as_ref().ok()?;
-                record
-                    .as_object()?
-                    .contains_key("outcome")
-                    .then(|| format!("{}:{}", d.domain, line))
+            records_of(d).filter_map(|(line, record)| {
+                let has_legacy = record
+                    .as_object()
+                    .is_some_and(|o| o.contains_key("outcome"));
+                has_legacy.then(|| format!("{}:{}", d.domain, line))
             })
         })
         .collect();
@@ -329,9 +327,8 @@ fn schema_validation(domains: &[DomainLines]) -> Check {
     let bad: Vec<String> = domains
         .iter()
         .flat_map(|d| {
-            d.lines.iter().filter_map(|(line, parsed)| {
-                let record = parsed.as_ref().ok()?;
-                doctor_detail(record).map(|message| format!("{}:{} -  {}", d.domain, line, message))
+            records_of(d).filter_map(|(line, record)| {
+                doctor_detail(record).map(|message| format!("{}:{} - {}", d.domain, line, message))
             })
         })
         .collect();
@@ -355,15 +352,11 @@ fn schema_validation(domains: &[DomainLines]) -> Check {
 }
 
 fn unknown_types(domains: &[DomainLines], allow_unknown: bool) -> Check {
-    let known: Vec<&str> = crate::commands::schema::BRANCHES
-        .iter()
-        .map(|(name, _)| *name)
-        .collect();
+    let known: Vec<&str> = mulch::REGISTRY.iter().map(|spec| spec.name).collect();
     let bad: Vec<String> = domains
         .iter()
         .flat_map(|d| {
-            d.lines.iter().filter_map(|(line, parsed)| {
-                let record = parsed.as_ref().ok()?;
+            records_of(d).filter_map(|(line, record)| {
                 let kind = record.as_object()?.get("type")?.as_str()?;
                 (!known.contains(&kind)).then(|| format!("{}:{}: {}", d.domain, line, kind))
             })
@@ -393,11 +386,9 @@ fn unknown_types(domains: &[DomainLines], allow_unknown: bool) -> Check {
 fn type_registry(domains: &[DomainLines]) -> Check {
     let mut counts = std::collections::BTreeMap::new();
     for domain in domains {
-        for (_, parsed) in &domain.lines {
-            if let Some(kind) = parsed
-                .as_ref()
-                .ok()
-                .and_then(|r| r.as_object())
+        for (_, record) in records_of(domain) {
+            if let Some(kind) = record
+                .as_object()
                 .and_then(|o| o.get("type"))
                 .and_then(Value::as_str)
             {
@@ -405,12 +396,12 @@ fn type_registry(domains: &[DomainLines]) -> Check {
             }
         }
     }
-    let details: Vec<String> = crate::commands::schema::BRANCHES
+    let details: Vec<String> = mulch::REGISTRY
         .iter()
-        .map(|(name, _)| {
-            let count = counts.get(*name).copied().unwrap_or(0);
+        .map(|spec| {
+            let count = counts.get(spec.name).copied().unwrap_or(0);
             let plural = if count == 1 { "record" } else { "records" };
-            format!("{name} (built-in): {count} {plural}")
+            format!("{} (built-in): {count} {plural}", spec.name)
         })
         .collect();
     Check {
@@ -423,17 +414,14 @@ fn type_registry(domains: &[DomainLines]) -> Check {
 }
 
 fn domain_conformance(domains: &[DomainLines]) -> Check {
-    let total: usize = domains
-        .iter()
-        .flat_map(|d| d.lines.iter().filter(|(_, parsed)| parsed.is_ok()))
-        .count();
+    let total: usize = domains.iter().map(|d| records_of(d).count()).sum();
     let fraction = format!("{total}/{total}");
     // JSON carries per-domain conformance details even on pass (plain
     // renders details only under non-pass checks).
     let details: Vec<String> = domains
         .iter()
         .map(|d| {
-            let count = d.lines.iter().filter(|(_, parsed)| parsed.is_ok()).count();
+            let count = records_of(d).count();
             format!(
                 "{} (no rules): {count}/{count} conforming, 0 violations",
                 d.domain
@@ -455,8 +443,8 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
     let now = Timestamp::now();
     let mut details = Vec::new();
     for domain in domains {
-        for (_, parsed) in &domain.lines {
-            let Some(record) = parsed.as_ref().ok().and_then(Value::as_object) else {
+        for (_, record) in records_of(domain) {
+            let Some(record) = record.as_object() else {
                 continue;
             };
             let classification = record
@@ -514,16 +502,19 @@ fn apply_fixes(
     let now = Timestamp::now();
     let mut fixes = Vec::new();
     for domain in domains {
-        let file = store.domain_path(&domain.domain);
-        let text = std::fs::read_to_string(&file).unwrap_or_default();
-        let live: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-
+        // The already-read lenient lines — no second read+parse pass.
+        let total = domain.lines.len();
         let mut stale_pruned = 0usize;
         let mut invalid_removed = 0usize;
-        let mut kept: Vec<&str> = Vec::new();
-        for line in &live {
-            let verdict = match serde_json::from_str::<Value>(line) {
-                Ok(record) => {
+        let mut kept: Vec<Value> = Vec::new();
+        for finding in &domain.lines {
+            let parsed = match finding {
+                mulch::LenientLine::Record { record, .. } => Some(record),
+                mulch::LenientLine::Malformed { .. } => None,
+            };
+            let verdict = match parsed {
+                None => FixVerdict::Invalid,
+                Some(record) => {
                     let classification = record
                         .as_object()
                         .and_then(|o| o.get("classification"))
@@ -540,26 +531,22 @@ fn apply_fixes(
                         Some(recorded) if rule.is_stale(classification, recorded, now) => {
                             FixVerdict::Stale
                         }
-                        _ if doctor_detail(&record).is_some() => FixVerdict::Invalid,
+                        _ if doctor_detail(record).is_some() => FixVerdict::Invalid,
                         _ => FixVerdict::Keep,
                     }
                 }
-                Err(_) => FixVerdict::Invalid,
             };
-            match verdict {
-                FixVerdict::Keep => kept.push(line),
-                FixVerdict::Stale => stale_pruned += 1,
-                FixVerdict::Invalid => invalid_removed += 1,
+            match (verdict, parsed) {
+                (FixVerdict::Keep, Some(record)) => kept.push(record.clone()),
+                (FixVerdict::Stale, _) => stale_pruned += 1,
+                (FixVerdict::Invalid, _) | (FixVerdict::Keep, None) => invalid_removed += 1,
             }
         }
 
-        if kept.len() != live.len() {
+        if kept.len() != total {
             // The repair rewrites through the seam's compact writer (the
-            // reference model), not through raw lines.
-            let survivors: Vec<Value> = kept
-                .iter()
-                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                .collect();
+            // reference model) with the kept parsed values.
+            let survivors = kept;
             store
                 .rewrite_domain(&domain.domain, &survivors)
                 .map_err(|source| {

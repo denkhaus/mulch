@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use mulch::{ResolveError, record_summary, resolve_record_id};
+use mulch::{record_summary, resolve_record_id};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -36,7 +36,13 @@ pub(super) fn run(
     let domains = store.domains();
     for domain in [source, target] {
         if !domains.iter().any(|d| d == domain) {
-            return Err(move_domain_failure(domain, &domains));
+            return Err(crate::commands::unknown_domain_failure(
+                "move",
+                domain,
+                &domains,
+                opts.json,
+                crate::commands::DomainFailure::Move,
+            ));
         }
     }
 
@@ -47,26 +53,8 @@ pub(super) fn run(
         .map_err(|source_err| {
             Failure::handled_on_stderr("move", crate::commands::render_core_error(&source_err))
         })?;
-    let index = match resolve_record_id(&lines, id) {
-        Ok(index) => index,
-        Err(ResolveError::NotFound(identifier)) => {
-            return Err(Failure::handled_on_stderr(
-                "move",
-                format!(
-                    "Error: Record \"{identifier}\" not found. Run `mulch query` to see record IDs."
-                ),
-            ));
-        }
-        Err(ResolveError::Ambiguous { count, ids }) => {
-            return Err(Failure::handled_on_stderr(
-                "move",
-                format!(
-                    "Error: Ambiguous identifier \"{id}\" matches {count} records: {}. Use more characters to disambiguate.",
-                    ids.join(", ")
-                ),
-            ));
-        }
-    };
+    let index = resolve_record_id(&lines, id)
+        .map_err(|error| crate::commands::resolve_failure("move", error))?;
     let record = lines[index].record.clone();
     let kind = lines[index].record_type();
     let record_id = lines[index].id().map(str::to_string);
@@ -89,7 +77,7 @@ pub(super) fn run(
             "move",
             format!(
                 "Error: Record fails schema validation: {}. Edit the record before moving.",
-                subs.join("; ")
+                crate::commands::schema::render_subs(&subs).join("; ")
             ),
         ));
     }
@@ -296,17 +284,4 @@ fn incoming_references(
         }
     }
     incoming
-}
-
-/// `move`'s own unknown-domain text (capital D, single line).
-fn move_domain_failure(domain: &str, available: &[String]) -> Failure {
-    let list = if available.is_empty() {
-        "(none)".to_string()
-    } else {
-        available.join(", ")
-    };
-    Failure::handled_on_stderr(
-        "move",
-        format!("Error: Domain \"{domain}\" not found in config. Available domains: {list}"),
-    )
 }

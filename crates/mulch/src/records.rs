@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::ids::{PAYLOAD_TYPES, id_key_field, record_id};
@@ -75,6 +75,21 @@ pub fn read_strict(path: &Path, allow_unknown: bool) -> Result<Vec<LineRecord>> 
                 reason: source.to_string(),
             }
         })?;
+        // Scalars and null crash the reference reader (`"outcome" in
+        // raw` on a non-object); objects and arrays pass (arrays count
+        // as records there). Clean error instead — README DEVIATIONS.
+        if !matches!(record, Value::Object(_) | Value::Array(_)) {
+            let preview = if trimmed.len() > 80 {
+                format!("{}...", &trimmed[..77])
+            } else {
+                trimmed.to_string()
+            };
+            return Err(Error::NotAnObject {
+                path: path.to_path_buf(),
+                line: index + 1,
+                preview,
+            });
+        }
         normalize_legacy_outcome(&mut record);
         let kind = record.get("type").and_then(Value::as_str).unwrap_or("");
         if !allow_unknown && !kind.is_empty() && !PAYLOAD_TYPES.contains(&kind) {
@@ -120,6 +135,81 @@ fn normalize_legacy_outcome(record: &mut Value) {
         Value::Array(vec![Value::Object(normalized)]),
     );
     object.remove("outcome");
+}
+
+/// Renders a JSON value the way a JS template literal or property key
+/// would stringify it: strings raw, `null` as "null", arrays joined
+/// with "," (null items empty), objects as "[object Object]"
+/// (probe-pinned 2026-10-04, ml 0.10.7).
+pub fn value_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => "null".into(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| match item {
+                Value::Null => String::new(),
+                other => value_text(other),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::Object(_) => "[object Object]".into(),
+        other => other.to_string(),
+    }
+}
+
+/// The reference's duplicate detector (`findDuplicate`,
+/// utils/expertise.ts): the first same-type record whose dedup-field
+/// value equals the candidate's. The dedup field is the registry's
+/// dedupKey — same mapping as [`id_key_field`] — never the id, so a
+/// renamed record still dedupes after `edit --name`. Unregistered
+/// types never duplicate (the reference registry has no definition);
+/// records missing the field on both sides match, like JS
+/// `undefined === undefined`.
+pub fn find_duplicate<'a, I>(records: I, candidate: &Value) -> Option<usize>
+where
+    I: IntoIterator<Item = &'a Value>,
+{
+    let record_type = candidate.get("type").and_then(Value::as_str)?;
+    if !PAYLOAD_TYPES.contains(&record_type) {
+        return None;
+    }
+    let key = id_key_field(record_type);
+    let new_value = candidate.get(key);
+    records.into_iter().position(|record| {
+        record.get("type").and_then(Value::as_str) == Some(record_type)
+            && record.get(key) == new_value
+    })
+}
+
+/// Merges both sides' outcomes into `incoming` (reference
+/// `{ ...record, outcomes: merged }`, existing first): replaces the
+/// `outcomes` key in place when the incoming record already has one,
+/// appends it at the end otherwise. The id stays untouched.
+pub fn merge_outcomes(existing: &Value, mut incoming: Map<String, Value>) -> Map<String, Value> {
+    let mut merged: Vec<Value> = Vec::new();
+    for source in [existing.get("outcomes"), incoming.get("outcomes")] {
+        if let Some(outcomes) = source.and_then(Value::as_array) {
+            merged.extend(outcomes.iter().cloned());
+        }
+    }
+    if !merged.is_empty() {
+        incoming.insert("outcomes".into(), Value::Array(merged));
+    }
+    incoming
+}
+
+/// The flag-path upsert shape: merged outcomes, then the id LAST —
+/// the builder pre-assigns the id, so it lifts over the appended
+/// outcomes (probe-pinned key order; batch paths keep input-id
+/// positions and use [`merge_outcomes`] directly).
+pub fn upsert_record(existing: &Value, mut incoming: Map<String, Value>) -> Map<String, Value> {
+    let id_value = incoming.remove("id");
+    let mut merged = merge_outcomes(existing, incoming);
+    if let Some(id_value) = id_value {
+        merged.insert("id".into(), id_value);
+    }
+    merged
 }
 
 /// Writes records compactly (reference `writeExpertiseFile`): missing
@@ -188,11 +278,50 @@ pub enum ResolveError {
     NotFound(String),
     /// Several records matched the prefix.
     Ambiguous {
+        /// The queried identifier.
+        identifier: String,
         /// How many matched.
-        count: usize,
+        count:      usize,
         /// The matching ids.
-        ids:   Vec<String>,
+        ids:        Vec<String>,
     },
+}
+
+/// One lenient line finding (reference `validate`/`doctor` raw line
+/// loops): only blank lines are skipped; every other line carries its
+/// parse outcome — `#` comments included, which those loops report as
+/// invalid-JSON findings. Line numbers are 1-based and physical.
+#[derive(Debug)]
+pub enum LenientLine {
+    /// A parsed record — any JSON value; shape checks belong to the
+    /// consumer.
+    Record { line: usize, record: Value },
+    /// An unparsable line.
+    Malformed { line: usize },
+}
+
+/// Reads a record file leniently, per line (reference validate/doctor
+/// semantics): parse failures are findings, not errors. A missing file
+/// reads as empty; other I/O problems read as empty too (the lenient
+/// readers never fail the command).
+pub fn read_lenient(path: &Path) -> Vec<LenientLine> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut lines = Vec::new();
+    for (index, line) in text.split('\n').enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let finding = match serde_json::from_str::<Value>(trimmed) {
+            Ok(record) => LenientLine::Record {
+                line: index + 1,
+                record,
+            },
+            Err(_) => LenientLine::Malformed { line: index + 1 },
+        };
+        lines.push(finding);
+    }
+    lines
 }
 
 /// Reference `resolveRecordId`: exact match on `mx-<hash>` or a bare
@@ -223,8 +352,9 @@ pub fn resolve_record_id(
         [single] => Ok(*single),
         [] => Err(ResolveError::NotFound(identifier.to_string())),
         many => Err(ResolveError::Ambiguous {
-            count: many.len(),
-            ids:   many
+            identifier: identifier.to_string(),
+            count:      many.len(),
+            ids:        many
                 .iter()
                 .filter_map(|index| records[*index].id().map(str::to_string))
                 .collect(),
@@ -277,4 +407,150 @@ fn sentence_end(window: &str) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn find_duplicate_matches_on_the_dedup_field_not_the_id() {
+        let store = [
+            json!({"type": "pattern", "name": "p", "id": "mx-old"}),
+            json!({"type": "pattern", "name": "q", "id": "mx-q"}),
+        ];
+        // same name, different id: still the duplicate
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "pattern", "name": "p"})),
+            Some(0)
+        );
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "pattern", "name": "zz"})),
+            None
+        );
+        // same dedup VALUE on another type never matches
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "guide", "name": "p"})),
+            None
+        );
+    }
+
+    #[test]
+    fn find_duplicate_matches_missing_fields_and_skips_unregistered_types() {
+        let bare = [json!({"type": "failure", "resolution": "r"})];
+        // both sides missing the dedup field match (undefined === undefined)
+        assert_eq!(
+            find_duplicate(bare.iter(), &json!({"type": "failure", "resolution": "r2"})),
+            Some(0)
+        );
+        let store = [json!({"type": "failure", "description": "d"})];
+        // one side missing does NOT match a present value
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "failure", "resolution": "r"})),
+            None
+        );
+        // unregistered types never duplicate (no registry definition)
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "custom", "description": "d"})),
+            None
+        );
+        // a record without a type never duplicates
+        assert_eq!(find_duplicate(store.iter(), &json!({"name": "p"})), None);
+    }
+}
+
+#[cfg(test)]
+mod upsert_record_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn merges_outcomes_existing_first_and_appends_the_id_last() {
+        let upserted = upsert_record(
+            &json!({"name": "p", "outcomes": [{"status": "success"}], "id": "mx-old"}),
+            json!({"name": "p", "id": "mx-new"})
+                .as_object()
+                .cloned()
+                .expect("object"),
+        );
+        assert_eq!(
+            Value::Object(upserted),
+            json!({"name": "p", "outcomes": [{"status": "success"}], "id": "mx-new"})
+        );
+    }
+
+    #[test]
+    fn keeps_an_explicit_id_and_skips_the_outcomes_key_when_both_empty() {
+        let upserted = upsert_record(
+            &json!({"name": "p"}),
+            json!({"name": "p", "id": "mx-explicit"})
+                .as_object()
+                .cloned()
+                .expect("object"),
+        );
+        assert_eq!(
+            Value::Object(upserted),
+            json!({"name": "p", "id": "mx-explicit"})
+        );
+    }
+}
+
+#[cfg(test)]
+mod lenient_tests {
+    use super::*;
+
+    #[test]
+    fn read_lenient_reports_parse_outcomes_with_line_numbers() {
+        let dir = std::env::temp_dir().join(format!("mulch-lenient-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("d.jsonl");
+        std::fs::write(
+            &path,
+            "# banner\n{\"type\":\"convention\"}\n\nnot json\n[1,2]\n",
+        )
+        .expect("writable");
+
+        let findings = read_lenient(&path);
+        assert_eq!(findings.len(), 4, "only the blank line skips");
+        // comment lines are findings too (reference validate/doctor
+        // raw loops flag them as invalid JSON)
+        assert!(matches!(findings[0], LenientLine::Malformed { line: 1 }));
+        assert!(matches!(findings[1], LenientLine::Record { line: 2, .. }));
+        assert!(matches!(findings[2], LenientLine::Malformed { line: 4 }));
+        assert!(matches!(findings[3], LenientLine::Record { line: 5, .. }));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_strict_rejects_scalars_but_keeps_arrays() {
+        let dir = std::env::temp_dir().join(format!("mulch-strict-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("d.jsonl");
+
+        std::fs::write(&path, "[1,2,3]\n").expect("writable");
+        let records = read_strict(&path, false).expect("arrays are records");
+        assert_eq!(records.len(), 1);
+
+        std::fs::write(&path, "5\n").expect("writable");
+        let error = read_strict(&path, false).expect_err("scalars are errors");
+        assert!(matches!(error, Error::NotAnObject { line: 1, .. }));
+
+        std::fs::write(&path, "null\n").expect("writable");
+        assert!(matches!(
+            read_strict(&path, false),
+            Err(Error::NotAnObject { .. })
+        ));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_lenient_missing_file_reads_empty() {
+        let missing = std::path::Path::new("/nonexistent-mulch-probe/d.jsonl");
+        assert!(read_lenient(missing).is_empty());
+    }
 }

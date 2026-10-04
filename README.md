@@ -41,10 +41,16 @@ expectation (the parity rule: never silently):
   message as a handled error envelope (status-channel) or report the
   bad lines as `jsonl-integrity` findings. Expectation: same exit code
   1, clean text instead of a stack trace.
-- **`status` reports instead of crashing on a malformed or
-  unknown-type line** (the reference exits 1 with a runtime stack trace
-  and prints nothing): the reporting commands keep the per-line view,
-  the mutating commands abort (strict read).
+- **`status` reads strictly and fails like the reference, with clean
+  text instead of a stack trace.** (Amended 2026-10-04, mulch-00aa:
+  probes showed the reference `status` — via `readExpertiseFile` —
+  exits 1 on malformed, unknown-type, scalar and `null` lines; the
+  original "status reports per-line" deviation rested on a wrong
+  premise.) Arrays count as records (reference quirk). We exit 1 with
+  the reference's own message shapes (`Malformed JSONL at …`, unknown
+  type, plus a clean `non-object record` error where the reference
+  crashes with `TypeError: raw is not an Object`). The
+  `--allow-unknown-types` flag lifts only the unknown-type failure.
 - **Malformed-line reasons carry serde's wording** (V8/JSC phrases
   differ); the `Malformed JSONL at <path>:<line>: <reason>. Line:
   <preview>` template and the 80-char preview are byte-identical.

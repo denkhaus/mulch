@@ -110,7 +110,10 @@ architecture direction, milestone content, go/no-go):
   session before the first code edit.
 - **Edit-verification guard**: after EVERY insert-with-anchor edit or
   mechanical rewrite (python/sed over multiple sites), grep-read the touched
-  region BEFORE the next step — (a) the anchor item's `///` doc block still
+  region BEFORE the next step — and compose anchors from the file as it
+  reads NOW: a `cargo fmt` pass between cells rewraps macro args, so an
+  anchor built from what a previous cell WROTE stops matching (hit in
+  sprints 5 and 6) — (a) the anchor item's `///` doc block still
   sits flush above its OWN item (insertions love the gap between a doc and
   its fn), (b) comments that travelled with rewritten arguments still
   annotate the argument they explain, (c) consumers of any REPLACED

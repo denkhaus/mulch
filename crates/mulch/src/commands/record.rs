@@ -13,13 +13,13 @@ use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Builds the canonical JSONL object for the flag path (field order
 /// pinned from the reference: type, classification, recorded_at,
-/// evidence?, tags?, relates_to?, supersedes?, dir_anchors?, outcomes?,
-/// payload…, files?, id).
+/// evidence?, tags?, relates_to?, supersedes?, outcomes?,
+/// dir_anchors?, payload…, files?, id).
 fn build_record(
     args: &RecordArgs,
     recorded_at: &str,
     evidence: Option<Map<String, Value>>,
-) -> Result<(Map<String, Value>, String), Failure> {
+) -> Result<Map<String, Value>, Failure> {
     let record_type = args
         .record_type
         .clone()
@@ -70,14 +70,9 @@ fn build_record(
     if let Some(supersedes) = split_list(args.supersedes.as_deref()) {
         record.insert("supersedes".into(), strings_value(&supersedes));
     }
-    if !args.dir_anchors.is_empty() {
-        let anchors: Vec<Value> = args
-            .dir_anchors
-            .iter()
-            .map(|a| Value::String(a.trim_end_matches('/').into()))
-            .collect();
-        record.insert("dir_anchors".into(), Value::Array(anchors));
-    }
+    // outcomes precede dir_anchors (reference buildRecordFromOptions
+    // key order, record.ts:82-86 — probe-pinned by the sprint-6 spec
+    // review).
     if let Some(outcome) = record_time_outcome(args) {
         let mut outcomes = Map::new();
         outcomes.insert("status".into(), Value::String(outcome.status));
@@ -95,13 +90,26 @@ fn build_record(
             Value::Array(vec![Value::Object(outcomes)]),
         );
     }
+    if !args.dir_anchors.is_empty() {
+        let anchors: Vec<Value> = args
+            .dir_anchors
+            .iter()
+            .map(|a| Value::String(a.trim_end_matches('/').into()))
+            .collect();
+        record.insert("dir_anchors".into(), Value::Array(anchors));
+    }
     for field in payload {
         record.insert(
             (*field).into(),
             Value::String(provided(field).unwrap_or_default()),
         );
     }
-    if let Some(files) = split_list(args.files.as_deref()) {
+    // The reference collects fields from `def.required ∪ def.optional`
+    // only: `--files` on a type that does not declare it is DROPPED
+    // (mulch-b8ca; `files` is declared by pattern and reference).
+    let declares_files =
+        mulch::type_spec(&record_type).is_some_and(|spec| spec.optional.contains(&"files"));
+    if declares_files && let Some(files) = split_list(args.files.as_deref()) {
         record.insert("files".into(), strings_value(&files));
     }
 
@@ -115,23 +123,26 @@ fn build_record(
 
     let id_key_value = provided(id_key_field(&record_type)).unwrap_or_default();
     let id = record_id(&record_type, &id_key_value);
-    record.insert("id".into(), Value::String(id.clone()));
-    Ok((record, id))
+    record.insert("id".into(), Value::String(id));
+    Ok(record)
 }
 
 /// The reference-pattern failure: plain renders as multi-line
 /// `record failed schema validation` with the Hint line; the json
 /// envelope says `Schema validation failed: <joined>. <hint>`.
-fn ref_validation_failure(subs: &[String], hint: &str) -> Failure {
+fn ref_validation_failure(subs: &[crate::commands::schema::SubError], hint: &str) -> Failure {
+    let rendered = crate::commands::schema::render_subs(subs);
     let mut message = String::from("Error: record failed schema validation:");
-    for sub in subs {
+    for sub in &rendered {
         let _ = write!(message, "\n  {sub}");
     }
     let _ = write!(message, "\n{hint}");
     let mut failure = Failure::handled("record", message);
-    let joined = subs.join("; ");
-    failure.envelope["error"] =
-        Value::String(format!("Schema validation failed: {joined}. {hint}"));
+    let joined = rendered.join(crate::commands::schema::SUB_SEP);
+    failure.envelope["error"] = Value::String(format!(
+        "{}{joined}. {hint}",
+        crate::commands::schema::VALIDATION_PREFIX
+    ));
     failure
 }
 
@@ -270,14 +281,16 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     }
 
     let recorded_at = now_iso();
-    let (record, id) = match build_record(args, &recorded_at, evidence_map(args)) {
+    let record = match build_record(args, &recorded_at, evidence_map(args)) {
         Ok(built) => built,
         Err(mut failure) => {
             // Parity contract: the --json error drops the `Error: `
             // prefix and says `Example:` where plain stderr says
-            // `Retry:` (probe 2, §3d; spec review round 2).
+            // `Retry:` (probe 2, §3d; spec review round 2). Only the
+            // missing-flags failure gets that rewrite — schema
+            // validation failures carry their own envelope text.
             failure.envelope_to_stderr = true;
-            if opts.json {
+            if opts.json && failure.message.contains("\n  Retry: ") {
                 let json_text = failure
                     .message
                     .replacen("Error: ", "", 1)
@@ -289,42 +302,23 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     };
 
     // Duplicate detection over the STRICT read (reference
-    // `readExpertiseFile`): malformed lines and unregistered types abort
-    // before the write.
+    // `readExpertiseFile` + `findDuplicate`): malformed lines and
+    // unregistered types abort before the write, and the dedup key is
+    // the type's dedup FIELD (registry dedupKey), never the id — a
+    // renamed record still dedupes after `edit --name` (mulch-ccf6).
     let existing = store
         .read_records(&args.domain, opts.allow_unknown_types)
         .map_err(|source| {
             Failure::handled_on_stderr("record", crate::commands::render_core_error(&source))
         })?;
-    let duplicate_position = existing
-        .iter()
-        .position(|line| line.id() == Some(id.as_str()));
+    let duplicate_position = mulch::find_duplicate(
+        existing.iter().map(|line| &line.record),
+        &Value::Object(record.clone()),
+    );
     if let Some(position) = duplicate_position
         && !args.force
     {
-        let kind = args
-            .record_type
-            .clone()
-            .unwrap_or_else(|| "convention".into());
-        if args.dry_run {
-            print_line(
-                opts.quiet,
-                &format!(
-                    "Dry-run: Duplicate {kind} already exists in {}. Would skip.\n  Run without --dry-run to apply changes.",
-                    args.domain
-                ),
-            );
-            return Ok(());
-        }
-        print_line(
-            opts.quiet,
-            &format!(
-                "Duplicate {kind} already exists in {} (record #{}). Use --force to add anyway.",
-                args.domain,
-                position + 1
-            ),
-        );
-        return Ok(());
+        return duplicate_action(opts, args, &store, &existing, position, record);
     }
 
     if args.dry_run {
@@ -394,6 +388,112 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     Ok(())
 }
 
+/// Handles a detected duplicate without `--force` (reference
+/// `record.ts` duplicate branch, mulch-ccf6): named types UPSERT in
+/// place, anonymous types (`convention`/`failure`) skip with the
+/// advisory.
+fn duplicate_action(
+    opts: &GlobalOpts,
+    args: &RecordArgs,
+    store: &mulch::StoreFiles,
+    existing: &[mulch::LineRecord],
+    position: usize,
+    record: Map<String, Value>,
+) -> Result<(), Failure> {
+    let kind = args
+        .record_type
+        .clone()
+        .unwrap_or_else(|| "convention".into());
+    let named = mulch::is_named_type(&kind);
+    if args.dry_run {
+        // Dry-run mirrors the write decision (`wouldDo`), and the json
+        // `record` carries no id — ids are a write-time product.
+        if opts.json {
+            let mut without_id = record;
+            without_id.remove("id");
+            let mut fields = serde_json::Map::new();
+            fields.insert("action".into(), Value::String("dry-run".into()));
+            fields.insert(
+                "wouldDo".into(),
+                Value::String(if named { "updated" } else { "skipped" }.into()),
+            );
+            fields.insert("domain".into(), Value::String(args.domain.clone()));
+            fields.insert("type".into(), Value::String(kind));
+            fields.insert("record".into(), Value::Object(without_id));
+            print_json(&success_envelope("record", fields), false);
+        } else if named {
+            print_line(
+                opts.quiet,
+                &format!(
+                    "✓ Dry-run: Would update existing {kind} in {}\n  Run without --dry-run to apply changes.",
+                    args.domain
+                ),
+            );
+        } else {
+            print_line(
+                opts.quiet,
+                &format!(
+                    "Dry-run: Duplicate {kind} already exists in {}. Would skip.\n  Run without --dry-run to apply changes.",
+                    args.domain
+                ),
+            );
+        }
+        return Ok(());
+    }
+    if !named {
+        if opts.json {
+            let mut fields = serde_json::Map::new();
+            fields.insert("action".into(), Value::String("skipped".into()));
+            fields.insert("domain".into(), Value::String(args.domain.clone()));
+            fields.insert("type".into(), Value::String(kind));
+            fields.insert("index".into(), Value::from((position + 1) as u64));
+            print_json(&success_envelope("record", fields), false);
+        } else {
+            print_line(
+                opts.quiet,
+                &format!(
+                    "Duplicate {kind} already exists in {} (record #{}). Use --force to add anyway.",
+                    args.domain,
+                    position + 1
+                ),
+            );
+        }
+        return Ok(());
+    }
+
+    // Named upsert: the built record replaces the line — fresh
+    // recorded_at, new field values, recomputed id (a stale id from an
+    // earlier rename corrects itself) — with merged outcomes and the
+    // key-order contract owned by [`mulch::upsert_record`]. The file
+    // rewrites compactly.
+    let upserted = mulch::upsert_record(&existing[position].record, record);
+    let mut lines: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
+    lines[position] = Value::Object(upserted.clone());
+    store
+        .rewrite_domain(&args.domain, &lines)
+        .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
+
+    if opts.json {
+        let mut fields = serde_json::Map::new();
+        fields.insert("action".into(), Value::String("updated".into()));
+        fields.insert("domain".into(), Value::String(args.domain.clone()));
+        fields.insert("type".into(), Value::String(kind));
+        fields.insert("index".into(), Value::from((position + 1) as u64));
+        fields.insert("record".into(), Value::Object(upserted));
+        print_json(&success_envelope("record", fields), false);
+    } else {
+        print_line(
+            opts.quiet,
+            &format!(
+                "✓ Updated existing {kind} in {} (record #{})",
+                args.domain,
+                position + 1
+            ),
+        );
+    }
+    Ok(())
+}
+
 /// stdin/batch path: preserves input key order, appends recorded_at,
 /// classification, id.
 fn stdin_batch(
@@ -427,60 +527,107 @@ fn stdin_batch(
         .map_err(|source| {
             Failure::handled_on_stderr("record", crate::commands::render_core_error(&source))
         })?;
-    let mut existing_ids: Vec<String> = existing
-        .iter()
-        .filter_map(|line| line.id().map(str::to_string))
-        .collect();
-    let mut pending: Vec<String> = Vec::new();
+    // The working copy the reference dedupes against (`currentRecords`):
+    // existing records plus this batch's accepted appends — within-batch
+    // duplicates upsert too. Dry-run never mutates it (the reference
+    // counts a within-batch duplicate as another create there).
+    let mut working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
     let mut created = 0usize;
+    let mut updated = 0usize;
     let mut skipped = 0usize;
     let mut errors: Vec<Value> = Vec::new();
 
     for (index, item) in items.into_iter().enumerate() {
         let Some(object) = item.as_object().cloned() else {
-            errors.push(Value::String(format!("Record {index}: not a JSON object")));
+            // Reference: ajv rejects non-objects with `must be object`
+            // (the empty instance path supplies the extra gap).
+            errors.push(Value::String(format!("Record {index}:  must be object")));
             continue;
         };
-        // Schema validation on the incoming record (reference blobs).
+        // The reference normalizes each batch record FIRST — recorded_at
+        // and classification are filled when absent — and only then
+        // validates (`processStdinRecords`), so a record missing the
+        // common fields is accepted and enriched (mulch-5f8a).
+        let mut line = object;
+        line.entry("recorded_at")
+            .or_insert_with(|| Value::String(now_iso()));
+        line.entry("classification")
+            .or_insert_with(|| Value::String("tactical".into()));
+
+        // Schema validation on the enriched record (reference blobs).
         if let crate::commands::schema::FullVerdict::Invalid { subs, hint } =
-            crate::commands::schema::full_verdict(&Value::Object(object.clone()))
+            crate::commands::schema::full_verdict(&Value::Object(line.clone()))
         {
+            // Reference batch entry: `Record ${i}: ${subs}` with the
+            // type hint only when the record declares a registered
+            // type (`requirements[recordType]` is undefined otherwise).
+            let registered = line
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| mulch::PAYLOAD_TYPES.contains(&kind));
+            let hint_part = if registered {
+                format!(". {hint}")
+            } else {
+                String::new()
+            };
             errors.push(Value::String(format!(
-                "Record {index}: Schema validation failed: {}. {hint}",
-                subs.join("; ")
+                "Record {index}: {}{hint_part}",
+                crate::commands::schema::render_subs(&subs).join(crate::commands::schema::SUB_SEP)
             )));
             continue;
         }
-        let record_type = object
+        let record_type = line
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("convention")
             .to_string();
+        let named = mulch::is_named_type(&record_type);
         let id_key = id_key_field(&record_type);
-        let id_value = object
+        let id_value = line
             .get(id_key)
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
         let id = record_id(&record_type, &id_value);
+        // Dedupe by the type's dedup FIELD against the working copy
+        // (`findDuplicate`), never by id (mulch-ccf6). The enriched
+        // record is safe here: find_duplicate compares only `type` and
+        // the type's dedup field, which enrichment never touches.
+        let duplicate = if args.force {
+            None
+        } else {
+            mulch::find_duplicate(working.iter(), &Value::Object(line.clone()))
+        };
 
-        // Duplicate dedupe: existing ids and earlier batch ids skip
-        // unless --force (reference §3i semantics).
-        if existing_ids.iter().any(|known| known == &id) && !args.force {
-            skipped += 1;
+        if args.dry_run {
+            // Count-only pass over the unmutated working copy.
+            match duplicate {
+                Some(_) if named => updated += 1,
+                Some(_) => skipped += 1,
+                None => created += 1,
+            }
             continue;
         }
-        existing_ids.push(id.clone());
-
-        let mut line = object;
-        line.insert("recorded_at".into(), Value::String(now_iso()));
-        line.entry("classification")
-            .or_insert_with(|| Value::String("tactical".into()));
-        line.insert("id".into(), Value::String(id));
-        pending.push(Value::Object(line).to_string());
-        created += 1;
+        match duplicate {
+            Some(position) if named => {
+                // merge first, then the id — an input id keeps its
+                // position, a generated one lands after the merged
+                // outcomes (reference write-time `if (!r.id)`).
+                let mut line = mulch::merge_outcomes(&working[position], line);
+                line.entry("id").or_insert_with(|| Value::String(id));
+                working[position] = Value::Object(line);
+                updated += 1;
+            }
+            Some(_) => {
+                skipped += 1;
+            }
+            None => {
+                line.entry("id").or_insert_with(|| Value::String(id));
+                working.push(Value::Object(line));
+                created += 1;
+            }
+        }
     }
-
     let action = if args.stdin { "stdin" } else { "batch" };
 
     if args.dry_run {
@@ -490,17 +637,35 @@ fn stdin_batch(
             fields.insert("action".into(), Value::String("dry-run".into()));
             fields.insert("domain".into(), Value::String(args.domain.clone()));
             fields.insert("created".into(), Value::from(created as u64));
+            fields.insert("updated".into(), Value::from(updated as u64));
             fields.insert("skipped".into(), Value::from(skipped as u64));
+            fields.insert("errors".into(), Value::Array(errors.clone()));
+            fields.insert("warnings".into(), Value::Array(Vec::new()));
             print_json(&success_envelope("record", fields), false);
         } else {
-            print_line(
-                opts.quiet,
-                &format!(
-                    "✓ Dry-run complete. Would process {} record(s) in {}:\n  Create: {created}\n  Run without --dry-run to apply changes.",
-                    created + skipped,
+            // Reference summary: `Would process` counts created+updated;
+            // the per-action lines print only when non-zero, and an
+            // all-zero batch says so instead.
+            let total = created + updated;
+            if total > 0 || skipped > 0 {
+                let mut text = format!(
+                    "✓ Dry-run complete. Would process {total} record(s) in {}:",
                     args.domain
-                ),
-            );
+                );
+                if created > 0 {
+                    let _ = write!(text, "\n  Create: {created}");
+                }
+                if updated > 0 {
+                    let _ = write!(text, "\n  Update: {updated}");
+                }
+                if skipped > 0 {
+                    let _ = write!(text, "\n  Skip: {skipped}");
+                }
+                text.push_str("\n  Run without --dry-run to apply changes.");
+                print_line(opts.quiet, &text);
+            } else {
+                print_line(opts.quiet, "No records would be processed.");
+            }
         }
         return Ok(());
     }
@@ -509,12 +674,25 @@ fn stdin_batch(
         // Reference failure contract (spec review round 2): the action
         // envelope with `errors` goes to stdout, the simple error
         // envelope to stderr, the store stays untouched, exit 1.
+        // Plain rendering indents one entry per line; the json
+        // envelope keeps the `; `-joined single line (reference:
+        // console.error per entry vs join("; ") in outputJsonError).
         let summary = errors
             .iter()
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect::<Vec<_>>()
             .join("; ");
+        let mut plain = String::from("Validation errors:");
+        for error in &errors {
+            if let Some(text) = error.as_str() {
+                plain.push_str("\n  ");
+                plain.push_str(text);
+            }
+        }
+        let mut failure = Failure::handled("record", plain);
+        failure.envelope["error"] = Value::String(format!("Validation errors: {summary}"));
+        failure.envelope_to_stderr = true;
         if opts.json {
             let mut fields = serde_json::Map::new();
             fields.insert("action".into(), Value::String(action.into()));
@@ -529,23 +707,21 @@ fn stdin_batch(
             body.insert("command".into(), Value::String("record".into()));
             body.extend(fields);
             print_json(&Value::Object(body), false);
+            print_json(&failure.envelope, true);
+            failure.rendered = true;
         }
-        let mut failure = Failure::handled("record", format!("Validation errors: {summary}"));
-        failure.envelope_to_stderr = true;
-        failure.rendered = opts.json && {
-            // the simple error envelope still renders on stderr in json
-            // mode: print it here, mark message-only for plain mode
-            if opts.json {
-                print_json(&failure.envelope, true);
-            }
-            true
-        };
         return Err(failure);
     }
 
-    for line in &pending {
+    // The batch path rewrites through the compact writer whenever
+    // anything was written (reference guard `created > 0 || updated >
+    // 0`; record.ts:419): comments and blank lines drop, id-less
+    // survivors get ids — but a skip-only or empty batch leaves the
+    // file byte-identical (mulch-ca49; the FLAG path keeps its
+    // verbatim append).
+    if created > 0 || updated > 0 {
         store
-            .append_domain_line(&args.domain, line)
+            .rewrite_domain(&args.domain, &working)
             .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
     }
 
@@ -554,16 +730,61 @@ fn stdin_batch(
         fields.insert("action".into(), Value::String(action.into()));
         fields.insert("domain".into(), Value::String(args.domain.clone()));
         fields.insert("created".into(), Value::from(created as u64));
-        fields.insert("updated".into(), Value::from(0));
+        fields.insert("updated".into(), Value::from(updated as u64));
         fields.insert("skipped".into(), Value::from(skipped as u64));
         fields.insert("errors".into(), Value::Array(Vec::new()));
         fields.insert("warnings".into(), Value::Array(Vec::new()));
         print_json(&success_envelope("record", fields), false);
     } else {
-        print_line(
-            opts.quiet,
-            &format!("✓ Created {created} record(s) in {}", args.domain),
-        );
+        // Reference order: created, updated, then the duplicates line —
+        // each only when non-zero (a zero-batch prints nothing).
+        if created > 0 {
+            print_line(
+                opts.quiet,
+                &format!("✓ Created {created} record(s) in {}", args.domain),
+            );
+        }
+        if updated > 0 {
+            print_line(
+                opts.quiet,
+                &format!("✓ Updated {updated} record(s) in {}", args.domain),
+            );
+        }
+        if skipped > 0 {
+            print_line(
+                opts.quiet,
+                &format!("Skipped {skipped} duplicate(s) in {}", args.domain),
+            );
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod flag_table_tests {
+    /// The flag tables (record's `provided`, edit's `updates`) hardcode
+    /// the six payload field names; this pin fails when a registry row
+    /// gains a field the plumbing does not know (mulch-a3de's
+    /// probe-diff step for the CLI-side tables).
+    #[test]
+    fn flag_tables_cover_the_registry_payload_universe() {
+        let mut universe: Vec<&str> = mulch::REGISTRY
+            .iter()
+            .flat_map(|spec| spec.payload.iter().copied())
+            .collect();
+        universe.sort_unstable();
+        universe.dedup();
+        assert_eq!(
+            universe,
+            vec![
+                "content",
+                "description",
+                "name",
+                "rationale",
+                "resolution",
+                "title"
+            ],
+            "a registry payload field has no flag plumbing"
+        );
+    }
 }
