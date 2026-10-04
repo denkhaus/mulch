@@ -23,7 +23,7 @@ bun = "1.4.0"
 # fabro GitButler experiment validated (2026-10-03). Same pin as the
 # global ~/.config/mise/config.toml entry; the per-repo pin makes the
 # dependency explicit for this checkout.
-"http:but" = { version = "0.22.3-fork.3", url = "https://github.com/denkhaus/gitbutler/releases/download/v0.22.3-fork.3/but-0.22.3-fork.3-x86_64-unknown-linux-gnu.tar.gz" }
+"http:but" = { version = "0.22.3-fork.4", url = "https://github.com/denkhaus/gitbutler/releases/download/v0.22.3-fork.4/but-0.22.3-fork.4-x86_64-unknown-linux-gnu.tar.gz" }
 
 [settings.npm]
 # Non-TTY installs abort on the default backend's interactive approval
