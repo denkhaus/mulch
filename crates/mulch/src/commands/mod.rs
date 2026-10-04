@@ -156,9 +156,11 @@ pub(crate) fn unknown_domain_failure(
     } else {
         available.join(", ")
     };
-    let json_line = format!("Domain \"{domain}\" not found in config. Available domains: {list}");
+    // The one-line capital-D sentence: json output for every
+    // shape, and `move`'s plain text prefixed with `Error: `.
+    let one_line = format!("Domain \"{domain}\" not found in config. Available domains: {list}");
     let message = if json {
-        json_line
+        one_line
     } else {
         match shape {
             DomainFailure::Standard => {
@@ -166,7 +168,7 @@ pub(crate) fn unknown_domain_failure(
                     "Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}"
                 )
             }
-            DomainFailure::Move => format!("Error: {json_line}"),
+            DomainFailure::Move => format!("Error: {one_line}"),
             DomainFailure::WithHint => format!(
                 "Error: domain \"{domain}\" not found in config.\nHint: Run `mulch add {domain}` to create it, or check `mulch status` for existing domains."
             ),
@@ -245,7 +247,7 @@ pub(crate) fn render_core_error(error: &Error) -> String {
 }
 
 #[cfg(test)]
-mod domain_failure_tests {
+mod tests {
     use super::*;
 
     #[test]
