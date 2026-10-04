@@ -163,3 +163,29 @@ fn set_end_list(record: &mut Map<String, Value>, key: &str, raw: Option<&str>) {
     // when the position at line end is the desired one for new keys.
     record.insert(key.into(), Value::Array(parsed));
 }
+
+#[cfg(test)]
+mod flag_table_tests {
+    /// edit's `updates` table pins to the same registry payload
+    /// universe as record's (mulch-a3de probe-diff).
+    #[test]
+    fn updates_table_covers_the_registry_payload_universe() {
+        let mut universe: Vec<&str> = mulch::REGISTRY
+            .iter()
+            .flat_map(|spec| spec.payload.iter().copied())
+            .collect();
+        universe.sort_unstable();
+        universe.dedup();
+        let mut table = vec![
+            "content",
+            "name",
+            "description",
+            "resolution",
+            "title",
+            "rationale",
+        ];
+        table.sort_unstable();
+        table.dedup();
+        assert_eq!(universe, table);
+    }
+}

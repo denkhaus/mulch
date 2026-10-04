@@ -753,3 +753,32 @@ fn stdin_batch(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod flag_table_tests {
+    /// The flag tables (record's `provided`, edit's `updates`) hardcode
+    /// the six payload field names; this pin fails when a registry row
+    /// gains a field the plumbing does not know (mulch-a3de's
+    /// probe-diff step for the CLI-side tables).
+    #[test]
+    fn flag_tables_cover_the_registry_payload_universe() {
+        let mut universe: Vec<&str> = mulch::REGISTRY
+            .iter()
+            .flat_map(|spec| spec.payload.iter().copied())
+            .collect();
+        universe.sort_unstable();
+        universe.dedup();
+        assert_eq!(
+            universe,
+            vec![
+                "content",
+                "description",
+                "name",
+                "rationale",
+                "resolution",
+                "title"
+            ],
+            "a registry payload field has no flag plumbing"
+        );
+    }
+}

@@ -16,7 +16,8 @@ pub const PAYLOAD_TYPES: [&str; 6] = [
 /// One registry row per record type (the reference `builtins.ts`
 /// table): payload fields in canonical order, the id/dedup key, and
 /// whether duplicates upsert (named) or skip (anonymous). Every other
-/// type list in the codebase derives from this table (mulch-a3de).
+/// type list in the codebase derives from — or is test-pinned equal
+/// to — this table (mulch-a3de; `PAYLOAD_TYPES` is the pinned list).
 pub struct TypeSpec {
     /// The type name (registry order = the reference's fixed order).
     pub name:    &'static str,
