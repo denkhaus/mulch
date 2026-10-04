@@ -1068,6 +1068,114 @@ fn outcome_matches_reference() {
     assert_eq!(ours_missing.stderr, theirs_missing.stderr);
 }
 
+// ---- sprint 5 (mulch-b88b): outcome without --status is read-only ----
+
+#[test]
+fn outcome_read_only_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("outc-ro-ours");
+    let theirs = TempDir::new("outc-ro-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "d",
+            "--type",
+            "pattern",
+            "--name",
+            "p",
+            "--description",
+            "d",
+        ]);
+    }
+    let id = pattern_p_id();
+
+    // empty listing: same notice on both sides, store untouched
+    let ours_before = read_store_file(&ours.0, "expertise/d.jsonl");
+    let theirs_before = read_store_file(&theirs.0, "expertise/d.jsonl");
+    let listing = ["outcome", "d", &id];
+    let ours_empty = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    let theirs_empty = run_in(&theirs.0, &ml, &listing);
+    assert_eq!(ours_empty.code, theirs_empty.code);
+    assert_eq!(ours_empty.stdout, theirs_empty.stdout);
+    assert_eq!(ours_empty.stderr, theirs_empty.stderr);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        ours_before,
+        "read-only listing must not write"
+    );
+    assert_eq!(
+        read_store_file(&theirs.0, "expertise/d.jsonl"),
+        theirs_before
+    );
+
+    // two outcomes with different field shapes, then the populated listing
+    for outcome in [
+        vec![
+            "outcome",
+            "d",
+            &id,
+            "--status",
+            "success",
+            "--agent",
+            "probe-agent",
+            "--duration",
+            "42",
+            "--notes",
+            "went fine",
+            "--test-results",
+            "3 passed",
+        ],
+        vec![
+            "outcome", "d", &id, "--status", "failure", "--notes", "second",
+        ],
+    ] {
+        let ours_add = run_in(&ours.0, Path::new(mulch_bin()), &outcome);
+        let theirs_add = run_in(&theirs.0, &ml, &outcome);
+        assert_eq!(ours_add.code, theirs_add.code);
+        assert_eq!(ours_add.stdout, theirs_add.stdout);
+    }
+    let ours_before = read_store_file(&ours.0, "expertise/d.jsonl");
+    let ours_list = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    let theirs_list = run_in(&theirs.0, &ml, &listing);
+    assert_eq!(ours_list.code, theirs_list.code);
+    assert_eq!(
+        normalize(&ours_list.stdout),
+        normalize(&theirs_list.stdout),
+        "populated listing must render every detail line"
+    );
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        ours_before,
+        "populated listing must not write"
+    );
+
+    // json listing carries the raw outcomes array (key order preserved)
+    let json = ["--json", "outcome", "d", &id];
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &json);
+    let theirs_json = run_in(&theirs.0, &ml, &json);
+    assert_eq!(ours_json.code, theirs_json.code);
+    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
+
+    // quiet suppresses the plain listing entirely
+    let quiet = ["--quiet", "outcome", "d", &id];
+    let ours_quiet = run_in(&ours.0, Path::new(mulch_bin()), &quiet);
+    let theirs_quiet = run_in(&theirs.0, &ml, &quiet);
+    assert_eq!(ours_quiet.code, theirs_quiet.code);
+    assert_eq!(ours_quiet.stdout, theirs_quiet.stdout);
+    assert_eq!(ours_quiet.stdout, "");
+
+    // unknown id stays an error in read-only mode
+    let missing = ["outcome", "d", "mx-deadbe"];
+    let ours_missing = run_in(&ours.0, Path::new(mulch_bin()), &missing);
+    let theirs_missing = run_in(&theirs.0, &ml, &missing);
+    assert_eq!(ours_missing.code, theirs_missing.code);
+    assert_eq!(ours_missing.stderr, theirs_missing.stderr);
+}
+
 // ---- sprint 2 review round: json error channels, stdin/batch matrix ----
 
 #[test]
