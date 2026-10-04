@@ -328,7 +328,7 @@ fn schema_validation(domains: &[DomainLines]) -> Check {
         .iter()
         .flat_map(|d| {
             records_of(d).filter_map(|(line, record)| {
-                doctor_detail(record).map(|message| format!("{}:{} -  {}", d.domain, line, message))
+                doctor_detail(record).map(|message| format!("{}:{} - {}", d.domain, line, message))
             })
         })
         .collect();

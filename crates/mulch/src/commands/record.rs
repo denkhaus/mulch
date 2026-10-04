@@ -533,9 +533,19 @@ fn stdin_batch(
             errors.push(Value::String(format!("Record {index}: not a JSON object")));
             continue;
         };
-        // Schema validation on the incoming record (reference blobs).
+        // The reference normalizes each batch record FIRST — recorded_at
+        // and classification are filled when absent — and only then
+        // validates (`processStdinRecords`), so a record missing the
+        // common fields is accepted and enriched (mulch-5f8a).
+        let mut line = object;
+        line.entry("recorded_at")
+            .or_insert_with(|| Value::String(now_iso()));
+        line.entry("classification")
+            .or_insert_with(|| Value::String("tactical".into()));
+
+        // Schema validation on the enriched record (reference blobs).
         if let crate::commands::schema::FullVerdict::Invalid { subs, hint } =
-            crate::commands::schema::full_verdict(&Value::Object(object.clone()))
+            crate::commands::schema::full_verdict(&Value::Object(line.clone()))
         {
             errors.push(Value::String(format!(
                 "Record {index}: Schema validation failed: {}. {hint}",
@@ -543,14 +553,14 @@ fn stdin_batch(
             )));
             continue;
         }
-        let record_type = object
+        let record_type = line
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("convention")
             .to_string();
         let named = mulch::is_named_type(&record_type);
         let id_key = id_key_field(&record_type);
-        let id_value = object
+        let id_value = line
             .get(id_key)
             .and_then(Value::as_str)
             .unwrap_or_default()
@@ -561,12 +571,8 @@ fn stdin_batch(
         let duplicate = if args.force {
             None
         } else {
-            mulch::find_duplicate(working.iter(), &Value::Object(object.clone()))
+            mulch::find_duplicate(working.iter(), &Value::Object(line.clone()))
         };
-        let mut line = object;
-        line.insert("recorded_at".into(), Value::String(now_iso()));
-        line.entry("classification")
-            .or_insert_with(|| Value::String("tactical".into()));
 
         if args.dry_run {
             // Count-only pass over the unmutated working copy.

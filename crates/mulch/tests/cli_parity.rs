@@ -2661,6 +2661,112 @@ fn identifier_resolution_matches_reference() {
     );
 }
 
+// ---- sprint 10 (mulch-5f8a): required common fields + batch enrichment ----
+
+#[test]
+fn required_common_fields_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Hand-written stores (the `ml record` fixture would always carry
+    // classification + recorded_at, which hid this gap for 9 sprints).
+    let stores: [(&str, &str); 4] = [
+        (
+            "missing-both",
+            "{\"type\":\"convention\",\"content\":\"c\",\"id\":\"mx-aaaaaa\"}\n",
+        ),
+        (
+            "missing-recorded",
+            "{\"type\":\"pattern\",\"name\":\"n\",\"description\":\"d\",\"classification\":\"tactical\",\"id\":\"mx-bbbbbb\"}\n",
+        ),
+        (
+            "const-mix",
+            "{\"type\":\"convention\",\"name\":\"n\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"id\":\"mx-cccccc\"}\n",
+        ),
+        (
+            "no-type",
+            "{\"name\":\"n\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"id\":\"mx-dddddd\"}\n",
+        ),
+    ];
+    for (index, (tag, corpus)) in stores.iter().enumerate() {
+        // Plain `doctor` also runs the network update check (a known
+        // deviation), so it is compared by exit code only; the json
+        // shape is byte-comparable.
+        let (ours, theirs) = twin_seeded(&format!("req{index}"), None, &[("alpha", *corpus)], &[]);
+        for args in [
+            &["validate"] as &[&str],
+            &["--json", "validate"],
+            &["--json", "doctor"],
+            &["doctor"],
+        ] {
+            let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+            let their = run_in(&theirs.0, &ml, args);
+            assert_eq!(our.code, their.code, "{tag} {args:?} exit code");
+            assert_eq!(our.code, 1, "{tag} {args:?} must fail like the reference");
+            if args.contains(&"doctor") && !args.contains(&"--json") {
+                // doctor also runs the network update check (known
+                // deviation): compare only the failure line
+                assert!(
+                    our.stdout.contains("failed schema validation"),
+                    "{tag} plain doctor reports the failure"
+                );
+            } else if args.contains(&"doctor") {
+                // json doctor: compare the schema-validation check and
+                // the fail count (the upgrade check is network-bound)
+                let ours_json: serde_json::Value =
+                    serde_json::from_str(&our.stdout).expect("our json");
+                let theirs_json: serde_json::Value =
+                    serde_json::from_str(&their.stdout).expect("their json");
+                let pick = |value: &serde_json::Value| {
+                    value["checks"]
+                        .as_array()
+                        .expect("checks")
+                        .iter()
+                        .find(|check| check["name"] == "schema-validation")
+                        .cloned()
+                        .expect("schema-validation check")
+                };
+                assert_eq!(
+                    pick(&ours_json),
+                    pick(&theirs_json),
+                    "{tag} schema-validation check"
+                );
+                assert_eq!(
+                    ours_json["summary"]["fail"], theirs_json["summary"]["fail"],
+                    "{tag} fail count"
+                );
+            } else {
+                assert_eq!(
+                    normalize_dir(&our.stdout, &ours.0),
+                    normalize_dir(&their.stdout, &theirs.0),
+                    "{tag} {args:?} stdout"
+                );
+            }
+        }
+    }
+
+    // A batch record without the common fields is ENRICHED before
+    // validation (reference `processStdinRecords`), so it is accepted.
+    let batch = "[{\"type\":\"guide\",\"name\":\"g\",\"description\":\"gd\"}]";
+    let (ours, theirs) = twin_seeded("reqbatch", None, &[("alpha", "")], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch.json"), batch).expect("batch file");
+    }
+    let args = ["record", "alpha", "--batch", "batch.json", "--json"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(normalize(&our.stdout), normalize(&their.stdout));
+    let ours_store = read_store_file(&ours.0, "expertise/alpha.jsonl");
+    let theirs_store = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+    assert_eq!(normalize_line(&ours_store), normalize_line(&theirs_store));
+    assert!(
+        ours_store.contains("\"classification\":\"tactical\""),
+        "batch enrichment fills classification: {ours_store}"
+    );
+}
+
 // ---- sprint 9 (mulch-351d): edit/outcome identifier resolution ----
 
 #[test]
