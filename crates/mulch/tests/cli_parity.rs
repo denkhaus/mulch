@@ -1112,6 +1112,13 @@ fn outcome_read_only_matches_reference() {
         theirs_before
     );
 
+    // json envelope of the empty listing: outcomes stays []
+    let json_empty = ["--json", "outcome", "d", &id];
+    let ours_json_empty = run_in(&ours.0, Path::new(mulch_bin()), &json_empty);
+    let theirs_json_empty = run_in(&theirs.0, &ml, &json_empty);
+    assert_eq!(ours_json_empty.code, theirs_json_empty.code);
+    assert_eq!(ours_json_empty.stdout, theirs_json_empty.stdout);
+
     // two outcomes with different field shapes, then the populated listing
     for outcome in [
         vec![
@@ -1167,6 +1174,72 @@ fn outcome_read_only_matches_reference() {
     assert_eq!(ours_quiet.code, theirs_quiet.code);
     assert_eq!(ours_quiet.stdout, theirs_quiet.stdout);
     assert_eq!(ours_quiet.stdout, "");
+
+    // crafted stores pin the odd read-only surfaces: a legacy singular
+    // `outcome` object (reader normalization) and a hand-corrupted
+    // non-array `outcomes` value (header + engine error, raw json)
+    let legacy = serde_json::json!({
+        "type": "pattern",
+        "classification": "tactical",
+        "recorded_at": "2026-10-04T08:00:00.000Z",
+        "name": "p",
+        "description": "d",
+        "id": id.clone(),
+        "outcome": {"status": "success", "agent": "legacy"}
+    });
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d.jsonl"),
+            format!("{legacy}\n"),
+        )
+        .expect("crafted store writable");
+    }
+    let ours_legacy = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    let theirs_legacy = run_in(&theirs.0, &ml, &listing);
+    assert_eq!(ours_legacy.code, theirs_legacy.code);
+    assert_eq!(ours_legacy.stdout, theirs_legacy.stdout);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        format!("{legacy}\n"),
+        "legacy listing must not write"
+    );
+
+    let corrupt = serde_json::json!({
+        "type": "pattern",
+        "classification": "tactical",
+        "recorded_at": "2026-10-04T08:00:00.000Z",
+        "name": "p",
+        "description": "d",
+        "id": id.clone(),
+        "outcomes": "not-an-array"
+    });
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d.jsonl"),
+            format!("{corrupt}\n"),
+        )
+        .expect("crafted store writable");
+    }
+    let ours_corrupt = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    let theirs_corrupt = run_in(&theirs.0, &ml, &listing);
+    assert_eq!(ours_corrupt.code, theirs_corrupt.code);
+    assert_eq!(ours_corrupt.stdout, theirs_corrupt.stdout);
+    assert_eq!(ours_corrupt.stderr, theirs_corrupt.stderr);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        format!("{corrupt}\n"),
+        "corrupted-store listing must not write"
+    );
+    let corrupt_json = ["--json", "outcome", "d", &id];
+    let ours_corrupt_json = run_in(&ours.0, Path::new(mulch_bin()), &corrupt_json);
+    let theirs_corrupt_json = run_in(&theirs.0, &ml, &corrupt_json);
+    assert_eq!(ours_corrupt_json.code, theirs_corrupt_json.code);
+    assert_eq!(ours_corrupt_json.stdout, theirs_corrupt_json.stdout);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/d.jsonl"),
+        format!("{corrupt}\n"),
+        "corrupted-store json listing must not write"
+    );
 
     // unknown id stays an error in read-only mode
     let missing = ["outcome", "d", "mx-deadbe"];
