@@ -1264,9 +1264,11 @@ fn status_reader_surfaces_match_reference() {
         let _ = run_in(dir, &ml, &["add", "d1"]);
         let _ = run_in(dir, &ml, &["add", "d2"]);
     }
-    // fixed, far-apart recorded_at stamps keep the "Xd ago -> Xh ago"
-    // buckets stable for the test duration; the array line counts.
-    let corpus = "{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-09-30T08:00:00.000Z\",\"content\":\"old\",\"id\":\"mx-bbbbbb\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T04:00:00.000Z\",\"content\":\"new\",\"id\":\"mx-cccccc\"}\n[1,2,3]\n";
+    // fixed, far-apart recorded_at stamps keep the "Xd ago" buckets
+    // stable for the test duration AND cross the observational shelf
+    // life (rotting); the array line counts, the numeric type line
+    // pins the integer-first distribution key order.
+    let corpus = "{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-08-26T08:00:00.000Z\",\"content\":\"old\",\"id\":\"mx-bbbbbb\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-08-27T08:00:00.000Z\",\"content\":\"new\",\"id\":\"mx-cccccc\"}\n[1,2,3]\n{\"type\":5,\"classification\":\"tactical\",\"recorded_at\":\"2026-08-26T08:00:00.000Z\",\"content\":\"numtype\",\"id\":\"mx-333333\"}\n";
     for dir in [&ours.0, &theirs.0] {
         std::fs::write(
             dir.join(".mulch").join("expertise").join("d1.jsonl"),
@@ -1343,6 +1345,23 @@ fn status_reader_surfaces_match_reference() {
     let theirs_unknown = run_in(&theirs.0, &ml, &["status"]);
     assert_eq!(ours_unknown.code, theirs_unknown.code);
     assert_eq!(ours_unknown.code, 1);
+
+    // comment lines are findings for the raw-loop readers (validate,
+    // doctor jsonl-integrity) — only the strict reader skips them
+    // ...plus a legacy singular-outcome record: warning, not error
+    let commented = "# ARCHIVED — not for active use.\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"ok\",\"id\":\"mx-aaaaaa\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"legacy\",\"id\":\"mx-444444\",\"outcome\":{\"status\":\"success\"}}\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join(".mulch").join("expertise").join("d1.jsonl"),
+            commented,
+        )
+        .expect("commented writable");
+    }
+    let ours_validate = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    let theirs_validate = run_in(&theirs.0, &ml, &["validate"]);
+    assert_eq!(ours_validate.code, theirs_validate.code);
+    assert_eq!(ours_validate.stdout, theirs_validate.stdout);
+    assert_eq!(ours_validate.stderr, theirs_validate.stderr);
 
     // --allow-unknown-types keeps status alive (reference flag too)
     let ours_flag = run_in(&ours.0, Path::new(mulch_bin()), &[

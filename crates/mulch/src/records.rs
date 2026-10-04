@@ -137,6 +137,27 @@ fn normalize_legacy_outcome(record: &mut Value) {
     object.remove("outcome");
 }
 
+/// Renders a JSON value the way a JS template literal or property key
+/// would stringify it: strings raw, `null` as "null", arrays joined
+/// with "," (null items empty), objects as "[object Object]"
+/// (probe-pinned 2026-10-04, ml 0.10.7).
+pub fn value_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Null => "null".into(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| match item {
+                Value::Null => String::new(),
+                other => value_text(other),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::Object(_) => "[object Object]".into(),
+        other => other.to_string(),
+    }
+}
+
 /// The reference's duplicate detector (`findDuplicate`,
 /// utils/expertise.ts): the first same-type record whose dedup-field
 /// value equals the candidate's. The dedup field is the registry's
@@ -264,9 +285,10 @@ pub enum ResolveError {
     },
 }
 
-/// One lenient line finding (reference `validate`/`doctor` readers):
-/// blank and comment lines are skipped silently, every other line
-/// carries its parse outcome. Line numbers are 1-based and physical.
+/// One lenient line finding (reference `validate`/`doctor` raw line
+/// loops): only blank lines are skipped; every other line carries its
+/// parse outcome — `#` comments included, which those loops report as
+/// invalid-JSON findings. Line numbers are 1-based and physical.
 #[derive(Debug)]
 pub enum LenientLine {
     /// A parsed record — any JSON value; shape checks belong to the
@@ -285,7 +307,7 @@ pub fn read_lenient(path: &Path) -> Vec<LenientLine> {
     let mut lines = Vec::new();
     for (index, line) in text.split('\n').enumerate() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
             continue;
         }
         let finding = match serde_json::from_str::<Value>(trimmed) {
@@ -475,8 +497,6 @@ mod upsert_record_tests {
 
 #[cfg(test)]
 mod lenient_tests {
-    use serde_json::json;
-
     use super::*;
 
     #[test]
@@ -491,10 +511,13 @@ mod lenient_tests {
         .expect("writable");
 
         let findings = read_lenient(&path);
-        assert_eq!(findings.len(), 3, "banner and blank lines skip");
-        assert!(matches!(findings[0], LenientLine::Record { line: 2, .. }));
-        assert!(matches!(findings[1], LenientLine::Malformed { line: 4 }));
-        assert!(matches!(findings[2], LenientLine::Record { line: 5, .. }));
+        assert_eq!(findings.len(), 4, "only the blank line skips");
+        // comment lines are findings too (reference validate/doctor
+        // raw loops flag them as invalid JSON)
+        assert!(matches!(findings[0], LenientLine::Malformed { line: 1 }));
+        assert!(matches!(findings[1], LenientLine::Record { line: 2, .. }));
+        assert!(matches!(findings[2], LenientLine::Malformed { line: 4 }));
+        assert!(matches!(findings[3], LenientLine::Record { line: 5, .. }));
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -526,7 +549,5 @@ mod lenient_tests {
     fn read_lenient_missing_file_reads_empty() {
         let missing = std::path::Path::new("/nonexistent-mulch-probe/d.jsonl");
         assert!(read_lenient(missing).is_empty());
-        // the json! import keeps this module honest about shapes
-        let _ = json!({});
     }
 }

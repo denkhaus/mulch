@@ -76,7 +76,10 @@ impl StoreFiles {
     }
 
     /// Lenient per-line read of one domain file (reference validate/
-    /// doctor): parse outcomes are findings, missing files read empty.
+    /// doctor raw loops): parse outcomes are findings — including
+    /// `#` comment lines, which those loops flag as invalid JSON
+    /// (only the strict reader skips them). Missing files read
+    /// empty.
     pub fn read_lenient(&self, domain: &str) -> Vec<LenientLine> {
         crate::records::read_lenient(&self.domain_path(domain))
     }
@@ -161,6 +164,21 @@ impl StoreFiles {
         std::fs::write(&path, self.config.to_yaml()).map_err(|source| Error::Write { path, source })
     }
 
+    /// A domain's records, STRICT (the reference `readExpertiseFile`):
+    /// unparsable lines and unregistered types are typed errors, so a
+    /// caller never mutates a store it could not read. Scalar and
+    /// `null` lines are errors too (the reference reader crashes on
+    /// them — README DEVIATIONS); blank and `#` comment lines are
+    /// skipped, arrays pass as records. `allow_unknown` is the CLI's
+    /// `--allow-unknown-types` escape hatch (worktree/CI lag): it
+    /// tolerates unregistered types but never malformed lines.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MalformedLine`] for unparsable lines,
+    /// [`Error::NotAnObject`] for scalar/`null` lines,
+    /// [`Error::UnknownRecordType`] for unregistered types (unless
+    /// `allow_unknown`), [`Error::Read`] for I/O failures.
     pub fn read_records(&self, domain: &str, allow_unknown: bool) -> Result<Vec<LineRecord>> {
         read_strict(&self.domain_path(domain), allow_unknown)
     }

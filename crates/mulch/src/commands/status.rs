@@ -35,7 +35,22 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let mut domains_json = Vec::new();
     for domain in store.domains() {
         let (records, mtime) = read_domain(opts, &store, &domain)?;
-        let status = DomainStatus::compute(&domain, &records, mtime, now, &rule);
+        let observational_days = shelf_life.as_ref().map_or(30, |life| life.observational);
+        let (max_entries, warn_entries, hard_limit) =
+            governance.as_ref().map_or((100, 150, 200), |gov| {
+                (gov.max_entries, gov.warn_entries, gov.hard_limit)
+            });
+        let status = DomainStatus::compute(
+            &domain,
+            &records,
+            mtime,
+            now,
+            &rule,
+            max_entries,
+            warn_entries,
+            hard_limit,
+            observational_days,
+        );
 
         domain_lines.push(status.plain_line(now));
         domains_json.push(status.into_json());
@@ -69,8 +84,13 @@ struct DomainStatus {
     oldest_recorded:       Option<Timestamp>,
     newest_recorded:       Option<Timestamp>,
     stale_count:           usize,
-    type_counts:           Map<String, Value>,
-    classification_counts: Map<String, Value>,
+    rotting:               bool,
+    rotting_days:          Option<u64>,
+    max_entries:           u64,
+    warn_entries:          u64,
+    hard_limit:            u64,
+    type_counts:           Counter,
+    classification_counts: Counter,
 }
 
 impl DomainStatus {
@@ -80,65 +100,75 @@ impl DomainStatus {
         mtime: Option<Timestamp>,
         now: Timestamp,
         rule: &StaleRule,
+        max_entries: u64,
+        warn_entries: u64,
+        hard_limit: u64,
+        observational_days: u64,
     ) -> Self {
-        // Ordered distributions with the reference's JS key semantics:
-        // seeded known keys first, then extras in first-seen order; a
-        // non-string (undefined) field lands under the literal key
-        // "undefined", and classification counters beyond the seeded
-        // three are NaN in the reference — JSON `null`.
-        let mut type_counts = Map::new();
-        for kind in TYPES {
-            type_counts.insert((*kind).into(), json_num(0));
-        }
-        let mut classification_counts = Map::new();
-        for class in CLASSIFICATIONS {
-            classification_counts.insert((*class).into(), json_num(0));
-        }
+        // Distributions count in ordered usize maps; the JSON shape
+        // (seeded keys first, extras in first-seen order, the JS
+        // "undefined"-key and NaN->null rules) lives in one boundary
+        // helper, `to_distribution`.
+        let mut type_counts = Counter::seeded(&TYPES);
+        let mut classification_counts = Counter::seeded(&CLASSIFICATIONS);
         let mut oldest_recorded = None;
         let mut newest_recorded = None;
         let mut stale_count = 0;
 
         for record in records {
-            let field = |name: &str| record.get(name).and_then(Value::as_str);
-            let type_key = field("type").unwrap_or("undefined");
-            let counted = match type_counts.get(type_key) {
-                Some(Value::Number(number)) => number.as_u64().map_or(1, |counted| counted + 1),
-                _ => 1,
-            };
-            type_counts.insert(type_key.into(), json_num(counted));
-            let class_key = field("classification").unwrap_or("undefined");
-            let next_class = if CLASSIFICATIONS.contains(&class_key) {
-                match classification_counts.get(class_key) {
-                    Some(Value::Number(number)) => {
-                        number.as_u64().map_or(Value::Null, |n| json_num(n + 1))
-                    }
-                    _ => Value::Null,
-                }
-            } else {
-                // NaN -> null in the reference's JSON
-                Value::Null
-            };
-            classification_counts.insert(class_key.into(), next_class);
-            if let Ok(Some(recorded)) = parse_timestamp(field("recorded_at")) {
+            let field = |name: &str| record.get(name);
+            type_counts.bump_field(field("type"));
+            classification_counts.bump_known_field(field("classification"), &CLASSIFICATIONS);
+            if let Ok(Some(recorded)) =
+                parse_timestamp(field("recorded_at").and_then(Value::as_str))
+            {
                 if oldest_recorded.is_none_or(|o| recorded < o) {
                     oldest_recorded = Some(recorded);
                 }
                 if newest_recorded.is_none_or(|n| recorded > n) {
                     newest_recorded = Some(recorded);
                 }
-                if rule.is_stale(classification_of(record), recorded, now) {
+                // Only explicit known classifications decay (reference
+                // isRecordStale: unknown/missing -> never stale).
+                if let Some(class) = field("classification")
+                    .and_then(Value::as_str)
+                    .filter(|c| CLASSIFICATIONS.contains(c))
+                    && rule.is_stale(class, recorded, now)
+                {
                     stale_count += 1;
                 }
             }
         }
 
+        // Rotting is the NEWEST record's age vs the observational
+        // shelf life (reference status.ts), not the stale count.
+        let (rotting, rotting_days) = match newest_recorded {
+            Some(newest) => {
+                // Math.floor of the total-hours quotient (reference
+                // age-in-days); the span is finite and non-negative
+                let age_days =
+                    f64_to_u64(((now - newest).total(jiff::Unit::Hour)).unwrap_or(0.0) / 24.0);
+                if age_days > observational_days {
+                    (true, Some(age_days))
+                } else {
+                    (false, None)
+                }
+            }
+            None => (false, None),
+        };
+
         Self {
             domain: domain.into(),
+            max_entries,
+            warn_entries,
+            hard_limit,
             count: records.len(),
             last_updated: mtime,
             oldest_recorded,
             newest_recorded,
             stale_count,
+            rotting,
+            rotting_days,
             type_counts,
             classification_counts,
         }
@@ -162,18 +192,44 @@ impl DomainStatus {
                 let _ = write!(line, " — recorded {oldest_ago} → {newest_ago}");
             }
         }
+        // Governance thresholds, then rotting (reference order)
+        if count64(self.count) >= self.hard_limit {
+            let _ = write!(line, " ⚠ OVER HARD LIMIT — must decompose");
+        } else if count64(self.count) >= self.warn_entries {
+            let _ = write!(line, " ⚠ consider splitting domain");
+        } else if count64(self.count) >= self.max_entries {
+            let _ = write!(line, " — approaching limit");
+        }
+        if self.rotting {
+            match self.rotting_days {
+                Some(days) => {
+                    let _ = write!(line, " ⚠ ROTTING (no writes in {days}d)");
+                }
+                None => {
+                    let _ = write!(line, " ⚠ ROTTING");
+                }
+            }
+        }
         line
     }
 
     /// The `--json` domain object (health block included).
     fn into_json(self) -> Value {
         let mut health = Map::new();
-        health.insert("governance_utilization".into(), json_num(self.count as u64));
+        // Reference: Math.round(count / max_entries * 100)
+        let utilization = (self.count as f64 / self.max_entries as f64) * 100.0;
+        health.insert(
+            "governance_utilization".into(),
+            json_num(f64_to_u64(utilization.round())),
+        );
         health.insert("stale_count".into(), json_num(self.stale_count as u64));
-        health.insert("type_distribution".into(), Value::Object(self.type_counts));
+        health.insert(
+            "type_distribution".into(),
+            self.type_counts.to_distribution(),
+        );
         health.insert(
             "classification_distribution".into(),
-            Value::Object(self.classification_counts),
+            self.classification_counts.to_distribution(),
         );
         health.insert(
             "oldest_timestamp".into(),
@@ -196,10 +252,10 @@ impl DomainStatus {
             "newest_recorded".into(),
             timestamp_json(self.newest_recorded),
         );
-        body.insert("rotting".into(), Value::Bool(self.stale_count > 0));
-        body.insert("rotting_days".into(), match self.stale_count {
-            0 => Value::Null,
-            _ => Value::from(0),
+        body.insert("rotting".into(), Value::Bool(self.rotting));
+        body.insert("rotting_days".into(), match self.rotting_days {
+            Some(days) => Value::from(days),
+            None => Value::Null,
         });
         body.insert("health".into(), Value::Object(health));
         Value::Object(body)
@@ -239,12 +295,81 @@ fn parse_timestamp(raw: Option<&str>) -> Result<Option<Timestamp>, jiff::Error> 
     }
 }
 
-/// The record's classification, defaulting like the reference writer.
-fn classification_of(record: &Value) -> &str {
-    record
-        .get("classification")
-        .and_then(Value::as_str)
-        .unwrap_or("tactical")
+/// The record count as the thresholds' u64 shape.
+fn count64(count: usize) -> u64 {
+    u64::try_from(count).unwrap_or(0)
+}
+
+/// An ordered distribution counter with the reference's JS semantics
+/// at the JSON boundary: seeded keys first, extras in first-seen
+/// order; a missing/non-string field counts under the literal key
+/// `"undefined"`.
+#[derive(Debug)]
+struct Counter {
+    counts: Vec<(String, Option<u64>)>,
+}
+
+impl Counter {
+    fn seeded(keys: &[&str]) -> Self {
+        Self {
+            counts: keys.iter().map(|k| ((*k).to_owned(), Some(0))).collect(),
+        }
+    }
+
+    /// Counts the field under its JS property key (`String(key)`
+    /// coercion — `5` becomes `"5"`, `null` becomes `"null"`,
+    /// objects `[object Object]`; a missing field is `"undefined"`).
+    fn bump_field(&mut self, field: Option<&Value>) {
+        let key = field.map_or_else(|| "undefined".into(), mulch::value_text);
+        self.bump_key(&key, false);
+    }
+
+    /// Counts the field only when its key is one of `known`; anything
+    /// else lands under its key as `None` (the reference's counter
+    /// goes NaN there, JSON `null`).
+    fn bump_known_field(&mut self, field: Option<&Value>, known: &[&str]) {
+        let key = field.map_or_else(|| "undefined".into(), mulch::value_text);
+        self.bump_key(&key, !known.contains(&key.as_str()));
+    }
+
+    fn bump_key(&mut self, key: &str, force_null: bool) {
+        if let Some(slot) = self.counts.iter_mut().find(|(k, _)| k == key) {
+            if force_null {
+                slot.1 = None;
+            } else {
+                slot.1 = Some(slot.1.unwrap_or(0) + 1);
+            }
+            return;
+        }
+        let value = if force_null { None } else { Some(1) };
+        self.counts.push((key.to_owned(), value));
+    }
+
+    /// The JSON object: counts, `null` for the NaN-emulating slots.
+    /// Key order follows JS object enumeration: integer-like keys
+    /// ascending first, then string keys in insertion order (probe:
+    /// `{"type": 5}` yields `"5"` before the seeded names).
+    fn to_distribution(&self) -> Value {
+        let mut integer_keys: Vec<&(String, Option<u64>)> = self
+            .counts
+            .iter()
+            .filter(|(key, _)| key.parse::<u64>().is_ok())
+            .collect();
+        integer_keys.sort_by_key(|(key, _)| key.parse::<u64>().unwrap_or(0));
+        let mut map = Map::new();
+        for (key, count) in integer_keys.into_iter().chain(
+            self.counts
+                .iter()
+                .filter(|(key, _)| key.parse::<u64>().is_err()),
+        ) {
+            let value = match count {
+                Some(count) => json_num(*count),
+                None => Value::Null,
+            };
+            map.insert(key.clone(), value);
+        }
+        Value::Object(map)
+    }
 }
 
 /// Relative-time rendering ("just now", "2m ago", "3h ago", "4d ago").
@@ -295,6 +420,25 @@ fn shelf_life_json(shelf: Option<&mulch::ShelfLife>) -> Value {
 }
 
 /// JSON number helper.
+/// Clamps a non-negative reference computation into u64 (the
+/// Math.round contract on finite, non-negative inputs).
+fn f64_to_u64(value: f64) -> u64 {
+    if value.is_finite() && value > 0.0 {
+        // the reference's Math.round output (finite, non-negative);
+        // truncation cannot lose data past .round()
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "guarded and rounded; mirrors Math.round"
+        )]
+        {
+            value as u64
+        }
+    } else {
+        0
+    }
+}
+
 fn json_num(value: u64) -> Value {
     Value::from(value)
 }

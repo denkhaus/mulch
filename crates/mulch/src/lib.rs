@@ -21,7 +21,8 @@ pub use error::{Error, Result};
 pub use ids::{PAYLOAD_TYPES, id_key_field, is_named_type, payload_fields, record_id};
 pub use records::{
     LenientLine, LineRecord, ResolveError, assign_missing_id, find_duplicate, merge_outcomes,
-    read_lenient, read_strict, record_summary, resolve_record_id, upsert_record, write_records,
+    read_lenient, read_strict, record_summary, resolve_record_id, upsert_record, value_text,
+    write_records,
 };
 pub use store_files::{StoreFiles, StoreLocation};
 

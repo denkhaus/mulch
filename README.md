@@ -49,8 +49,8 @@ expectation (the parity rule: never silently):
   premise.) Arrays count as records (reference quirk). We exit 1 with
   the reference's own message shapes (`Malformed JSONL at …`, unknown
   type, plus a clean `non-object record` error where the reference
-  crashes with `TypeError: raw is not an Object`), unless
-  `--allow-unknown-types` is passed.
+  crashes with `TypeError: raw is not an Object`). The
+  `--allow-unknown-types` flag lifts only the unknown-type failure.
 - **Malformed-line reasons carry serde's wording** (V8/JSC phrases
   differ); the `Malformed JSONL at <path>:<line>: <reason>. Line:
   <preview>` template and the 80-char preview are byte-identical.

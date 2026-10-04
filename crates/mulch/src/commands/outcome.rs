@@ -1,6 +1,7 @@
 //! `mulch outcome <domain> <id>` — append an outcome entry or list
 //! the record's outcomes (mulch-b88b).
 
+use mulch::value_text;
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, OutcomeFlags};
@@ -245,26 +246,6 @@ fn append(
         );
     }
     Ok(())
-}
-
-/// Renders a JSON value the way a JS template literal would: strings
-/// raw, `null` as "null", arrays joined with "," (null items empty),
-/// objects as "[object Object]" (probe-pinned 2026-10-04).
-fn value_text(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Null => "null".into(),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| match item {
-                Value::Null => String::new(),
-                other => value_text(other),
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Object(_) => "[object Object]".into(),
-        other => other.to_string(),
-    }
 }
 
 /// JS truthiness for the optional listing fields (the reference's bare
