@@ -125,14 +125,15 @@ fn build_record(
 /// The reference-pattern failure: plain renders as multi-line
 /// `record failed schema validation` with the Hint line; the json
 /// envelope says `Schema validation failed: <joined>. <hint>`.
-fn ref_validation_failure(subs: &[String], hint: &str) -> Failure {
+fn ref_validation_failure(subs: &[crate::commands::schema::SubError], hint: &str) -> Failure {
+    let rendered = crate::commands::schema::render_subs(subs);
     let mut message = String::from("Error: record failed schema validation:");
-    for sub in subs {
+    for sub in &rendered {
         let _ = write!(message, "\n  {sub}");
     }
     let _ = write!(message, "\n{hint}");
     let mut failure = Failure::handled("record", message);
-    let joined = subs.join(crate::commands::schema::SUB_SEP);
+    let joined = rendered.join(crate::commands::schema::SUB_SEP);
     failure.envelope["error"] = Value::String(format!(
         "{}{joined}. {hint}",
         crate::commands::schema::VALIDATION_PREFIX
@@ -566,7 +567,7 @@ fn stdin_batch(
             };
             errors.push(Value::String(format!(
                 "Record {index}: {}{hint_part}",
-                subs.join(crate::commands::schema::SUB_SEP)
+                crate::commands::schema::render_subs(&subs).join(crate::commands::schema::SUB_SEP)
             )));
             continue;
         }

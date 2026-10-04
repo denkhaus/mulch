@@ -77,7 +77,7 @@ pub(super) fn run(
             "move",
             format!(
                 "Error: Record fails schema validation: {}. Edit the record before moving.",
-                subs.join("; ")
+                crate::commands::schema::render_subs(&subs).join("; ")
             ),
         ));
     }

@@ -20,52 +20,61 @@ pub const PAYLOAD_TYPES: [&str; 6] = [
 /// to — this table (mulch-a3de; `PAYLOAD_TYPES` is the pinned list).
 pub struct TypeSpec {
     /// The type name (registry order = the reference's fixed order).
-    pub name:    &'static str,
+    pub name:           &'static str,
     /// Payload fields in canonical write order.
-    pub payload: &'static [&'static str],
+    pub payload:        &'static [&'static str],
     /// The id/dedup key field.
-    pub id_key:  &'static str,
+    pub id_key:         &'static str,
     /// Whether duplicates upsert (named types) or skip (anonymous).
-    pub named:   bool,
+    pub named:          bool,
+    /// Whether the branch schema declares the optional `files` array
+    /// (pattern and reference do; elsewhere `files` is additional).
+    pub declares_files: bool,
 }
 
 /// The six built-in types in the reference's fixed order.
 pub const REGISTRY: [TypeSpec; 6] = [
     TypeSpec {
-        name:    "convention",
-        payload: &["content"],
-        id_key:  "content",
-        named:   false,
+        name:           "convention",
+        payload:        &["content"],
+        id_key:         "content",
+        named:          false,
+        declares_files: false,
     },
     TypeSpec {
-        name:    "pattern",
-        payload: &["name", "description"],
-        id_key:  "name",
-        named:   true,
+        name:           "pattern",
+        payload:        &["name", "description"],
+        id_key:         "name",
+        named:          true,
+        declares_files: true,
     },
     TypeSpec {
-        name:    "failure",
-        payload: &["description", "resolution"],
-        id_key:  "description",
-        named:   false,
+        name:           "failure",
+        payload:        &["description", "resolution"],
+        id_key:         "description",
+        named:          false,
+        declares_files: false,
     },
     TypeSpec {
-        name:    "decision",
-        payload: &["title", "rationale"],
-        id_key:  "title",
-        named:   true,
+        name:           "decision",
+        payload:        &["title", "rationale"],
+        id_key:         "title",
+        named:          true,
+        declares_files: false,
     },
     TypeSpec {
-        name:    "reference",
-        payload: &["name", "description"],
-        id_key:  "name",
-        named:   true,
+        name:           "reference",
+        payload:        &["name", "description"],
+        id_key:         "name",
+        named:          true,
+        declares_files: true,
     },
     TypeSpec {
-        name:    "guide",
-        payload: &["name", "description"],
-        id_key:  "name",
-        named:   true,
+        name:           "guide",
+        payload:        &["name", "description"],
+        id_key:         "name",
+        named:          true,
+        declares_files: false,
     },
 ];
 

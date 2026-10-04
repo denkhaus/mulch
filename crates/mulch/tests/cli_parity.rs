@@ -2864,6 +2864,76 @@ fn required_common_fields_match_reference() {
     assert_eq!(our.stderr, their.stderr, "flag-path json envelope");
 }
 
+// ---- sprint 14 (mulch-b8ca): full subschema model ----
+
+#[test]
+fn schema_suberrors_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Each case was probe-fitted against ml 0.10.7: the branch reports
+    // its FIRST failure in required -> additionalProperties ->
+    // properties(declaration order) order.
+    let cases: [(&str, &str); 9] = [
+        (
+            "additional",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"bogus\":1}\n",
+        ),
+        (
+            "files-on-guide",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"files\":[]}\n",
+        ),
+        (
+            "classification-enum",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"weird\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\"}\n",
+        ),
+        (
+            "description-type",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":123,\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\"}\n",
+        ),
+        (
+            "name-null",
+            "{\"type\":\"guide\",\"name\":null,\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\"}\n",
+        ),
+        (
+            "id-pattern",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"id\":\"XX-bad\"}\n",
+        ),
+        (
+            "tags-type",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"tags\":\"nope\"}\n",
+        ),
+        (
+            "relates-to-item",
+            "{\"type\":\"pattern\",\"name\":\"p\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"relates_to\":[\"ok:mx-abcd12\",\"bad\"]}\n",
+        ),
+        (
+            "status-enum",
+            "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"status\":\"weird\"}\n",
+        ),
+    ];
+    for (index, (tag, corpus)) in cases.iter().enumerate() {
+        for args in [&["validate"] as &[&str], &["--json", "validate"]] {
+            let (ours, theirs) = twin_seeded(&format!("b8ca{index}"), None, &[("d", *corpus)], &[]);
+            let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+            let their = run_in(&theirs.0, &ml, args);
+            assert_eq!(our.code, their.code, "{tag} {args:?} exit");
+            assert_eq!(our.code, 1, "{tag} {args:?} must fail like the reference");
+            assert_eq!(
+                normalize_dir(&our.stdout, &ours.0),
+                normalize_dir(&their.stdout, &theirs.0),
+                "{tag} {args:?} stdout"
+            );
+            assert_eq!(
+                normalize_dir(&our.stderr, &ours.0),
+                normalize_dir(&their.stderr, &theirs.0),
+                "{tag} {args:?} stderr"
+            );
+        }
+    }
+}
+
 // ---- sprint 11 (mulch-ca49): batch summary surfaces + compact rewrite ----
 
 #[test]
