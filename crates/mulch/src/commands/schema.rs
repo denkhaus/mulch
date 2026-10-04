@@ -12,6 +12,12 @@
 //! with a present-but-unregistered `type` fail with
 //! `Unknown record \`X\`` instead of the oneOf blob.
 
+/// The separator between oneOf sub-errors (reference join).
+pub(crate) const SUB_SEP: &str = "; ";
+
+/// The validate prefix before the joined sub-errors.
+pub(crate) const VALIDATION_PREFIX: &str = "Schema validation failed: ";
+
 /// Branch names with their FULL required fields in reference order
 /// (pinned from the reference registry: `type` + payload fields +
 /// `classification` + `recorded_at`; mulch-5f8a).
@@ -65,7 +71,11 @@ pub(crate) enum Verdict {
     Valid,
     /// Unregistered `type` value; carries the offending type.
     Unknown(String),
-    /// No branch matched; carries the per-branch sub-errors.
+    /// No branch matched; carries the pre-rendered per-branch
+    /// sub-errors. Each entry starts with its ajv path prefix — a
+    /// leading space for the empty path (` must have required property
+    /// 'x'`), `/type must be equal to constant` for the const — and
+    /// the entries join with [`SUB_SEP`].
     OneOf(Vec<String>),
 }
 
@@ -202,29 +212,29 @@ pub(crate) fn validate_message(record: &serde_json::Value) -> Option<String> {
     match verdict(record) {
         Verdict::Valid => None,
         Verdict::Unknown(kind) => Some(format!("Unknown record `{kind}`")),
-        Verdict::OneOf(subs) => Some(format!("Schema validation failed: {}", subs.join("; "))),
+        Verdict::OneOf(subs) => Some(format!("{VALIDATION_PREFIX}{}", subs.join(SUB_SEP))),
     }
 }
 
-/// The doctor detail line for a non-valid record (no wrapper, two
-/// spaces after the dash — pinned from the reference).
+/// The doctor detail line for a non-valid record: no wrapper; the
+/// caller prefixes `domain:line - ` and the sub-errors' own path
+/// spaces provide the reference's extra gap.
 pub(crate) fn doctor_detail(record: &serde_json::Value) -> Option<String> {
     match verdict(record) {
         Verdict::Valid => None,
         Verdict::Unknown(kind) => Some(format!("Unknown record `{kind}`")),
-        Verdict::OneOf(subs) => Some(subs.join("; ")),
+        Verdict::OneOf(subs) => Some(subs.join(SUB_SEP)),
     }
 }
 
 /// The plain-mode stderr rendering of a validate finding.
 pub(crate) fn plain_detail_lines(message: &str) -> Vec<String> {
-    if let Some(payload) = message.strip_prefix("Schema validation failed: ") {
+    if let Some(payload) = message.strip_prefix(VALIDATION_PREFIX) {
         let mut lines = vec!["Schema validation failed:".into()];
-        lines.extend(
-            payload
-                .split("; ")
-                .map(|sub| format!("   {}", sub.trim_start())),
-        );
+        // Each entry carries its own ajv path prefix: "  " + path +
+        // " " + message (the empty path yields the reference's extra
+        // gap; /type yields a single one).
+        lines.extend(payload.split(SUB_SEP).map(|sub| format!("  {sub}")));
         lines
     } else {
         vec![message.into()]

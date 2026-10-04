@@ -2742,6 +2742,13 @@ fn required_common_fields_match_reference() {
                     normalize_dir(&their.stdout, &theirs.0),
                     "{tag} {args:?} stdout"
                 );
+                // plain validate renders the details on STDERR — the
+                // gap that hid the const-mix spacing regression
+                assert_eq!(
+                    normalize_dir(&our.stderr, &ours.0),
+                    normalize_dir(&their.stderr, &theirs.0),
+                    "{tag} {args:?} stderr"
+                );
             }
         }
     }
@@ -2765,6 +2772,96 @@ fn required_common_fields_match_reference() {
         ours_store.contains("\"classification\":\"tactical\""),
         "batch enrichment fills classification: {ours_store}"
     );
+
+    // an explicit recorded_at/classification survive the enrichment
+    // (`if (!("recorded_at" in record))` — the values must not be
+    // overwritten; timestamps are masked by normalize, so assert the
+    // literal string survives on BOTH sides)
+    let fixed = "2019-01-02T03:04:05.678Z";
+    let batch_kept = format!(
+        "[{{\"type\":\"guide\",\"name\":\"g2\",\"description\":\"gd2\",\"recorded_at\":\"{fixed}\",\"classification\":\"foundational\"}}]"
+    );
+    let (ours, theirs) = twin_seeded("reqbatch2", None, &[("alpha", "")], &[]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch.json"), &batch_kept).expect("batch file");
+    }
+    let args = ["record", "alpha", "--batch", "batch.json", "--json"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(normalize(&our.stdout), normalize(&their.stdout));
+    let ours_store = read_store_file(&ours.0, "expertise/alpha.jsonl");
+    let theirs_store = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+    assert!(
+        ours_store.contains(fixed),
+        "our enrichment must keep the explicit recorded_at: {ours_store}"
+    );
+    assert!(
+        theirs_store.contains(fixed),
+        "reference keeps the explicit recorded_at: {theirs_store}"
+    );
+    assert!(
+        ours_store.contains("\"classification\":\"foundational\""),
+        "our enrichment must keep the explicit classification: {ours_store}"
+    );
+    assert_eq!(normalize_line(&ours_store), normalize_line(&theirs_store));
+
+    // Batch FAILURE surfaces: the entry carries the sub-errors without
+    // a prefix, a type hint only for registered types, and non-object
+    // items read `must be object`.
+    let failing = [
+        ("notype", "[{\"name\":\"n\",\"description\":\"d\"}]"),
+        ("typed", "[{\"type\":\"pattern\",\"name\":\"n\"}]"),
+        ("notobj", "[\"oops\"]"),
+    ];
+    for (index, (tag, batch)) in failing.iter().enumerate() {
+        let (ours, theirs) = twin_seeded(&format!("reqfail{index}"), None, &[("alpha", "")], &[]);
+        for dir in [&ours.0, &theirs.0] {
+            std::fs::write(dir.join("batch.json"), batch).expect("batch file");
+        }
+        for args in [&["record", "alpha", "--batch", "batch.json"] as &[&str], &[
+            "--json",
+            "record",
+            "alpha",
+            "--batch",
+            "batch.json",
+        ]] {
+            let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+            let their = run_in(&theirs.0, &ml, args);
+            assert_eq!(our.code, their.code, "{tag} {args:?} exit");
+            assert_eq!(
+                normalize_dir(&our.stdout, &ours.0),
+                normalize_dir(&their.stdout, &theirs.0),
+                "{tag} {args:?} stdout"
+            );
+            assert_eq!(
+                normalize_dir(&our.stderr, &ours.0),
+                normalize_dir(&their.stderr, &theirs.0),
+                "{tag} {args:?} stderr"
+            );
+        }
+    }
+
+    // Flag-path json failure: the envelope carries the validate-style
+    // text (not the plain rendering).
+    let (ours, theirs) = twin_seeded("reqflagjson", None, &[("alpha", "")], &[]);
+    let args = [
+        "--json",
+        "record",
+        "alpha",
+        "--type",
+        "pattern",
+        "--name",
+        "n",
+        "--description",
+        "d",
+        "--relates-to",
+        "bogus",
+    ];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stderr, their.stderr, "flag-path json envelope");
 }
 
 // ---- sprint 9 (mulch-351d): edit/outcome identifier resolution ----

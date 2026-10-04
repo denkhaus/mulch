@@ -132,9 +132,11 @@ fn ref_validation_failure(subs: &[String], hint: &str) -> Failure {
     }
     let _ = write!(message, "\n{hint}");
     let mut failure = Failure::handled("record", message);
-    let joined = subs.join("; ");
-    failure.envelope["error"] =
-        Value::String(format!("Schema validation failed: {joined}. {hint}"));
+    let joined = subs.join(crate::commands::schema::SUB_SEP);
+    failure.envelope["error"] = Value::String(format!(
+        "{}{joined}. {hint}",
+        crate::commands::schema::VALIDATION_PREFIX
+    ));
     failure
 }
 
@@ -278,9 +280,11 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
         Err(mut failure) => {
             // Parity contract: the --json error drops the `Error: `
             // prefix and says `Example:` where plain stderr says
-            // `Retry:` (probe 2, §3d; spec review round 2).
+            // `Retry:` (probe 2, §3d; spec review round 2). Only the
+            // missing-flags failure gets that rewrite — schema
+            // validation failures carry their own envelope text.
             failure.envelope_to_stderr = true;
-            if opts.json {
+            if opts.json && failure.message.contains("\n  Retry: ") {
                 let json_text = failure
                     .message
                     .replacen("Error: ", "", 1)
@@ -530,7 +534,9 @@ fn stdin_batch(
 
     for (index, item) in items.into_iter().enumerate() {
         let Some(object) = item.as_object().cloned() else {
-            errors.push(Value::String(format!("Record {index}: not a JSON object")));
+            // Reference: ajv rejects non-objects with `must be object`
+            // (the empty instance path supplies the extra gap).
+            errors.push(Value::String(format!("Record {index}:  must be object")));
             continue;
         };
         // The reference normalizes each batch record FIRST — recorded_at
@@ -547,9 +553,21 @@ fn stdin_batch(
         if let crate::commands::schema::FullVerdict::Invalid { subs, hint } =
             crate::commands::schema::full_verdict(&Value::Object(line.clone()))
         {
+            // Reference batch entry: `Record ${i}: ${subs}` with the
+            // type hint only when the record declares a registered
+            // type (`requirements[recordType]` is undefined otherwise).
+            let registered = line
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| mulch::PAYLOAD_TYPES.contains(&kind));
+            let hint_part = if registered {
+                format!(". {hint}")
+            } else {
+                String::new()
+            };
             errors.push(Value::String(format!(
-                "Record {index}: Schema validation failed: {}. {hint}",
-                subs.join("; ")
+                "Record {index}: {}{hint_part}",
+                subs.join(crate::commands::schema::SUB_SEP)
             )));
             continue;
         }
@@ -567,7 +585,9 @@ fn stdin_batch(
             .to_string();
         let id = record_id(&record_type, &id_value);
         // Dedupe by the type's dedup FIELD against the working copy
-        // (`findDuplicate`), never by id (mulch-ccf6).
+        // (`findDuplicate`), never by id (mulch-ccf6). The enriched
+        // record is safe here: find_duplicate compares only `type` and
+        // the type's dedup field, which enrichment never touches.
         let duplicate = if args.force {
             None
         } else {
@@ -635,12 +655,25 @@ fn stdin_batch(
         // Reference failure contract (spec review round 2): the action
         // envelope with `errors` goes to stdout, the simple error
         // envelope to stderr, the store stays untouched, exit 1.
+        // Plain rendering indents one entry per line; the json
+        // envelope keeps the `; `-joined single line (reference:
+        // console.error per entry vs join("; ") in outputJsonError).
         let summary = errors
             .iter()
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect::<Vec<_>>()
             .join("; ");
+        let mut plain = String::from("Validation errors:");
+        for error in &errors {
+            if let Some(text) = error.as_str() {
+                plain.push_str("\n  ");
+                plain.push_str(text);
+            }
+        }
+        let mut failure = Failure::handled("record", plain);
+        failure.envelope["error"] = Value::String(format!("Validation errors: {summary}"));
+        failure.envelope_to_stderr = true;
         if opts.json {
             let mut fields = serde_json::Map::new();
             fields.insert("action".into(), Value::String(action.into()));
@@ -655,17 +688,9 @@ fn stdin_batch(
             body.insert("command".into(), Value::String("record".into()));
             body.extend(fields);
             print_json(&Value::Object(body), false);
+            print_json(&failure.envelope, true);
+            failure.rendered = true;
         }
-        let mut failure = Failure::handled("record", format!("Validation errors: {summary}"));
-        failure.envelope_to_stderr = true;
-        failure.rendered = opts.json && {
-            // the simple error envelope still renders on stderr in json
-            // mode: print it here, mark message-only for plain mode
-            if opts.json {
-                print_json(&failure.envelope, true);
-            }
-            true
-        };
         return Err(failure);
     }
 
