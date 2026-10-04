@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mulch::{Config, StoreFiles, StoreLocation};
+use mulch::{StoreFiles, StoreLocation};
 use serde_json::{Value, json};
 
 fn reference_ml() -> Option<PathBuf> {
@@ -108,18 +108,29 @@ fn failure_line() -> String {
 }
 
 fn write_corpus(dir: &Path, with_additive: bool) {
+    // Fresh store through the seam: a minimal parseable config seed,
+    // then `register_domain` owns the canonical config write (the same
+    // path the add/record commands take).
     std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
-    let mut config = Config::default();
-    config.add_domain("rust");
-    std::fs::write(dir.join(".mulch/mulch.config.yaml"), config.to_yaml()).expect("config written");
-
-    let store = open_store(dir);
+    std::fs::write(dir.join(".mulch/mulch.config.yaml"), "version: '1'\n").expect("config seed");
+    let mut store = open_store(dir);
+    store.register_domain("rust").expect("domain registered");
     store
         .append_domain_line("rust", &convention_line(with_additive))
         .expect("convention written");
     store
         .append_domain_line("rust", &failure_line())
         .expect("failure written");
+}
+
+/// The domain's records as plain values (the one record shape).
+fn read_values(store: &StoreFiles, domain: &str) -> Vec<Value> {
+    store
+        .read_records(domain, false)
+        .expect("domain readable")
+        .into_iter()
+        .map(|line| line.record)
+        .collect()
 }
 
 #[test]
@@ -141,12 +152,7 @@ fn reference_accepts_our_corpus_and_additive_fields_survive() {
     // them — that is the acceptance gate.
     {
         let store = open_store(&dir.0);
-        let mut lines: Vec<Value> = store
-            .read_records("rust", false)
-            .expect("rust domain")
-            .into_iter()
-            .map(|line| line.record)
-            .collect();
+        let mut lines = read_values(&store, "rust");
         for record in &mut lines {
             record["fabricated_by"] = json!("mulch-rs");
         }
@@ -201,12 +207,7 @@ fn reference_accepts_our_corpus_and_additive_fields_survive() {
     // Our reader re-reads the mutated store.
     let store = open_store(&dir.0);
     assert_eq!(store.domains(), vec!["rust"]);
-    let records: Vec<Value> = store
-        .read_records("rust", false)
-        .expect("rust domain")
-        .into_iter()
-        .map(|line| line.record)
-        .collect();
+    let records = read_values(&store, "rust");
     let convention = records
         .iter()
         .find(|record| record.get("id").and_then(Value::as_str) == Some("mx-e4f59f"))
@@ -264,12 +265,7 @@ fn our_reader_rewrites_reference_corpus_byte_identically() {
     let after_reference = std::fs::read_to_string(&live_path).expect("live file");
 
     let store = open_store(&dir.0);
-    let payload: Vec<Value> = store
-        .read_records("rust", false)
-        .expect("rust domain")
-        .into_iter()
-        .map(|line| line.record)
-        .collect();
+    let payload = read_values(&store, "rust");
     store.rewrite_domain("rust", &payload).expect("rewrite");
 
     let after_us = std::fs::read_to_string(&live_path).expect("rewritten file");

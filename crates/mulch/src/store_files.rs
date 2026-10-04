@@ -2,11 +2,11 @@
 //! mutations, and the explicit read/write policies the commands declare.
 //!
 //! Read policies (reference semantics):
-//! - [`ReadPolicy::Lenient`] — status/validate/doctor: malformed lines and
-//!   unregistered types are findings, not failures.
-//! - [`ReadPolicy::Strict`] — every mutating command: unparsable lines and
-//!   unregistered types are typed errors *before* any write (reference
-//!   `readExpertiseFile`).
+//! - Lenient (documented policy, not yet a type — mulch-00aa): status/
+//!   validate/doctor: malformed lines and unregistered types are findings, not
+//!   failures.
+//! - Strict — every mutating command: unparsable lines and unregistered types
+//!   are typed errors *before* any write (reference `readExpertiseFile`).
 //!
 //! Write policies:
 //! - [`StoreFiles::rewrite_domain`] — compact canonical re-serialization with
