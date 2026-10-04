@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::ids::{PAYLOAD_TYPES, id_key_field, record_id};
@@ -144,6 +144,36 @@ where
         record.get("type").and_then(Value::as_str) == Some(record_type)
             && record.get(key) == new_value
     })
+}
+
+/// Merges both sides' outcomes into `incoming` (reference
+/// `{ ...record, outcomes: merged }`, existing first): replaces the
+/// `outcomes` key in place when the incoming record already has one,
+/// appends it at the end otherwise. The id stays untouched.
+pub fn merge_outcomes(existing: &Value, mut incoming: Map<String, Value>) -> Map<String, Value> {
+    let mut merged: Vec<Value> = Vec::new();
+    for source in [existing.get("outcomes"), incoming.get("outcomes")] {
+        if let Some(outcomes) = source.and_then(Value::as_array) {
+            merged.extend(outcomes.iter().cloned());
+        }
+    }
+    if !merged.is_empty() {
+        incoming.insert("outcomes".into(), Value::Array(merged));
+    }
+    incoming
+}
+
+/// The flag-path upsert shape: merged outcomes, then the id LAST —
+/// the builder pre-assigns the id, so it lifts over the appended
+/// outcomes (probe-pinned key order; batch paths keep input-id
+/// positions and use [`merge_outcomes`] directly).
+pub fn upsert_record(existing: &Value, mut incoming: Map<String, Value>) -> Map<String, Value> {
+    let id_value = incoming.remove("id");
+    let mut merged = merge_outcomes(existing, incoming);
+    if let Some(id_value) = id_value {
+        merged.insert("id".into(), id_value);
+    }
+    merged
 }
 
 /// Writes records compactly (reference `writeExpertiseFile`): missing
@@ -311,7 +341,7 @@ mod tests {
 
     #[test]
     fn find_duplicate_matches_on_the_dedup_field_not_the_id() {
-        let store = vec![
+        let store = [
             json!({"type": "pattern", "name": "p", "id": "mx-old"}),
             json!({"type": "pattern", "name": "q", "id": "mx-q"}),
         ];
@@ -333,13 +363,13 @@ mod tests {
 
     #[test]
     fn find_duplicate_matches_missing_fields_and_skips_unregistered_types() {
-        let bare = vec![json!({"type": "failure", "resolution": "r"})];
+        let bare = [json!({"type": "failure", "resolution": "r"})];
         // both sides missing the dedup field match (undefined === undefined)
         assert_eq!(
             find_duplicate(bare.iter(), &json!({"type": "failure", "resolution": "r2"})),
             Some(0)
         );
-        let store = vec![json!({"type": "failure", "description": "d"})];
+        let store = [json!({"type": "failure", "description": "d"})];
         // one side missing does NOT match a present value
         assert_eq!(
             find_duplicate(store.iter(), &json!({"type": "failure", "resolution": "r"})),
@@ -352,5 +382,42 @@ mod tests {
         );
         // a record without a type never duplicates
         assert_eq!(find_duplicate(store.iter(), &json!({"name": "p"})), None);
+    }
+}
+
+#[cfg(test)]
+mod upsert_record_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn merges_outcomes_existing_first_and_appends_the_id_last() {
+        let upserted = upsert_record(
+            &json!({"name": "p", "outcomes": [{"status": "success"}], "id": "mx-old"}),
+            json!({"name": "p", "id": "mx-new"})
+                .as_object()
+                .cloned()
+                .expect("object"),
+        );
+        assert_eq!(
+            Value::Object(upserted),
+            json!({"name": "p", "outcomes": [{"status": "success"}], "id": "mx-new"})
+        );
+    }
+
+    #[test]
+    fn keeps_an_explicit_id_and_skips_the_outcomes_key_when_both_empty() {
+        let upserted = upsert_record(
+            &json!({"name": "p"}),
+            json!({"name": "p", "id": "mx-explicit"})
+                .as_object()
+                .cloned()
+                .expect("object"),
+        );
+        assert_eq!(
+            Value::Object(upserted),
+            json!({"name": "p", "id": "mx-explicit"})
+        );
     }
 }

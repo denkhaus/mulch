@@ -1560,6 +1560,54 @@ fn record_upsert_matches_reference() {
             read_store_file(&theirs.0, "expertise/d.jsonl"),
         ),
     );
+
+    // an explicit batch id survives upsert AND create (generated ids
+    // only fill gaps — spec-review blocker F1)
+    let batch3 = serde_json::json!([
+        {"type": "pattern", "name": "p2", "description": "keep-id", "id": "mx-abcd1234"},
+        {"type": "guide", "name": "g2", "description": "gd2", "id": "mx-feed1234"}
+    ]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch3.json"), format!("{batch3}")).expect("batch file");
+    }
+    let run_batch4 = ["record", "d", "--batch", "batch3.json", "--json"];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &run_batch4),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &run_batch4),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // flag-path key order: outcomes precede dir_anchors on the
+    // rewritten line (spec-review minor F2)
+    let anchored = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p2",
+        "--description",
+        "v12",
+        "--dir-anchor",
+        "src/lib",
+        "--outcome-status",
+        "partial",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &anchored),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &anchored),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
 }
 
 // ---- sprint 2 review round: json error channels, stdin/batch matrix ----

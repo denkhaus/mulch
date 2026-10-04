@@ -13,13 +13,13 @@ use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Builds the canonical JSONL object for the flag path (field order
 /// pinned from the reference: type, classification, recorded_at,
-/// evidence?, tags?, relates_to?, supersedes?, dir_anchors?, outcomes?,
-/// payload…, files?, id).
+/// evidence?, tags?, relates_to?, supersedes?, outcomes?,
+/// dir_anchors?, payload…, files?, id).
 fn build_record(
     args: &RecordArgs,
     recorded_at: &str,
     evidence: Option<Map<String, Value>>,
-) -> Result<(Map<String, Value>, String), Failure> {
+) -> Result<Map<String, Value>, Failure> {
     let record_type = args
         .record_type
         .clone()
@@ -70,14 +70,9 @@ fn build_record(
     if let Some(supersedes) = split_list(args.supersedes.as_deref()) {
         record.insert("supersedes".into(), strings_value(&supersedes));
     }
-    if !args.dir_anchors.is_empty() {
-        let anchors: Vec<Value> = args
-            .dir_anchors
-            .iter()
-            .map(|a| Value::String(a.trim_end_matches('/').into()))
-            .collect();
-        record.insert("dir_anchors".into(), Value::Array(anchors));
-    }
+    // outcomes precede dir_anchors (reference buildRecordFromOptions
+    // key order, record.ts:82-86 — probe-pinned by the sprint-6 spec
+    // review).
     if let Some(outcome) = record_time_outcome(args) {
         let mut outcomes = Map::new();
         outcomes.insert("status".into(), Value::String(outcome.status));
@@ -94,6 +89,14 @@ fn build_record(
             "outcomes".into(),
             Value::Array(vec![Value::Object(outcomes)]),
         );
+    }
+    if !args.dir_anchors.is_empty() {
+        let anchors: Vec<Value> = args
+            .dir_anchors
+            .iter()
+            .map(|a| Value::String(a.trim_end_matches('/').into()))
+            .collect();
+        record.insert("dir_anchors".into(), Value::Array(anchors));
     }
     for field in payload {
         record.insert(
@@ -115,8 +118,8 @@ fn build_record(
 
     let id_key_value = provided(id_key_field(&record_type)).unwrap_or_default();
     let id = record_id(&record_type, &id_key_value);
-    record.insert("id".into(), Value::String(id.clone()));
-    Ok((record, id))
+    record.insert("id".into(), Value::String(id));
+    Ok(record)
 }
 
 /// The reference-pattern failure: plain renders as multi-line
@@ -270,7 +273,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     }
 
     let recorded_at = now_iso();
-    let (record, _id) = match build_record(args, &recorded_at, evidence_map(args)) {
+    let record = match build_record(args, &recorded_at, evidence_map(args)) {
         Ok(built) => built,
         Err(mut failure) => {
             // Parity contract: the --json error drops the `Error: `
@@ -448,31 +451,12 @@ fn duplicate_action(
         return Ok(());
     }
 
-    // Named upsert (reference `{ ...record, outcomes: merged }`): the
-    // built record replaces the line — fresh recorded_at, new field
-    // values, recomputed id (a stale id from an earlier rename
-    // corrects itself) — and both sides' outcomes merge, existing
-    // first. The file rewrites compactly.
-    let mut merged: Vec<Value> = Vec::new();
-    for source in [
-        existing[position].record.get("outcomes"),
-        record.get("outcomes"),
-    ] {
-        if let Some(outcomes) = source.and_then(Value::as_array) {
-            merged.extend(outcomes.iter().cloned());
-        }
-    }
-    let mut upserted = record;
-    // Key order (probe-pinned): merged outcomes append to the builder
-    // fields, the write-time id follows LAST — our builder pre-assigns
-    // the id, so lift it over the outcomes insert.
-    let id_value = upserted.remove("id");
-    if !merged.is_empty() {
-        upserted.insert("outcomes".into(), Value::Array(merged));
-    }
-    if let Some(id_value) = id_value {
-        upserted.insert("id".into(), id_value);
-    }
+    // Named upsert: the built record replaces the line — fresh
+    // recorded_at, new field values, recomputed id (a stale id from an
+    // earlier rename corrects itself) — with merged outcomes and the
+    // key-order contract owned by [`mulch::upsert_record`]. The file
+    // rewrites compactly.
+    let upserted = mulch::upsert_record(&existing[position].record, record);
     let mut lines: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
     lines[position] = Value::Object(upserted.clone());
     store
@@ -595,19 +579,11 @@ fn stdin_batch(
         }
         match duplicate {
             Some(position) if named => {
-                // Named upsert: the enriched record replaces the line,
-                // outcomes of both sides merge (existing first).
-                let mut merged: Vec<Value> = Vec::new();
-                for source in [working[position].get("outcomes"), line.get("outcomes")] {
-                    if let Some(outcomes) = source.and_then(Value::as_array) {
-                        merged.extend(outcomes.iter().cloned());
-                    }
-                }
-                if !merged.is_empty() {
-                    line.insert("outcomes".into(), Value::Array(merged));
-                }
-                // write-time id follows the merged outcomes (key order)
-                line.insert("id".into(), Value::String(id));
+                // merge first, then the id — an input id keeps its
+                // position, a generated one lands after the merged
+                // outcomes (reference write-time `if (!r.id)`).
+                let mut line = mulch::merge_outcomes(&working[position], line);
+                line.entry("id").or_insert_with(|| Value::String(id));
                 working[position] = Value::Object(line);
                 updated += 1;
             }
@@ -615,7 +591,7 @@ fn stdin_batch(
                 skipped += 1;
             }
             None => {
-                line.insert("id".into(), Value::String(id));
+                line.entry("id").or_insert_with(|| Value::String(id));
                 pending.push(Value::Object(line.clone()).to_string());
                 working.push(Value::Object(line));
                 created += 1;
