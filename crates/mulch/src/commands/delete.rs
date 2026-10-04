@@ -97,7 +97,13 @@ pub(super) fn run(
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {
-        return Err(domain_failure(opts, "delete", domain, &domains));
+        return Err(crate::commands::unknown_domain_failure(
+            "delete",
+            domain,
+            &domains,
+            opts.json,
+            crate::commands::DomainFailure::Standard,
+        ));
     }
 
     let lines = store
@@ -232,26 +238,6 @@ pub(super) fn run(
 /// Resolves one identifier against the domain's records.
 fn resolve(lines: &[mulch::LineRecord], id: &str) -> Result<usize, Failure> {
     resolve_record_id(lines, id).map_err(|error| crate::commands::resolve_failure("delete", error))
-}
-
-/// The unknown-domain failure (plain and json texts differ).
-fn domain_failure(opts: &GlobalOpts, command: &str, domain: &str, available: &[String]) -> Failure {
-    let list = if available.is_empty() {
-        "(none)".to_string()
-    } else {
-        available.join(", ")
-    };
-    if opts.json {
-        Failure::handled_on_stderr(
-            command,
-            format!("Domain \"{domain}\" not found in config. Available domains: {list}"),
-        )
-    } else {
-        Failure::handled_on_stderr(
-            command,
-            format!("Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}"),
-        )
-    }
 }
 
 /// A `serde_json::Value::Object` from a `json!` macro result.

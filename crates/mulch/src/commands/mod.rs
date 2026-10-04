@@ -130,31 +130,49 @@ pub(crate) fn now_iso() -> String {
         .to_string()
 }
 
-/// The shared domain-not-found failure (reference text).
-pub(crate) fn domain_not_found(command: &str, domain: &str, available: &[String]) -> Failure {
-    let list = if available.is_empty() {
-        "(none)".to_string()
-    } else {
-        available.join(", ")
-    };
-    Failure::handled_on_stderr(
-        command,
-        format!("Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}"),
-    )
+/// Which unknown-domain surface a command renders — the reference
+/// hand-writes four variants; this carries them as data.
+#[derive(Clone, Copy)]
+pub(crate) enum DomainFailure {
+    /// Two-line plain (lowercase `domain`), one-line json (capital D).
+    Standard,
+    /// `move`'s single-line plain keeps the capital D.
+    Move,
+    /// `delete-domain`'s plain carries a Hint instead of the list.
+    WithHint,
 }
 
-/// The JSON-mode variant of the unknown-domain text (capital D, one
-/// line, no `Error: ` prefix — the reference's `outputJsonError`).
-pub(crate) fn domain_not_found_json(command: &str, domain: &str, available: &[String]) -> Failure {
+/// The one unknown-domain failure: the available-list join and every
+/// message shape live here, not in per-command copies (mulch-9e70).
+pub(crate) fn unknown_domain_failure(
+    command: &str,
+    domain: &str,
+    available: &[String],
+    json: bool,
+    shape: DomainFailure,
+) -> Failure {
     let list = if available.is_empty() {
         "(none)".to_string()
     } else {
         available.join(", ")
     };
-    Failure::handled_on_stderr(
-        command,
-        format!("Domain \"{domain}\" not found in config. Available domains: {list}"),
-    )
+    let json_line = format!("Domain \"{domain}\" not found in config. Available domains: {list}");
+    let message = if json {
+        json_line
+    } else {
+        match shape {
+            DomainFailure::Standard => {
+                format!(
+                    "Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}"
+                )
+            }
+            DomainFailure::Move => format!("Error: {json_line}"),
+            DomainFailure::WithHint => format!(
+                "Error: domain \"{domain}\" not found in config.\nHint: Run `mulch add {domain}` to create it, or check `mulch status` for existing domains."
+            ),
+        }
+    };
+    Failure::handled_on_stderr(command, message)
 }
 
 /// The shared identifier-resolution failure: the reference's
@@ -223,5 +241,44 @@ pub(crate) fn render_core_error(error: &Error) -> String {
             )
         }
         other => format!("Error: {other}"),
+    }
+}
+
+#[cfg(test)]
+mod domain_failure_tests {
+    use super::*;
+
+    #[test]
+    fn shapes_render_the_reference_surfaces() {
+        let available = vec!["d".to_string()];
+        let standard =
+            unknown_domain_failure("delete", "x", &available, false, DomainFailure::Standard);
+        assert_eq!(
+            standard.message,
+            "Error: domain \"x\" not found in config.\nAvailable domains: d"
+        );
+        let json = unknown_domain_failure("delete", "x", &available, true, DomainFailure::Standard);
+        assert_eq!(
+            json.message,
+            "Domain \"x\" not found in config. Available domains: d"
+        );
+        let moved = unknown_domain_failure("move", "x", &available, false, DomainFailure::Move);
+        assert_eq!(
+            moved.message,
+            "Error: Domain \"x\" not found in config. Available domains: d"
+        );
+        let hint = unknown_domain_failure(
+            "delete-domain",
+            "x",
+            &available,
+            false,
+            DomainFailure::WithHint,
+        );
+        assert_eq!(
+            hint.message,
+            "Error: domain \"x\" not found in config.\nHint: Run `mulch add x` to create it, or check `mulch status` for existing domains."
+        );
+        let none = unknown_domain_failure("delete", "x", &[], false, DomainFailure::Standard);
+        assert!(none.message.ends_with("Available domains: (none)"));
     }
 }

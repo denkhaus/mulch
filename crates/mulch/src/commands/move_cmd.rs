@@ -36,7 +36,13 @@ pub(super) fn run(
     let domains = store.domains();
     for domain in [source, target] {
         if !domains.iter().any(|d| d == domain) {
-            return Err(move_domain_failure(domain, &domains));
+            return Err(crate::commands::unknown_domain_failure(
+                "move",
+                domain,
+                &domains,
+                opts.json,
+                crate::commands::DomainFailure::Move,
+            ));
         }
     }
 
@@ -278,17 +284,4 @@ fn incoming_references(
         }
     }
     incoming
-}
-
-/// `move`'s own unknown-domain text (capital D, single line).
-fn move_domain_failure(domain: &str, available: &[String]) -> Failure {
-    let list = if available.is_empty() {
-        "(none)".to_string()
-    } else {
-        available.join(", ")
-    };
-    Failure::handled_on_stderr(
-        "move",
-        format!("Error: Domain \"{domain}\" not found in config. Available domains: {list}"),
-    )
 }

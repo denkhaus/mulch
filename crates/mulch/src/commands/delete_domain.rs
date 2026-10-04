@@ -102,19 +102,13 @@ fn print_prompt(text: &str) {
 /// The unknown-domain failure: plain mode carries the add-hint, json
 /// mode the available-domains list (reference divergence).
 fn not_in_config(opts: &GlobalOpts, domain: &str, available: &[String]) -> Failure {
-    let list = if available.is_empty() {
-        "(none)".to_string()
-    } else {
-        available.join(", ")
-    };
-    let message = if opts.json {
-        format!("Domain \"{domain}\" not found in config. Available domains: {list}")
-    } else {
-        format!(
-            "Error: domain \"{domain}\" not found in config.\nHint: Run `mulch add {domain}` to create it, or check `mulch status` for existing domains."
-        )
-    };
-    Failure::handled_on_stderr("delete-domain", message)
+    crate::commands::unknown_domain_failure(
+        "delete-domain",
+        domain,
+        available,
+        opts.json,
+        crate::commands::DomainFailure::WithHint,
+    )
 }
 
 /// A `serde_json::Map` from a `json!` macro result.

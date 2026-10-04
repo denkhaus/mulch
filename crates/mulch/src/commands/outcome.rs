@@ -23,11 +23,13 @@ pub(super) fn run(
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {
-        return Err(if opts.json {
-            crate::commands::domain_not_found_json("outcome", domain, &domains)
-        } else {
-            crate::commands::domain_not_found("outcome", domain, &domains)
-        });
+        return Err(crate::commands::unknown_domain_failure(
+            "outcome",
+            domain,
+            &domains,
+            opts.json,
+            crate::commands::DomainFailure::Standard,
+        ));
     }
 
     match flags.status.as_deref() {

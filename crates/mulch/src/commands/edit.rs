@@ -13,11 +13,13 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == &args.domain) {
-        return Err(if opts.json {
-            crate::commands::domain_not_found_json("edit", &args.domain, &domains)
-        } else {
-            crate::commands::domain_not_found("edit", &args.domain, &domains)
-        });
+        return Err(crate::commands::unknown_domain_failure(
+            "edit",
+            &args.domain,
+            &domains,
+            opts.json,
+            crate::commands::DomainFailure::Standard,
+        ));
     }
 
     // Strict read (reference `readExpertiseFile`): malformed lines and
