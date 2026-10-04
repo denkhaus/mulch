@@ -24,6 +24,14 @@ pub fn id_key_field(record_type: &str) -> &'static str {
     }
 }
 
+/// Whether a type upserts on duplicate instead of skipping (reference
+/// `isNamedType`: anonymous `convention`/`failure` skip, the named
+/// `pattern`/`decision`/`reference`/`guide` upsert).
+#[must_use]
+pub fn is_named_type(record_type: &str) -> bool {
+    !matches!(record_type, "convention" | "failure")
+}
+
 /// Payload fields per record type, in canonical write order (the
 /// reference registry: convention=content, pattern/reference/guide=
 /// name+description, failure=description+resolution, decision=
@@ -48,4 +56,18 @@ pub fn record_id(record_type: &str, id_key_value: &str) -> String {
         let _ = write!(hex, "{byte:02x}");
     }
     format!("mx-{hex}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_types_are_everything_but_convention_and_failure() {
+        assert!(!is_named_type("convention"));
+        assert!(!is_named_type("failure"));
+        for named in ["pattern", "decision", "reference", "guide"] {
+            assert!(is_named_type(named));
+        }
+    }
 }

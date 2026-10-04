@@ -1249,6 +1249,319 @@ fn outcome_read_only_matches_reference() {
     assert_eq!(ours_missing.stderr, theirs_missing.stderr);
 }
 
+// ---- sprint 6 (mulch-ccf6): record upsert semantics ----
+
+#[test]
+fn record_upsert_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("ccf6-ours");
+    let theirs = TempDir::new("ccf6-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "d",
+            "--type",
+            "pattern",
+            "--name",
+            "p",
+            "--description",
+            "v1",
+        ]);
+    }
+    let id = pattern_p_id();
+    let compare = |ours: (&Run, String), theirs: (&Run, String)| {
+        assert_eq!(ours.0.code, theirs.0.code);
+        assert_eq!(normalize(&ours.0.stdout), normalize(&theirs.0.stdout));
+        assert_eq!(normalize(&ours.0.stderr), normalize(&theirs.0.stderr));
+        assert_eq!(
+            normalize_line(&ours.1),
+            normalize_line(&theirs.1),
+            "store diverged"
+        );
+    };
+
+    // named duplicate upserts in place
+    let up = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v2",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &up),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &up),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // json updated envelope + outcomes carried into the upsert
+    let up_outcome = [
+        "--json",
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v3",
+        "--outcome-status",
+        "success",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &up_outcome),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &up_outcome),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // second outcome merges after the existing one
+    let up_outcome2 = [
+        "--json",
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v4",
+        "--outcome-status",
+        "failure",
+        "--outcome-agent",
+        "second-agent",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &up_outcome2),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &up_outcome2),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // anonymous duplicate skips with the advisory
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "same",
+    ]);
+    let _ = run_in(&theirs.0, &ml, &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "same",
+    ]);
+    let anon = ["record", "d", "--type", "convention", "--content", "same"];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &anon),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &anon),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // json skipped envelope carries the record number
+    let anon_json = [
+        "--json",
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "same",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &anon_json),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &anon_json),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // --force appends anyway
+    let force = [
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "same",
+        "--force",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &force),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &force),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // dry-run mirrors the decision without writing (plain + json)
+    let dry_named = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v9",
+        "--dry-run",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &dry_named),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &dry_named),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+    let dry_json = [
+        "--json",
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "v9",
+        "--dry-run",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &dry_json),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &dry_json),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // a renamed record still dedupes (dedup field, not id) and the
+    // upsert corrects the stale id in place
+    let rename = ["edit", "d", &id, "--name", "p2"];
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &rename);
+    let _ = run_in(&theirs.0, &ml, &rename);
+    let renamed_up = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p2",
+        "--description",
+        "v10",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &renamed_up),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &renamed_up),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // batch: one new guide + one named duplicate -> created 1, updated 1
+    let batch = serde_json::json!([
+        {"type": "guide", "name": "g1", "description": "gd"},
+        {"type": "pattern", "name": "p2", "description": "batch-v11"}
+    ]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch.json"), format!("{batch}")).expect("batch file");
+    }
+    let run_batch = ["record", "d", "--batch", "batch.json", "--json"];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &run_batch),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &run_batch),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // within-batch duplicate in dry-run counts as another create
+    // (dedupe runs against the store only, never the batch)
+    let batch2 = serde_json::json!([
+        {"type": "pattern", "name": "q", "description": "q1"},
+        {"type": "pattern", "name": "q", "description": "q2"}
+    ]);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("batch2.json"), format!("{batch2}")).expect("batch file");
+    }
+    let run_batch2 = [
+        "record",
+        "d",
+        "--batch",
+        "batch2.json",
+        "--json",
+        "--dry-run",
+    ];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &run_batch2),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &run_batch2),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+
+    // non-dry within-batch duplicate upserts the batch's own record
+    let run_batch3 = ["record", "d", "--batch", "batch2.json", "--json"];
+    compare(
+        (
+            &run_in(&ours.0, Path::new(mulch_bin()), &run_batch3),
+            read_store_file(&ours.0, "expertise/d.jsonl"),
+        ),
+        (
+            &run_in(&theirs.0, &ml, &run_batch3),
+            read_store_file(&theirs.0, "expertise/d.jsonl"),
+        ),
+    );
+}
+
 // ---- sprint 2 review round: json error channels, stdin/batch matrix ----
 
 #[test]

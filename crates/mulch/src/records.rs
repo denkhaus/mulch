@@ -122,6 +122,30 @@ fn normalize_legacy_outcome(record: &mut Value) {
     object.remove("outcome");
 }
 
+/// The reference's duplicate detector (`findDuplicate`,
+/// utils/expertise.ts): the first same-type record whose dedup-field
+/// value equals the candidate's. The dedup field is the registry's
+/// dedupKey — same mapping as [`id_key_field`] — never the id, so a
+/// renamed record still dedupes after `edit --name`. Unregistered
+/// types never duplicate (the reference registry has no definition);
+/// records missing the field on both sides match, like JS
+/// `undefined === undefined`.
+pub fn find_duplicate<'a, I>(records: I, candidate: &Value) -> Option<usize>
+where
+    I: IntoIterator<Item = &'a Value>,
+{
+    let record_type = candidate.get("type").and_then(Value::as_str)?;
+    if !PAYLOAD_TYPES.contains(&record_type) {
+        return None;
+    }
+    let key = id_key_field(record_type);
+    let new_value = candidate.get(key);
+    records.into_iter().position(|record| {
+        record.get("type").and_then(Value::as_str) == Some(record_type)
+            && record.get(key) == new_value
+    })
+}
+
 /// Writes records compactly (reference `writeExpertiseFile`): missing
 /// ids are generated, lines are compact JSON, the file ends with `\n`
 /// (0 bytes when empty), written through a temp file + rename.
@@ -277,4 +301,56 @@ fn sentence_end(window: &str) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn find_duplicate_matches_on_the_dedup_field_not_the_id() {
+        let store = vec![
+            json!({"type": "pattern", "name": "p", "id": "mx-old"}),
+            json!({"type": "pattern", "name": "q", "id": "mx-q"}),
+        ];
+        // same name, different id: still the duplicate
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "pattern", "name": "p"})),
+            Some(0)
+        );
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "pattern", "name": "zz"})),
+            None
+        );
+        // same dedup VALUE on another type never matches
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "guide", "name": "p"})),
+            None
+        );
+    }
+
+    #[test]
+    fn find_duplicate_matches_missing_fields_and_skips_unregistered_types() {
+        let bare = vec![json!({"type": "failure", "resolution": "r"})];
+        // both sides missing the dedup field match (undefined === undefined)
+        assert_eq!(
+            find_duplicate(bare.iter(), &json!({"type": "failure", "resolution": "r2"})),
+            Some(0)
+        );
+        let store = vec![json!({"type": "failure", "description": "d"})];
+        // one side missing does NOT match a present value
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "failure", "resolution": "r"})),
+            None
+        );
+        // unregistered types never duplicate (no registry definition)
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "custom", "description": "d"})),
+            None
+        );
+        // a record without a type never duplicates
+        assert_eq!(find_duplicate(store.iter(), &json!({"name": "p"})), None);
+    }
 }
