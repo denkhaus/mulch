@@ -49,12 +49,9 @@ fn read_and_locate(
         .map_err(|source| {
             Failure::handled_on_stderr("outcome", crate::commands::render_core_error(&source))
         })?;
-    let Some(position) = records.iter().position(|line| line.id() == Some(id)) else {
-        return Err(Failure::handled_on_stderr(
-            "outcome",
-            crate::commands::record_not_found_text(id),
-        ));
-    };
+    // Identifier resolution like delete/move (mulch-351d).
+    let position = mulch::resolve_record_id(&records, id)
+        .map_err(|error| crate::commands::resolve_failure("outcome", id, error))?;
     Ok((records, position))
 }
 
@@ -183,6 +180,9 @@ fn append(
     flags: &OutcomeFlags,
 ) -> Result<(), Failure> {
     let (mut records, position) = read_and_locate(store, domain, id, opts.allow_unknown_types)?;
+    // Output surfaces carry the resolved record's own id (reference
+    // `record.id ?? id`).
+    let resolved_id = records[position].id().unwrap_or(id).to_string();
     let mut record: Map<String, Value> = match records[position].record.as_object().cloned() {
         Some(object) => object,
         None => {
@@ -231,7 +231,7 @@ fn append(
         let mut fields = serde_json::Map::new();
         fields.insert("action".into(), Value::String("appended".into()));
         fields.insert("domain".into(), Value::String(domain.into()));
-        fields.insert("id".into(), Value::String(id.into()));
+        fields.insert("id".into(), Value::String(resolved_id.clone()));
         fields.insert("outcome".into(), Value::Object(outcome));
         fields.insert("total_outcomes".into(), Value::from(total as u64));
         print_json(&success_envelope("outcome", fields), false);
@@ -242,7 +242,7 @@ fn append(
             .map_or_else(String::new, |agent| format!(" ({agent})"));
         print_line(
             opts.quiet,
-            &format!("✓ Outcome recorded: {status}{attribution} on {id}"),
+            &format!("✓ Outcome recorded: {status}{attribution} on {resolved_id}"),
         );
     }
     Ok(())

@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use mulch::{ResolveError, record_summary, resolve_record_id};
+use mulch::{record_summary, resolve_record_id};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -47,26 +47,8 @@ pub(super) fn run(
         .map_err(|source_err| {
             Failure::handled_on_stderr("move", crate::commands::render_core_error(&source_err))
         })?;
-    let index = match resolve_record_id(&lines, id) {
-        Ok(index) => index,
-        Err(ResolveError::NotFound(identifier)) => {
-            return Err(Failure::handled_on_stderr(
-                "move",
-                format!(
-                    "Error: Record \"{identifier}\" not found. Run `mulch query` to see record IDs."
-                ),
-            ));
-        }
-        Err(ResolveError::Ambiguous { count, ids }) => {
-            return Err(Failure::handled_on_stderr(
-                "move",
-                format!(
-                    "Error: Ambiguous identifier \"{id}\" matches {count} records: {}. Use more characters to disambiguate.",
-                    ids.join(", ")
-                ),
-            ));
-        }
-    };
+    let index = resolve_record_id(&lines, id)
+        .map_err(|error| crate::commands::resolve_failure("move", id, error))?;
     let record = lines[index].record.clone();
     let kind = lines[index].record_type();
     let record_id = lines[index].id().map(str::to_string);

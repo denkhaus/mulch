@@ -27,15 +27,13 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
         .map_err(|source| {
             Failure::handled_on_stderr("edit", crate::commands::render_core_error(&source))
         })?;
-    let Some(position) = records
-        .iter()
-        .position(|line| line.id() == Some(args.id.as_str()))
-    else {
-        return Err(Failure::handled_on_stderr(
-            "edit",
-            crate::commands::record_not_found_text(&args.id),
-        ));
-    };
+    // Identifier resolution like delete/move: exact id, bare hash, or
+    // a unique prefix (reference `resolveRecordId`; mulch-351d).
+    let position = mulch::resolve_record_id(&records, &args.id)
+        .map_err(|error| crate::commands::resolve_failure("edit", &args.id, error))?;
+    // Output surfaces carry the resolved record's own id (reference
+    // `record.id`), not the input prefix.
+    let resolved_id = records[position].id().unwrap_or(&args.id).to_string();
     let mut record: Map<String, Value> = match records[position].record.as_object().cloned() {
         Some(object) => object,
         None => {
@@ -96,14 +94,14 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     if opts.json {
         let mut fields = serde_json::Map::new();
         fields.insert("domain".into(), Value::String(args.domain.clone()));
-        fields.insert("id".into(), Value::String(args.id.clone()));
+        fields.insert("id".into(), Value::String(resolved_id.clone()));
         fields.insert("type".into(), Value::String(record_type));
         fields.insert("record".into(), Value::Object(record));
         print_json(&success_envelope("edit", fields), false);
     } else {
         print_line(
             opts.quiet,
-            &format!("✓ Updated {} {} in {}", record_type, args.id, args.domain),
+            &format!("✓ Updated {} {resolved_id} in {}", record_type, args.domain),
         );
     }
     Ok(())

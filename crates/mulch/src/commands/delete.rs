@@ -6,7 +6,7 @@
 //! ids to id-less survivors. Malformed lines and unregistered types are
 //! hard errors — nothing is written (reference `readExpertiseFile`).
 
-use mulch::{ResolveError, record_summary, resolve_record_id};
+use mulch::{record_summary, resolve_record_id};
 
 use crate::cli::GlobalOpts;
 use crate::output::{Failure, print_json, print_line, success_envelope};
@@ -231,21 +231,8 @@ pub(super) fn run(
 
 /// Resolves one identifier against the domain's records.
 fn resolve(lines: &[mulch::LineRecord], id: &str) -> Result<usize, Failure> {
-    resolve_record_id(lines, id).map_err(|error| match error {
-        ResolveError::NotFound(identifier) => Failure::handled_on_stderr(
-            "delete",
-            format!(
-                "Error: Record \"{identifier}\" not found. Run `mulch query` to see record IDs."
-            ),
-        ),
-        ResolveError::Ambiguous { count, ids } => Failure::handled_on_stderr(
-            "delete",
-            format!(
-                "Error: Ambiguous identifier \"{id}\" matches {count} records: {}. Use more characters to disambiguate.",
-                ids.join(", ")
-            ),
-        ),
-    })
+    resolve_record_id(lines, id)
+        .map_err(|error| crate::commands::resolve_failure("delete", id, error))
 }
 
 /// The unknown-domain failure (plain and json texts differ).

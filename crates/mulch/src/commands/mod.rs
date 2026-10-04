@@ -16,10 +16,10 @@ mod validate;
 
 use std::path::Path;
 
-use mulch::Error;
 /// Store lookup: the filesystem seam lives in the library
 /// ([`mulch::StoreFiles`]); the CLI only matches its outcome.
 pub(crate) use mulch::StoreLocation;
+use mulch::{Error, ResolveError};
 
 use crate::cli::{Cli, Command};
 use crate::output::Failure;
@@ -157,9 +157,25 @@ pub(crate) fn domain_not_found_json(command: &str, domain: &str, available: &[St
     )
 }
 
-/// The shared unknown-id message (reference text).
-pub(crate) fn record_not_found_text(id: &str) -> String {
-    format!("Error: Record \"{id}\" not found. Run `mulch query` to see record IDs.")
+/// The shared identifier-resolution failure: the reference's
+/// not-found and ambiguous texts (identical across the record
+/// commands; `command` selects the envelope's command field).
+pub(crate) fn resolve_failure(command: &'static str, id: &str, error: ResolveError) -> Failure {
+    match error {
+        ResolveError::NotFound(identifier) => Failure::handled_on_stderr(
+            command,
+            format!(
+                "Error: Record \"{identifier}\" not found. Run `mulch query` to see record IDs."
+            ),
+        ),
+        ResolveError::Ambiguous { count, ids } => Failure::handled_on_stderr(
+            command,
+            format!(
+                "Error: Ambiguous identifier \"{id}\" matches {count} records: {}. Use more characters to disambiguate.",
+                ids.join(", ")
+            ),
+        ),
+    }
 }
 
 /// The required-fields hint line content for a record type.

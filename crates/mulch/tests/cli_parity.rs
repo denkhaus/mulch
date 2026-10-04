@@ -2661,6 +2661,108 @@ fn identifier_resolution_matches_reference() {
     );
 }
 
+// ---- sprint 9 (mulch-351d): edit/outcome identifier resolution ----
+
+#[test]
+fn edit_outcome_identifier_resolution_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let seed = format!("{ALPHA_ONE}\n{ALPHA_TWO}\n");
+
+    // edit and outcome resolve bare hashes and unique prefixes; their
+    // output surfaces carry the RESOLVED id, not the input.
+    for (index, id) in ["1bb21d", "mx-1b", "1bb21"].iter().enumerate() {
+        let (ours, theirs) = twin_seeded(
+            &format!("eoed{index}"),
+            None,
+            &[("alpha", seed.as_str())],
+            &[],
+        );
+        let args = ["edit", "alpha", id, "--description", "touched"];
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_in(&theirs.0, &ml, &args);
+        assert_eq!(our.code, 0, "{args:?} resolves");
+        assert_eq!(our.stdout, their.stdout, "{args:?} stdout");
+        assert_eq!(our.stdout, "✓ Updated pattern mx-1bb21d in alpha\n");
+        assert_same_file(&ours, &theirs, "expertise/alpha.jsonl");
+    }
+    for (index, id) in ["1bb21d", "mx-1b"].iter().enumerate() {
+        let (ours, theirs) = twin_seeded(
+            &format!("eoout{index}"),
+            None,
+            &[("alpha", seed.as_str())],
+            &[],
+        );
+        let args = ["outcome", "alpha", id, "--status", "success"];
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_in(&theirs.0, &ml, &args);
+        assert_eq!(our.code, 0, "{args:?} resolves");
+        assert_eq!(our.stdout, their.stdout, "{args:?} stdout");
+        assert_eq!(our.stdout, "✓ Outcome recorded: success on mx-1bb21d\n");
+        let ours_file = read_store_file(&ours.0, "expertise/alpha.jsonl");
+        let theirs_file = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+        assert_eq!(normalize_line(&ours_file), normalize_line(&theirs_file));
+    }
+
+    // Ambiguous prefix: the shared text, nothing written, plain + json.
+    let ambiguous = "Ambiguous identifier \"mx-\" matches 2 records: mx-1bb21d, mx-c7129f. Use more characters to disambiguate.";
+    let expected = format!("Error: {ambiguous}\n");
+    for (index, args) in [
+        &["edit", "alpha", "mx-", "--description", "x"] as &[&str],
+        &["outcome", "alpha", "mx-", "--status", "success"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (ours, theirs) = twin_seeded(
+            &format!("eoamb{index}"),
+            None,
+            &[("alpha", seed.as_str())],
+            &[],
+        );
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, 1, "{args:?} aborts");
+        assert_same_stderr(&ours, &our, &theirs, &their, &expected);
+        assert_eq!(read_store_file(&ours.0, "expertise/alpha.jsonl"), seed);
+    }
+    let (ours, theirs) = twin_seeded("eoambj", None, &[("alpha", seed.as_str())], &[]);
+    let args = ["edit", "alpha", "mx-", "--description", "x", "--json"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_in(&theirs.0, &ml, &args);
+    assert_eq!(our.code, 1);
+    assert_same_stderr(
+        &ours,
+        &our,
+        &theirs,
+        &their,
+        &error_envelope("edit", ambiguous),
+    );
+
+    // Unknown identifier keeps the not-found text.
+    for (index, args) in [
+        &["edit", "alpha", "zzz", "--description", "x"] as &[&str],
+        &["outcome", "alpha", "zzz", "--status", "success"],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (ours, theirs) = twin_seeded(
+            &format!("eomiss{index}"),
+            None,
+            &[("alpha", seed.as_str())],
+            &[],
+        );
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, 1);
+        assert_eq!(our.stderr, their.stderr, "{args:?} stderr");
+        assert_eq!(read_store_file(&ours.0, "expertise/alpha.jsonl"), seed);
+    }
+}
+
 #[test]
 fn delete_domain_preserves_remaining_domain_order() {
     let Some(ml) = reference_ml() else {
