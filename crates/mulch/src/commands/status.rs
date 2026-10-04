@@ -9,15 +9,9 @@ use crate::cli::GlobalOpts;
 use crate::commands::stale::StaleRule;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
-/// Record types in the reference's fixed distribution order.
-const TYPES: [&str; 6] = [
-    "convention",
-    "pattern",
-    "failure",
-    "decision",
-    "reference",
-    "guide",
-];
+/// Record types in the reference's fixed distribution order (the
+/// registry's order; mulch-a3de).
+const TYPES: [&str; 6] = mulch::PAYLOAD_TYPES;
 
 /// Classifications in the reference's fixed distribution order.
 const CLASSIFICATIONS: [&str; 3] = ["foundational", "tactical", "observational"];

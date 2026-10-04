@@ -352,10 +352,7 @@ fn schema_validation(domains: &[DomainLines]) -> Check {
 }
 
 fn unknown_types(domains: &[DomainLines], allow_unknown: bool) -> Check {
-    let known: Vec<&str> = crate::commands::schema::BRANCHES
-        .iter()
-        .map(|(name, _)| *name)
-        .collect();
+    let known: Vec<&str> = mulch::REGISTRY.iter().map(|spec| spec.name).collect();
     let bad: Vec<String> = domains
         .iter()
         .flat_map(|d| {
@@ -399,12 +396,12 @@ fn type_registry(domains: &[DomainLines]) -> Check {
             }
         }
     }
-    let details: Vec<String> = crate::commands::schema::BRANCHES
+    let details: Vec<String> = mulch::REGISTRY
         .iter()
-        .map(|(name, _)| {
-            let count = counts.get(*name).copied().unwrap_or(0);
+        .map(|spec| {
+            let count = counts.get(spec.name).copied().unwrap_or(0);
             let plural = if count == 1 { "record" } else { "records" };
-            format!("{name} (built-in): {count} {plural}")
+            format!("{} (built-in): {count} {plural}", spec.name)
         })
         .collect();
     Check {

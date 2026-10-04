@@ -18,52 +18,21 @@ pub(crate) const SUB_SEP: &str = "; ";
 /// The validate prefix before the joined sub-errors.
 pub(crate) const VALIDATION_PREFIX: &str = "Schema validation failed: ";
 
-/// Branch names with their FULL required fields in reference order
-/// (pinned from the reference registry: `type` + payload fields +
-/// `classification` + `recorded_at`; mulch-5f8a).
-pub(crate) const BRANCHES: [(&str, &[&str]); 6] = [
-    ("convention", &[
-        "type",
-        "content",
-        "classification",
-        "recorded_at",
-    ]),
-    ("pattern", &[
-        "type",
-        "name",
-        "description",
-        "classification",
-        "recorded_at",
-    ]),
-    ("failure", &[
-        "type",
-        "description",
-        "resolution",
-        "classification",
-        "recorded_at",
-    ]),
-    ("decision", &[
-        "type",
-        "title",
-        "rationale",
-        "classification",
-        "recorded_at",
-    ]),
-    ("reference", &[
-        "type",
-        "name",
-        "description",
-        "classification",
-        "recorded_at",
-    ]),
-    ("guide", &[
-        "type",
-        "name",
-        "description",
-        "classification",
-        "recorded_at",
-    ]),
-];
+/// The oneOf branches = the registry rows with their FULL required
+/// fields, derived: `type` + payload + `classification` +
+/// `recorded_at` in reference order (mulch-a3de; the literals the
+/// derivation replaced were verified row by row against the reference).
+pub(crate) fn branches() -> [(&'static str, Vec<&'static str>); 6] {
+    mulch::REGISTRY.map(|spec| {
+        (
+            spec.name,
+            std::iter::once("type")
+                .chain(spec.payload.iter().copied())
+                .chain(["classification", "recorded_at"])
+                .collect(),
+        )
+    })
+}
 
 /// A record's schema verdict.
 pub(crate) enum Verdict {
@@ -87,12 +56,12 @@ pub(crate) fn verdict(record: &serde_json::Value) -> Verdict {
     };
     let record_type = object.get("type").and_then(serde_json::Value::as_str);
 
-    if let Some(kind) = record_type.filter(|kind| !BRANCHES.iter().any(|(name, _)| name == kind)) {
+    if let Some(kind) = record_type.filter(|kind| mulch::type_spec(kind).is_none()) {
         return Verdict::Unknown(kind.into());
     }
 
     let mut subs = Vec::new();
-    for (name, required) in BRANCHES {
+    for (name, required) in branches() {
         let missing: Vec<&str> = required
             .iter()
             .copied()
@@ -177,7 +146,7 @@ pub(crate) fn full_verdict(record: &serde_json::Value) -> FullVerdict {
     let ref_errors = ref_pattern_errors(record);
 
     let mut subs = Vec::new();
-    for (name, required) in BRANCHES {
+    for (name, required) in branches() {
         let missing: Vec<&str> = required
             .iter()
             .copied()
@@ -238,5 +207,36 @@ pub(crate) fn plain_detail_lines(message: &str) -> Vec<String> {
         lines
     } else {
         vec![message.into()]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn branches_derive_the_reference_required_sets() {
+        let branches = branches();
+        assert_eq!(branches[0].0, "convention");
+        assert_eq!(branches[0].1, vec![
+            "type",
+            "content",
+            "classification",
+            "recorded_at"
+        ]);
+        assert_eq!(branches[2].0, "failure");
+        assert_eq!(branches[2].1, vec![
+            "type",
+            "description",
+            "resolution",
+            "classification",
+            "recorded_at"
+        ]);
+        // every row: type first, payload middle, common tail
+        for (name, required) in branches {
+            assert_eq!(required.first(), Some(&"type"), "{name}");
+            assert_eq!(required.last(), Some(&"recorded_at"), "{name}");
+            assert_eq!(required[required.len() - 2], "classification", "{name}");
+        }
     }
 }
