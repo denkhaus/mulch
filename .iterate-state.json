@@ -1,6 +1,6 @@
 {
-  "sprints_completed": 13,
-  "sprints_reflected": 13,
+  "sprints_completed": 14,
+  "sprints_reflected": 14,
   "last_arch_review_at_sprint": 12,
   "last_reflection": "2026-10-03",
   "notes": [
@@ -18,6 +18,7 @@
     "sprint 10 (mulch-5f8a, arch-gate top pick, bug): the oneOf branches carry the reference's FULL required sets (type+payload+classification+recorded_at) with ajv-path sub-errors; found+fixed two adjacent divergences (batch validated before the reference's normalization; batch failure surfaces + flag-path json envelope); reviews: standards 0 blocking (consts, docs, fixture for recorded_at preservation), spec 3 blockers A/B/D fixed+pinned, C appended to b8ca, E filed as 230b. 77 tests green. LESSON: stdout-only differential tests hide stderr regressions.",
     "sprint 11 (mulch-ca49, High): record batch summary surfaces (Would-process = created+updated, conditional Create/Update/Skip lines, No-records notice, Created/Updated/Skipped-duplicates lines, zero batch silent) + compact batch writes guarded on created>0||updated>0 (skip-only/empty leave the file untouched). Reviews: standards PASS (import), spec 1 blocker (missing write guard) fixed + pinned. 78 tests green. LESSON: read own test failures fully — 'right' was my wrong literal, not the reference (a 3-probe detour).",
     "sprint 12 (mulch-9e70, High): one unknown-domain adapter (DomainFailure::{Standard,Move,WithHint} as data, join owned once); 4 local copies deleted, 5 commands wired; byte-neutral per full spec matrix + battery. Reviews: standards PASS (one_line rename, test module name), spec PASS (0 blockers; delete arg-order pre-existing -> mulch-e645). 79 tests green. ARCH GATE RUN: 6 candidates — top pick a3de (TYPES/BRANCHES verified as pure derivations; registry = b8ca's prerequisite), b8ca vehicle = structured SubError enum (inside that seed), ec71/0c47(narrowed)/2dc2(deep-fix note) reassessed, record.rs split Speculative (revisit when b8ca grows it); Failure sites 77->59 healthy. Sequencing: a3de -> b8ca.",
-    "sprint 13 (mulch-a3de, arch-gate top pick): one record-type registry (lib REGISTRY TypeSpec rows; id_key/named/payload as lookups; schema branches() derivation; status TYPES const-eval; doctor iterates REGISTRY; probe-diff as pinned unit tests incl. flag-table universe pins). Byte-neutral per full spec audit (all registry-fed surfaces). 83 tests green. b8ca is now a table edit."
+    "sprint 13 (mulch-a3de, arch-gate top pick): one record-type registry (lib REGISTRY TypeSpec rows; id_key/named/payload as lookups; schema branches() derivation; status TYPES const-eval; doctor iterates REGISTRY; probe-diff as pinned unit tests incl. flag-table universe pins). Byte-neutral per full spec audit (all registry-fed surfaces). 83 tests green. b8ca is now a table edit.",
+    "sprint 14 (mulch-b8ca part 1): full subschema model — structured SubErrors, probe-fitted evaluation order (required -> additional -> properties), enums/patterns/types/optional lists, composite keywords, flag-path field gating; 3 spec blockers fixed+byte-verified; 90 tests green. Part 2 (mixed-batch partial writes + nested outcomes/evidence) = mulch-8c9c. LESSON: ajv's per-property errors are composite; slice-based edits corrupt big files — rebuild wholesale instead."
   ]
 }
