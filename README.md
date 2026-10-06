@@ -14,6 +14,12 @@ delete/delete-domain/move/learn/compact/config/diff/upgrade/completions/
 audit`) mirrors the reference tool until this repo's own line replaces it
 (self-hosting cutover).
 
+**Product posture:** mulch is a standalone tool — the `mulch` CLI is a
+product of its own — while `crates/mulch` (the lib) is at the same time
+the native expertise engine that denkhaus/fabro embeds. The lib's public
+API is therefore an integration surface for fabro, not an internal
+convenience; changes to it are integration-relevant.
+
 Freeze policy (ADR-0023 in denkhaus/fabro): no upstream following. The
 format is frozen on our side; we extend additively for our own reasons.
 The round-trip suite stays runnable against future upstream releases as

@@ -8,14 +8,17 @@ description: 'The mulch LOCAL development loop (independent of the fabro develop
 One iteration = one **sprint**: a coherent unit of work (milestone step, ticket,
 review-fix round). Sprints are counted per project (state file below).
 
-**LOCAL ONLY, and strictly separate from the fabro develop line** (user
-directive 2026-10-03, amended 2026-10-06): this loop works in this checkout
-on the `iterate` virtual branch, commits via `but`, never opens PRs, never
-assigns seeds to `fabro`, and never touches `.fabro/workflows`. After every
-sprint closeout the LANE IS PUSHED to `origin/iterate` (through the push
-gate) so the work is available on other machines — pushing the branch is
-not landing. Landing local work to `main` happens only through the engine
-flow on an explicit user order.
+**mulch's own development loop** (user directives 2026-10-03 and
+2026-10-06): mulch is a STANDALONE tool whose lib crate fabro natively
+embeds — this loop develops mulch on its own account, in this checkout
+on the `iterate` virtual branch, committing via `but`, opening no PRs,
+assigning no seeds to `fabro`, and never touching `.fabro/workflows`.
+After every sprint closeout the LANE IS PUSHED to `origin/iterate`
+(through the push gate) so the work is available on other machines —
+pushing the branch is not landing. Landing local work to `main` happens
+only through the engine flow on an explicit user order. Remember the
+crate is an integration surface for fabro: lib API changes are
+integration-relevant.
 
 This skill is deliberately THIN. All process knowledge lives cross-referenced
 in **Seeds** (issues, decisions, milestones) and **Mulch** (domain expertise,
