@@ -202,25 +202,22 @@ fn append(
             ));
         }
     };
-    let mut outcome = Map::new();
-    outcome.insert("status".into(), Value::String(status.into()));
-    outcome.insert("recorded_at".into(), Value::String(now_iso()));
-    if let Some(number) = flags
-        .duration
-        .as_deref()
-        .and_then(|d| d.parse::<u64>().ok())
-    {
-        outcome.insert("duration".into(), Value::from(number));
+    // The timestamped entry family (status, recorded_at, duration,
+    // agent, notes, test_results) and the strict duration parse live
+    // in the lib seam.
+    let now = now_iso();
+    let outcome = mulch::OutcomeEntry {
+        timestamped: true,
+        status,
+        now: &now,
+        duration: flags.duration.as_deref(),
+        duration_flag: "--duration",
+        agent: flags.agent.as_deref(),
+        notes: flags.notes.as_deref(),
+        test_results: flags.test_results.as_deref(),
     }
-    if let Some(agent) = &flags.agent {
-        outcome.insert("agent".into(), Value::String(agent.clone()));
-    }
-    if let Some(notes) = &flags.notes {
-        outcome.insert("notes".into(), Value::String(notes.clone()));
-    }
-    if let Some(test_results) = &flags.test_results {
-        outcome.insert("test_results".into(), Value::String(test_results.clone()));
-    }
+    .build()
+    .map_err(|message| Failure::handled_on_stderr("outcome", format!("Error: {message}")))?;
 
     let total = {
         let array = record

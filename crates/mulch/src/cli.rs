@@ -241,8 +241,9 @@ pub(crate) struct RecordArgs {
     #[arg(long = "outcome-status", value_parser = ["success", "failure", "partial"])]
     pub(crate) outcome_status: Option<String>,
 
-    /// Outcome duration in milliseconds.
-    #[arg(long = "outcome-duration")]
+    /// Outcome duration in milliseconds (hyphen values pass through so
+    /// the strict parse rejects them with the reference error, not clap).
+    #[arg(long = "outcome-duration", allow_hyphen_values = true)]
     pub(crate) outcome_duration: Option<String>,
 
     #[arg(long = "outcome-test-results")]
@@ -328,8 +329,9 @@ pub(crate) struct EditOutcomeFlags {
     )]
     pub(crate) status: Option<String>,
 
-    /// Duration in milliseconds.
-    #[arg(long = "outcome-duration")]
+    /// Duration in milliseconds (hyphen values pass through so the
+    /// strict parse rejects them with the reference error, not clap).
+    #[arg(long = "outcome-duration", allow_hyphen_values = true)]
     pub(crate) duration: Option<String>,
 
     /// Test results summary.
@@ -348,8 +350,9 @@ pub(crate) struct OutcomeFlags {
     #[arg(long = "status", value_parser = ["success", "failure", "partial"])]
     pub(crate) status: Option<String>,
 
-    /// Duration in milliseconds.
-    #[arg(long)]
+    /// Duration in milliseconds (hyphen values pass through so the
+    /// strict parse rejects them with the reference error, not clap).
+    #[arg(long, allow_hyphen_values = true)]
     pub(crate) duration: Option<String>,
 
     /// Recording agent name.

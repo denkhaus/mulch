@@ -80,8 +80,8 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     }
 
     // Record-time-style outcome (no recorded_at inside).
-    if args.outcome.status.is_some() {
-        append_outcome_without_time(&mut record, &args.outcome, &args.id)?;
+    if let Some(status) = &args.outcome.status {
+        append_outcome_without_time(&mut record, status, &args.outcome, &args.id)?;
     }
 
     // List updates REPLACE the values (reference `update` semantics);
@@ -113,29 +113,28 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Appends an edit-time outcome object (no recorded_at).
+/// Appends an edit-time outcome object (no recorded_at). The entry
+/// shape and the strict duration parse live in the lib seam; the
+/// caller gates on `status` being present (the reference builds the
+/// outcome only with `--outcome-status`).
 fn append_outcome_without_time(
     record: &mut Map<String, Value>,
+    status: &str,
     flags: &crate::cli::EditOutcomeFlags,
     id: &str,
 ) -> Result<(), Failure> {
-    let mut outcome = Map::new();
-    if let Some(status) = &flags.status {
-        outcome.insert("status".into(), Value::String(status.clone()));
+    let outcome = mulch::OutcomeEntry {
+        timestamped: false,
+        status,
+        now: "",
+        duration: flags.duration.as_deref(),
+        duration_flag: "--outcome-duration",
+        agent: flags.agent.as_deref(),
+        notes: None,
+        test_results: flags.test_results.as_deref(),
     }
-    if let Some(number) = flags
-        .duration
-        .as_deref()
-        .and_then(|d| d.parse::<u64>().ok())
-    {
-        outcome.insert("duration".into(), Value::from(number));
-    }
-    if let Some(test_results) = &flags.test_results {
-        outcome.insert("test_results".into(), Value::String(test_results.clone()));
-    }
-    if let Some(agent) = &flags.agent {
-        outcome.insert("agent".into(), Value::String(agent.clone()));
-    }
+    .build()
+    .map_err(|message| Failure::handled_on_stderr("edit", format!("Error: {message}")))?;
     let outcomes_entry = record
         .entry("outcomes")
         .or_insert_with(|| Value::Array(Vec::new()));

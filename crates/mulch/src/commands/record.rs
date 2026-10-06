@@ -72,23 +72,22 @@ fn build_record(
     }
     // outcomes precede dir_anchors (reference buildRecordFromOptions
     // key order, record.ts:82-86 — probe-pinned by the sprint-6 spec
-    // review).
-    if let Some(outcome) = record_time_outcome(args) {
-        let mut outcomes = Map::new();
-        outcomes.insert("status".into(), Value::String(outcome.status));
-        if let Some(duration) = outcome.duration {
-            outcomes.insert("duration".into(), number_value(&duration)?);
+    // review). The entry itself (key order + strict duration parse)
+    // lives in the lib seam.
+    if let Some(status) = &args.outcome_status {
+        let entry = mulch::OutcomeEntry {
+            timestamped: false,
+            status,
+            now: "",
+            duration: args.outcome_duration.as_deref(),
+            duration_flag: "--outcome-duration",
+            agent: args.outcome_agent.as_deref(),
+            notes: None,
+            test_results: args.outcome_test_results.as_deref(),
         }
-        if let Some(test_results) = outcome.test_results {
-            outcomes.insert("test_results".into(), Value::String(test_results));
-        }
-        if let Some(agent) = outcome.agent {
-            outcomes.insert("agent".into(), Value::String(agent));
-        }
-        record.insert(
-            "outcomes".into(),
-            Value::Array(vec![Value::Object(outcomes)]),
-        );
+        .build()
+        .map_err(|message| Failure::handled_on_stderr("record", format!("Error: {message}")))?;
+        record.insert("outcomes".into(), Value::Array(vec![Value::Object(entry)]));
     }
     if !args.dir_anchors.is_empty() {
         let anchors: Vec<Value> = args
@@ -146,23 +145,6 @@ fn ref_validation_failure(subs: &[crate::commands::schema::SubError], hint: &str
     failure
 }
 
-/// Record-time outcome flag bundle.
-pub(super) struct OutcomeBundle {
-    pub(super) status:       String,
-    pub(super) duration:     Option<String>,
-    pub(super) test_results: Option<String>,
-    pub(super) agent:        Option<String>,
-}
-
-fn record_time_outcome(args: &RecordArgs) -> Option<OutcomeBundle> {
-    args.outcome_status.as_ref().map(|status| OutcomeBundle {
-        status:       status.clone(),
-        duration:     args.outcome_duration.clone(),
-        test_results: args.outcome_test_results.clone(),
-        agent:        args.outcome_agent.clone(),
-    })
-}
-
 /// The missing-required-flag failure with the reference's Retry hint.
 fn missing_flags_failure(record_type: &str, missing: &[&str], args: &RecordArgs) -> Failure {
     let flags: Vec<String> = missing.iter().map(|f| format!("--{f}")).collect();
@@ -210,13 +192,6 @@ fn split_list(raw: Option<&str>) -> Option<Vec<String>> {
 /// A JSON array of strings.
 fn strings_value(items: &[String]) -> Value {
     Value::Array(items.iter().map(|i| Value::String(i.clone())).collect())
-}
-
-/// Numeric outcome duration.
-pub(super) fn number_value(raw: &str) -> Result<Value, Failure> {
-    raw.parse::<u64>()
-        .map(Value::from)
-        .map_err(|_| Failure::handled("record", format!("invalid number: {raw}")))
 }
 
 /// Auto-populated git evidence: the full HEAD sha when cwd is a git

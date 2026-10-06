@@ -644,6 +644,246 @@ fn doctor_flags_divergent_ids_beyond_reference() {
     assert_eq!(duplicates["fixable"], false);
 }
 
+// ---- sprint 16 (mulch-2dc2): strict outcome-duration parse on all three
+// write surfaces (record --outcome-duration, edit --outcome-duration,
+// outcome --duration) ----
+
+/// Shared twin-store fixture: `ml init` + one base pattern p1.
+fn duration_fixture(dir: &Path, ml: &Path) {
+    let _ = run_in(dir, ml, &["init"]);
+    let _ = run_in(dir, ml, &[
+        "record",
+        "dev",
+        "--type",
+        "pattern",
+        "--name",
+        "p1",
+        "--description",
+        "d1",
+    ]);
+}
+
+#[test]
+fn outcome_duration_rejects_like_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("dur-bad-ours");
+    let theirs = TempDir::new("dur-bad-theirs");
+    duration_fixture(&ours.0, &ml);
+    duration_fixture(&theirs.0, &ml);
+    let cases: &[&[&str]] = &[
+        // record family
+        &[
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p2",
+            "--description",
+            "d2",
+            "--outcome-status",
+            "success",
+            "--outcome-duration",
+            "abc",
+        ],
+        &[
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p3",
+            "--description",
+            "d3",
+            "--outcome-status",
+            "success",
+            "--outcome-duration",
+            "-1",
+        ],
+        // edit family
+        &[
+            "edit",
+            "dev",
+            "mx-31be4b",
+            "--outcome-status",
+            "failure",
+            "--outcome-duration",
+            "1e3",
+        ],
+        // outcome family
+        &[
+            "outcome",
+            "dev",
+            "mx-31be4b",
+            "--status",
+            "partial",
+            "--duration",
+            "-5",
+        ],
+        &[
+            "outcome",
+            "dev",
+            "mx-31be4b",
+            "--status",
+            "success",
+            "--duration",
+            "5.",
+        ],
+    ];
+    for args in cases {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "exit differs: {args:?}");
+        assert_eq!(
+            ours_run.stdout, theirs_run.stdout,
+            "stdout differs: {args:?}"
+        );
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "stderr differs: {args:?}"
+        );
+        assert_eq!(ours_run.code, 1);
+        assert!(ours_run.stderr.contains("must be a non-negative number"));
+    }
+    // json mode renders the error envelope on stderr (probe-pinned)
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "dev",
+        "--type",
+        "pattern",
+        "--name",
+        "p4",
+        "--description",
+        "d4",
+        "--outcome-status",
+        "success",
+        "--outcome-duration",
+        "abc",
+        "--json",
+    ]);
+    let theirs_json = run_in(&theirs.0, &ml, &[
+        "record",
+        "dev",
+        "--type",
+        "pattern",
+        "--name",
+        "p4",
+        "--description",
+        "d4",
+        "--outcome-status",
+        "success",
+        "--outcome-duration",
+        "abc",
+        "--json",
+    ]);
+    assert_eq!(ours_json.code, theirs_json.code);
+    assert_eq!(ours_json.stdout, theirs_json.stdout);
+    assert_eq!(ours_json.stderr, theirs_json.stderr);
+    assert!(ours_json.stderr.contains("--outcome-duration"));
+    // rejected runs never write their record
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/dev.jsonl")
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn outcome_duration_decimals_canonicalize_like_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("dur-ok-ours");
+    let theirs = TempDir::new("dur-ok-theirs");
+    duration_fixture(&ours.0, &ml);
+    duration_fixture(&theirs.0, &ml);
+    let cases: &[&[&str]] = &[
+        // "42.0" stores as the integer 42; decimals stay floats
+        &[
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p3",
+            "--description",
+            "d3",
+            "--outcome-status",
+            "success",
+            "--outcome-duration",
+            "42.0",
+            "--outcome-agent",
+            "ra",
+            "--outcome-test-results",
+            "rt",
+        ],
+        &[
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p8",
+            "--description",
+            "d8",
+            "--outcome-status",
+            "success",
+            "--outcome-duration",
+            "007",
+        ],
+        &[
+            "edit",
+            "dev",
+            "mx-31be4b",
+            "--outcome-status",
+            "failure",
+            "--outcome-duration",
+            "0.5",
+        ],
+        &[
+            "outcome",
+            "dev",
+            "mx-31be4b",
+            "--status",
+            "success",
+            "--duration",
+            "7.25",
+            "--agent",
+            "oa",
+            "--notes",
+            "on",
+            "--test-results",
+            "ot",
+        ],
+    ];
+    for args in cases {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "exit differs: {args:?}");
+        assert_eq!(
+            ours_run.stdout, theirs_run.stdout,
+            "stdout differs: {args:?}"
+        );
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "stderr differs: {args:?}"
+        );
+    }
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/dev.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/dev.jsonl"))
+    );
+    let store = normalize(&read_store_file(&ours.0, "expertise/dev.jsonl"));
+    assert!(store.contains("\"duration\":42"));
+    assert!(store.contains("\"duration\":7"));
+    assert!(store.contains("\"duration\":0.5"));
+}
+
 // ---- spec-review round 2: parse layer, schema-invalid strings, no-store
 // doctor, --fix --json, quiet matrix, blank-line numbering ----
 
