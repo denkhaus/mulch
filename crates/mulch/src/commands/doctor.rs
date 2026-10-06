@@ -522,24 +522,25 @@ fn duplicates(domains: &[DomainLines]) -> Check {
     let divergent = divergent_details.len();
     let mut details = reference_details;
     details.append(&mut divergent_details);
-    let (status, message) = if divergent > 0 {
-        // Deviation: the reference passes this store; we fail it.
-        let base = if duplicates > 0 {
-            format!("{duplicates} duplicate record(s) found; ")
-        } else {
-            String::new()
-        };
-        (
-            Status::Fail,
-            format!("{base}{divergent} divergent id(s) found"),
-        )
+    let mut parts = Vec::new();
+    if duplicates > 0 {
+        parts.push(format!("{duplicates} duplicate record(s) found"));
+    }
+    if divergent > 0 {
+        parts.push(format!("{divergent} divergent id(s) found"));
+    }
+    // Deviation: a divergent id fails the store the reference passes.
+    let status = if divergent > 0 {
+        Status::Fail
     } else if duplicates > 0 {
-        (
-            Status::Warn,
-            format!("{duplicates} duplicate record(s) found"),
-        )
+        Status::Warn
     } else {
-        (Status::Pass, "No duplicates".into())
+        Status::Pass
+    };
+    let message = if parts.is_empty() {
+        "No duplicates".into()
+    } else {
+        parts.join("; ")
     };
     Check {
         name: "duplicates",
@@ -565,11 +566,11 @@ fn divergent_ids(domain: &str, records: &[&Value]) -> Vec<String> {
             continue;
         }
         match first_by_id.entry(id) {
-            HashMapEntry::Vacant(anchor) => {
-                anchor.insert((index, record));
+            HashMapEntry::Vacant(entry) => {
+                entry.insert((index, record));
             }
-            HashMapEntry::Occupied(anchor) => {
-                let (anchor_index, anchor_record) = anchor.get();
+            HashMapEntry::Occupied(entry) => {
+                let (anchor_index, anchor_record) = entry.get();
                 if anchor_record != record {
                     details.push(format!(
                         "{domain}: divergent id {id} at index {} (matches #{}, different content)",

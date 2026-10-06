@@ -442,6 +442,8 @@ fn recent_timestamp(file: &Path) -> String {
     rest[..24].to_string()
 }
 
+// ---- sprint 15 (mulch-7ac9): doctor duplicates + divergent ids ----
+
 #[test]
 fn doctor_duplicates_warn_matches_reference() {
     let Some(ml) = reference_ml() else {

@@ -192,11 +192,15 @@ fn js_dedup_eq(a: Option<&Value>, b: Option<&Value>) -> bool {
     match (a, b) {
         (None, None) => true,
         (Some(Value::Number(a)), Some(Value::Number(b))) => a.as_f64() == b.as_f64(),
+        // objects/arrays never match (JS === compares identity), and
+        // undefined never equals a present value (and vice versa) —
+        // this arm MUST precede the structural-eq arm or identical
+        // object shapes would wrongly match
         (Some(Value::Object(_) | Value::Array(_)), _)
-        | (_, Some(Value::Object(_) | Value::Array(_))) => false,
+        | (_, Some(Value::Object(_) | Value::Array(_)))
+        | (None, Some(_))
+        | (Some(_), None) => false,
         (Some(a), Some(b)) => a == b,
-        // undefined never equals a present value (and vice versa)
-        _ => false,
     }
 }
 

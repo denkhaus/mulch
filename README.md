@@ -101,7 +101,9 @@ expectation (the parity rule: never silently):
   id with divergent content (a content-hash id whose record was edited
   in place) fails our report with `divergent id` details where the
   reference still reports `No duplicates` and exits 0; ours exits 1.
-  Never auto-fixed.
+  On a store with both classes ours fails with the combined message
+  `N duplicate record(s) found; M divergent id(s) found` where the
+  reference only warns (exit 0). Never auto-fixed.
 - **`doctor` upgrade check is inert.** The reference warns when the npm
   registry offers a newer version. The native binary has no npm
   registry; the `upgrade` check reports pass with a cargo hint.
