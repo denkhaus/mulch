@@ -894,6 +894,132 @@ fn outcome_duration_decimals_canonicalize_like_reference() {
     assert!(store.contains("\"duration\":0.5"));
 }
 
+// ---- sprint 17 (mulch-8c9c): mixed-batch partial writes + the C2
+// upsert-plan seam + nested outcome/evidence subschema errors ----
+
+#[test]
+fn batch_mixed_partial_writes_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("mix-ours");
+    let theirs = TempDir::new("mix-theirs");
+    let fixture = |dir: &Path| {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p1",
+            "--description",
+            "d1",
+        ]);
+        // valid named dup (update) + invalid id (error entry) + valid
+        // create: the valid records write even though one failed.
+        std::fs::write(
+            dir.join("b.json"),
+            "[{\"type\":\"pattern\",\"name\":\"p1\",\"description\":\"d1-NEW\",\"classification\":\"tactical\"},{\"type\":\"pattern\",\"name\":\"bad\",\"id\":123},{\"type\":\"convention\",\"content\":\"fresh\"}]",
+        )
+        .expect("batch fixture");
+        // all-invalid: nothing writes, exit 1 in every mode
+        std::fs::write(
+            dir.join("bad.json"),
+            "[{\"type\":\"pattern\",\"name\":\"bad\",\"id\":123},{\"type\":\"convention\",\"content\":5}]",
+        )
+        .expect("bad fixture");
+    };
+    fixture(&ours.0);
+    fixture(&theirs.0);
+
+    for file in ["b.json", "bad.json"] {
+        for mode in [&[] as &[&str], &["--json"], &["--dry-run"], &[
+            "--dry-run",
+            "--json",
+        ]] {
+            let mut args = vec!["record", "dev", "--batch", file];
+            args.extend_from_slice(mode);
+            let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+            let theirs_run = run_in(&theirs.0, &ml, &args);
+            assert_eq!(ours_run.code, theirs_run.code, "exit {file} {mode:?}");
+            assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout {file} {mode:?}");
+            assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr {file} {mode:?}");
+        }
+    }
+    // partial-write semantics landed in the store: the update replaced
+    // p1 in place, the create appended (2 lines; the invalid record is
+    // not on disk) — across all four b.json runs the second pass sees
+    // p1-NEW as the duplicate (update again) and "fresh" as an
+    // anonymous skip.
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/dev.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/dev.jsonl"))
+    );
+    let store = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert_eq!(store.lines().count(), 2);
+    assert!(store.contains("d1-NEW"));
+    assert!(store.contains("fresh"));
+}
+
+#[test]
+fn nested_subschema_errors_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("nested-ours");
+    let theirs = TempDir::new("nested-theirs");
+    let common = r#","classification":"tactical","recorded_at":"2026-10-06T10:00:00.000Z""#;
+    let store = [
+        format!(r#"{{"type":"pattern","name":"n1","description":"d"{common},"outcomes":[{{"status":"nope"}}]}}"#),
+        format!(r#"{{"type":"pattern","name":"n2","description":"d"{common},"outcomes":[{{"status":"success","duration":"42"}}]}}"#),
+        format!(r#"{{"type":"pattern","name":"n3","description":"d"{common},"outcomes":[{{"status":"success","bogus":1}}]}}"#),
+        format!(r#"{{"type":"pattern","name":"n4","description":"d"{common},"outcomes":[5]}}"#),
+        format!(r#"{{"type":"pattern","name":"n5","description":"d"{common},"outcomes":[{{"duration":1}}]}}"#),
+        format!(r#"{{"type":"pattern","name":"n6","description":"d"{common},"outcomes":[{{"status":5}}]}}"#),
+        format!(r#"{{"type":"pattern","name":"n7","description":"d"{common},"outcomes":[{{"status":"success"}},{{"status":"bad"}}]}}"#),
+        format!(r#"{{"type":"pattern","name":"n8","description":"d"{common},"evidence":{{"commit":"c","wat":1}}}}"#),
+        format!(r#"{{"type":"pattern","name":"n9","description":"d"{common},"evidence":{{"commit":5}}}}"#),
+        format!(r#"{{"type":"pattern","name":"n10","description":"d"{common},"evidence":{{"wat":1}},"outcomes":[{{"status":"bad"}}]}}"#),
+    ]
+    .join("\n")
+        + "\n";
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "dev"]);
+        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), &store).expect("store fixture");
+    }
+
+    for mode in [&[] as &[&str], &["--json"]] {
+        let mut args = vec!["validate"];
+        args.extend_from_slice(mode);
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let theirs_run = run_in(&theirs.0, &ml, &args);
+        assert_eq!(ours_run.code, theirs_run.code, "exit {mode:?}");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout {mode:?}");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr {mode:?}");
+    }
+
+    // the batch surface carries the same nested entries per record
+    let batch = format!(
+        "[{{\"type\":\"pattern\",\"name\":\"b1\",\"description\":\"d\"{common},\"outcomes\":[{{\"status\":\"nope\"}}]}}]"
+    );
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join("nb.json"), &batch).expect("nested batch");
+    }
+    for mode in [&[] as &[&str], &["--json"]] {
+        let mut args = vec!["record", "dev", "--batch", "nb.json"];
+        args.extend_from_slice(mode);
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let theirs_run = run_in(&theirs.0, &ml, &args);
+        assert_eq!(ours_run.code, theirs_run.code, "batch exit {mode:?}");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "batch stdout {mode:?}");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "batch stderr {mode:?}");
+    }
+}
+
 // ---- spec-review round 2: parse layer, schema-invalid strings, no-store
 // doctor, --fix --json, quiet matrix, blank-line numbering ----
 

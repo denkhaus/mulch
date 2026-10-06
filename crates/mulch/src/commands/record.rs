@@ -286,14 +286,19 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
         .map_err(|source| {
             Failure::handled_on_stderr("record", crate::commands::render_core_error(&source))
         })?;
-    let duplicate_position = mulch::find_duplicate(
-        existing.iter().map(|line| &line.record),
-        &Value::Object(record.clone()),
-    );
-    if let Some(position) = duplicate_position
-        && !args.force
-    {
-        return duplicate_action(opts, args, &store, &existing, position, record);
+    // One decision owner (lib `upsert_plan`): named duplicates upsert
+    // with merged outcomes, anonymous ones skip, --force falls through
+    // to the create path below.
+    let working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
+    match mulch::upsert_plan(&working, &Value::Object(record.clone()), args.force) {
+        mulch::UpsertPlan::Skip { index } => {
+            skip_advisory(opts, args, index, record);
+            return Ok(());
+        }
+        mulch::UpsertPlan::Update { index, merged } => {
+            return upsert_update(opts, args, &store, &existing, index, record, merged);
+        }
+        mulch::UpsertPlan::Create => {}
     }
 
     if args.dry_run {
@@ -367,43 +372,26 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
 /// `record.ts` duplicate branch, mulch-ccf6): named types UPSERT in
 /// place, anonymous types (`convention`/`failure`) skip with the
 /// advisory.
-fn duplicate_action(
-    opts: &GlobalOpts,
-    args: &RecordArgs,
-    store: &mulch::StoreFiles,
-    existing: &[mulch::LineRecord],
-    position: usize,
-    record: Map<String, Value>,
-) -> Result<(), Failure> {
+/// The anonymous-duplicate advisory (flag path, `Skip` arm): nothing
+/// is written; `--force` is the documented escape hatch.
+fn skip_advisory(opts: &GlobalOpts, args: &RecordArgs, index: usize, record: Map<String, Value>) {
     let kind = args
         .record_type
         .clone()
         .unwrap_or_else(|| "convention".into());
-    let named = mulch::is_named_type(&kind);
     if args.dry_run {
-        // Dry-run mirrors the write decision (`wouldDo`), and the json
+        // Dry-run mirrors the write decision (`wouldDo`); the json
         // `record` carries no id — ids are a write-time product.
         if opts.json {
             let mut without_id = record;
             without_id.remove("id");
             let mut fields = serde_json::Map::new();
             fields.insert("action".into(), Value::String("dry-run".into()));
-            fields.insert(
-                "wouldDo".into(),
-                Value::String(if named { "updated" } else { "skipped" }.into()),
-            );
+            fields.insert("wouldDo".into(), Value::String("skipped".into()));
             fields.insert("domain".into(), Value::String(args.domain.clone()));
             fields.insert("type".into(), Value::String(kind));
             fields.insert("record".into(), Value::Object(without_id));
             print_json(&success_envelope("record", fields), false);
-        } else if named {
-            print_line(
-                opts.quiet,
-                &format!(
-                    "✓ Dry-run: Would update existing {kind} in {}\n  Run without --dry-run to apply changes.",
-                    args.domain
-                ),
-            );
         } else {
             print_line(
                 opts.quiet,
@@ -413,37 +401,77 @@ fn duplicate_action(
                 ),
             );
         }
-        return Ok(());
+        return;
     }
-    if !named {
+    if opts.json {
+        let mut fields = serde_json::Map::new();
+        fields.insert("action".into(), Value::String("skipped".into()));
+        fields.insert("domain".into(), Value::String(args.domain.clone()));
+        fields.insert("type".into(), Value::String(kind));
+        fields.insert("index".into(), Value::from((index + 1) as u64));
+        print_json(&success_envelope("record", fields), false);
+    } else {
+        print_line(
+            opts.quiet,
+            &format!(
+                "Duplicate {kind} already exists in {} (record #{}). Use --force to add anyway.",
+                args.domain,
+                index + 1
+            ),
+        );
+    }
+}
+
+/// The named-duplicate upsert (flag path, `Update` arm): the plan's
+/// merged record (incoming fields, outcomes existing-first) replaces
+/// the line, with the builder's pre-assigned id LIFTED LAST so it
+/// lands after the appended outcomes (probe-pinned key order). The
+/// file rewrites compactly.
+fn upsert_update(
+    opts: &GlobalOpts,
+    args: &RecordArgs,
+    store: &mulch::StoreFiles,
+    existing: &[mulch::LineRecord],
+    index: usize,
+    record: Map<String, Value>,
+    merged: Map<String, Value>,
+) -> Result<(), Failure> {
+    let kind = args
+        .record_type
+        .clone()
+        .unwrap_or_else(|| "convention".into());
+    if args.dry_run {
         if opts.json {
+            let mut without_id = record;
+            without_id.remove("id");
             let mut fields = serde_json::Map::new();
-            fields.insert("action".into(), Value::String("skipped".into()));
+            fields.insert("action".into(), Value::String("dry-run".into()));
+            fields.insert("wouldDo".into(), Value::String("updated".into()));
             fields.insert("domain".into(), Value::String(args.domain.clone()));
             fields.insert("type".into(), Value::String(kind));
-            fields.insert("index".into(), Value::from((position + 1) as u64));
+            fields.insert("record".into(), Value::Object(without_id));
             print_json(&success_envelope("record", fields), false);
         } else {
             print_line(
                 opts.quiet,
                 &format!(
-                    "Duplicate {kind} already exists in {} (record #{}). Use --force to add anyway.",
-                    args.domain,
-                    position + 1
+                    "✓ Dry-run: Would update existing {kind} in {}\n  Run without --dry-run to apply changes.",
+                    args.domain
                 ),
             );
         }
         return Ok(());
     }
 
-    // Named upsert: the built record replaces the line — fresh
-    // recorded_at, new field values, recomputed id (a stale id from an
-    // earlier rename corrects itself) — with merged outcomes and the
-    // key-order contract owned by [`mulch::upsert_record`]. The file
-    // rewrites compactly.
-    let upserted = mulch::upsert_record(&existing[position].record, record);
+    // id LAST: lift the builder's pre-assigned id over the merged
+    // outcomes (the reference's `{ ...record, outcomes }` + write-time
+    // id placement).
+    let mut upserted = merged;
+    if let Some(id) = upserted.remove("id") {
+        upserted.insert("id".into(), id);
+    }
     let mut lines: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
-    lines[position] = Value::Object(upserted.clone());
+    lines[index] = Value::Object(upserted.clone());
     store
         .rewrite_domain(&args.domain, &lines)
         .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
@@ -453,7 +481,7 @@ fn duplicate_action(
         fields.insert("action".into(), Value::String("updated".into()));
         fields.insert("domain".into(), Value::String(args.domain.clone()));
         fields.insert("type".into(), Value::String(kind));
-        fields.insert("index".into(), Value::from((position + 1) as u64));
+        fields.insert("index".into(), Value::from((index + 1) as u64));
         fields.insert("record".into(), Value::Object(upserted));
         print_json(&success_envelope("record", fields), false);
     } else {
@@ -462,7 +490,7 @@ fn duplicate_action(
             &format!(
                 "✓ Updated existing {kind} in {} (record #{})",
                 args.domain,
-                position + 1
+                index + 1
             ),
         );
     }
@@ -556,7 +584,6 @@ fn stdin_batch(
             .and_then(Value::as_str)
             .unwrap_or("convention")
             .to_string();
-        let named = mulch::is_named_type(&record_type);
         let id_key = id_key_field(&record_type);
         let id_value = line
             .get(id_key)
@@ -564,152 +591,141 @@ fn stdin_batch(
             .unwrap_or_default()
             .to_string();
         let id = record_id(&record_type, &id_value);
-        // Dedupe by the type's dedup FIELD against the working copy
-        // (`findDuplicate`), never by id (mulch-ccf6). The enriched
-        // record is safe here: find_duplicate compares only `type` and
-        // the type's dedup field, which enrichment never touches.
-        let duplicate = if args.force {
-            None
-        } else {
-            mulch::find_duplicate(working.iter(), &Value::Object(line.clone()))
-        };
+        // One decision owner (lib `upsert_plan`): the dedup field
+        // against the working copy, never the id (mulch-ccf6). The
+        // enriched record is safe here: the plan compares only `type`
+        // and the type's dedup field, which enrichment never touches.
+        let plan = mulch::upsert_plan(&working, &Value::Object(line.clone()), args.force);
 
         if args.dry_run {
-            // Count-only pass over the unmutated working copy.
-            match duplicate {
-                Some(_) if named => updated += 1,
-                Some(_) => skipped += 1,
-                None => created += 1,
+            // Count-only pass over the unmutated working copy
+            // (within-batch duplicates count as creates here — the
+            // reference never mutates its copy in dry-run either).
+            match plan {
+                mulch::UpsertPlan::Create => created += 1,
+                mulch::UpsertPlan::Update { .. } => updated += 1,
+                mulch::UpsertPlan::Skip { .. } => skipped += 1,
             }
             continue;
         }
-        match duplicate {
-            Some(position) if named => {
-                // merge first, then the id — an input id keeps its
-                // position, a generated one lands after the merged
-                // outcomes (reference write-time `if (!r.id)`).
-                let mut line = mulch::merge_outcomes(&working[position], line);
+        match plan {
+            mulch::UpsertPlan::Update { index, merged } => {
+                // The plan already merged the outcomes (existing
+                // first); an input id keeps its position, a generated
+                // one lands after the merged outcomes (reference
+                // write-time `if (!r.id)`).
+                let mut line = merged;
                 line.entry("id").or_insert_with(|| Value::String(id));
-                working[position] = Value::Object(line);
+                working[index] = Value::Object(line);
                 updated += 1;
             }
-            Some(_) => {
+            mulch::UpsertPlan::Skip { .. } => {
                 skipped += 1;
             }
-            None => {
+            mulch::UpsertPlan::Create => {
                 line.entry("id").or_insert_with(|| Value::String(id));
                 working.push(Value::Object(line));
                 created += 1;
             }
         }
     }
-    let action = if args.stdin { "stdin" } else { "batch" };
-
-    if args.dry_run {
-        // Reference dry-run shape (spec review round 2): no writes.
-        if opts.json {
-            let mut fields = serde_json::Map::new();
-            fields.insert("action".into(), Value::String("dry-run".into()));
-            fields.insert("domain".into(), Value::String(args.domain.clone()));
-            fields.insert("created".into(), Value::from(created as u64));
-            fields.insert("updated".into(), Value::from(updated as u64));
-            fields.insert("skipped".into(), Value::from(skipped as u64));
-            fields.insert("errors".into(), Value::Array(errors.clone()));
-            fields.insert("warnings".into(), Value::Array(Vec::new()));
-            print_json(&success_envelope("record", fields), false);
-        } else {
-            // Reference summary: `Would process` counts created+updated;
-            // the per-action lines print only when non-zero, and an
-            // all-zero batch says so instead.
-            let total = created + updated;
-            if total > 0 || skipped > 0 {
-                let mut text = format!(
-                    "✓ Dry-run complete. Would process {total} record(s) in {}:",
-                    args.domain
-                );
-                if created > 0 {
-                    let _ = write!(text, "\n  Create: {created}");
-                }
-                if updated > 0 {
-                    let _ = write!(text, "\n  Update: {updated}");
-                }
-                if skipped > 0 {
-                    let _ = write!(text, "\n  Skip: {skipped}");
-                }
-                text.push_str("\n  Run without --dry-run to apply changes.");
-                print_line(opts.quiet, &text);
-            } else {
-                print_line(opts.quiet, "No records would be processed.");
-            }
-        }
-        return Ok(());
+    // Partial writes (reference `processStdinRecords` + the batch
+    // caller): valid records WRITE even when others failed; the write
+    // guard is `created > 0 || updated > 0` (comments and blank lines
+    // drop, id-less survivors get ids — a skip-only or empty batch
+    // leaves the file byte-identical; mulch-ca49).
+    if !args.dry_run && (created > 0 || updated > 0) {
+        store
+            .rewrite_domain(&args.domain, &working)
+            .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
     }
 
-    if !errors.is_empty() {
-        // Reference failure contract (spec review round 2): the action
-        // envelope with `errors` goes to stdout, the simple error
-        // envelope to stderr, the store stays untouched, exit 1.
-        // Plain rendering indents one entry per line; the json
-        // envelope keeps the `; `-joined single line (reference:
-        // console.error per entry vs join("; ") in outputJsonError).
+    let failed = !errors.is_empty();
+    let wrote = created + updated > 0;
+    let action = if args.dry_run {
+        "dry-run"
+    } else if args.stdin {
+        "stdin"
+    } else {
+        "batch"
+    };
+
+    // The caller prints the error block BEFORE the surfaces (stderr:
+    // console.error per entry plain, outputJsonError joined in json).
+    // The exit-1 plain case carries the block as its failure message
+    // instead of printing it here.
+    if failed {
         let summary = errors
             .iter()
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect::<Vec<_>>()
             .join("; ");
-        let mut plain = String::from("Validation errors:");
-        for error in &errors {
-            if let Some(text) = error.as_str() {
-                plain.push_str("\n  ");
-                plain.push_str(text);
-            }
-        }
-        let mut failure = Failure::handled("record", plain);
-        failure.envelope["error"] = Value::String(format!("Validation errors: {summary}"));
-        failure.envelope_to_stderr = true;
         if opts.json {
-            let mut fields = serde_json::Map::new();
-            fields.insert("action".into(), Value::String(action.into()));
-            fields.insert("domain".into(), Value::String(args.domain.clone()));
-            fields.insert("created".into(), Value::from(0u64));
-            fields.insert("updated".into(), Value::from(0u64));
-            fields.insert("skipped".into(), Value::from(skipped as u64));
-            fields.insert("errors".into(), Value::Array(errors));
-            fields.insert("warnings".into(), Value::Array(Vec::new()));
             let mut body = serde_json::Map::new();
             body.insert("success".into(), Value::Bool(false));
             body.insert("command".into(), Value::String("record".into()));
-            body.extend(fields);
-            print_json(&Value::Object(body), false);
-            print_json(&failure.envelope, true);
-            failure.rendered = true;
+            body.insert(
+                "error".into(),
+                Value::String(format!("Validation errors: {summary}")),
+            );
+            print_json(&Value::Object(body), true);
+        } else if wrote {
+            #[allow(
+                clippy::print_stderr,
+                reason = "batch error rendering is the CLI boundary"
+            )]
+            {
+                eprintln!("Validation errors:");
+                for error in &errors {
+                    if let Some(text) = error.as_str() {
+                        eprintln!("  {text}");
+                    }
+                }
+            }
         }
-        return Err(failure);
-    }
-
-    // The batch path rewrites through the compact writer whenever
-    // anything was written (reference guard `created > 0 || updated >
-    // 0`; record.ts:419): comments and blank lines drop, id-less
-    // survivors get ids — but a skip-only or empty batch leaves the
-    // file byte-identical (mulch-ca49; the FLAG path keeps its
-    // verbatim append).
-    if created > 0 || updated > 0 {
-        store
-            .rewrite_domain(&args.domain, &working)
-            .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
     }
 
     if opts.json {
+        // The result envelope always prints (stdout) — its success is
+        // `errors empty || anything written` (the reference formula).
         let mut fields = serde_json::Map::new();
         fields.insert("action".into(), Value::String(action.into()));
         fields.insert("domain".into(), Value::String(args.domain.clone()));
         fields.insert("created".into(), Value::from(created as u64));
         fields.insert("updated".into(), Value::from(updated as u64));
         fields.insert("skipped".into(), Value::from(skipped as u64));
-        fields.insert("errors".into(), Value::Array(Vec::new()));
+        fields.insert("errors".into(), Value::Array(errors.clone()));
         fields.insert("warnings".into(), Value::Array(Vec::new()));
-        print_json(&success_envelope("record", fields), false);
+        let mut body = serde_json::Map::new();
+        body.insert("success".into(), Value::Bool(!failed || wrote));
+        body.insert("command".into(), Value::String("record".into()));
+        body.extend(fields);
+        print_json(&Value::Object(body), false);
+    } else if args.dry_run {
+        // Reference summary: `Would process` counts created+updated;
+        // the per-action lines print only when non-zero, and an
+        // all-zero batch says so instead.
+        let total = created + updated;
+        if total > 0 || skipped > 0 {
+            let mut text = format!(
+                "✓ Dry-run complete. Would process {total} record(s) in {}:",
+                args.domain
+            );
+            if created > 0 {
+                let _ = write!(text, "\n  Create: {created}");
+            }
+            if updated > 0 {
+                let _ = write!(text, "\n  Update: {updated}");
+            }
+            if skipped > 0 {
+                let _ = write!(text, "\n  Skip: {skipped}");
+            }
+            text.push_str("\n  Run without --dry-run to apply changes.");
+            print_line(opts.quiet, &text);
+        } else {
+            print_line(opts.quiet, "No records would be processed.");
+        }
     } else {
         // Reference order: created, updated, then the duplicates line —
         // each only when non-zero (a zero-batch prints nothing).
@@ -731,6 +747,33 @@ fn stdin_batch(
                 &format!("Skipped {skipped} duplicate(s) in {}", args.domain),
             );
         }
+    }
+
+    if failed && !wrote {
+        // Exit 1 only when nothing was written (reference:
+        // `errors.length > 0 && created + updated === 0`). Plain: the
+        // block renders as the failure message; json: both envelopes
+        // already printed above.
+        let summary = errors
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        let mut plain = String::from("Validation errors:");
+        for error in &errors {
+            if let Some(text) = error.as_str() {
+                plain.push_str("\n  ");
+                plain.push_str(text);
+            }
+        }
+        let mut failure = Failure::handled("record", plain);
+        failure.envelope["error"] = Value::String(format!("Validation errors: {summary}"));
+        failure.envelope_to_stderr = true;
+        if opts.json {
+            failure.rendered = true;
+        }
+        return Err(failure);
     }
     Ok(())
 }
