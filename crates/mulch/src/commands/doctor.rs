@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
 use crate::commands::schema::doctor_detail;
-use crate::commands::stale::StaleRule;
+use crate::commands::stale::{StaleRule, StaleVerdict};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One check result.
@@ -440,21 +440,15 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
     let mut details = Vec::new();
     for domain in domains {
         for (_, record) in records_of(domain) {
-            let Some(record) = record.as_object() else {
-                continue;
-            };
-            let classification = record
-                .get("classification")
-                .and_then(Value::as_str)
-                .unwrap_or("tactical");
-            let Some(recorded) = record
-                .get("recorded_at")
-                .and_then(Value::as_str)
-                .and_then(|raw| raw.parse::<Timestamp>().ok())
-            else {
-                continue;
-            };
-            if rule.is_stale(classification, recorded, now) {
+            // The verdict owns the extraction (mulch-f9b9: a missing or
+            // unknown classification never decays — the reference
+            // `isStale` falls through to `false`, it does NOT default
+            // to tactical).
+            if rule.verdict(record, now) == StaleVerdict::Stale {
+                let classification = record
+                    .get("classification")
+                    .and_then(Value::as_str)
+                    .unwrap_or("undefined");
                 let kind = record
                     .get("type")
                     .and_then(Value::as_str)
@@ -596,6 +590,8 @@ fn apply_fixes(
 ) -> Result<Vec<String>, Failure> {
     let now = Timestamp::now();
     let mut fixes = Vec::new();
+    let mut removed_lines: Vec<(&str, usize)> = Vec::new();
+    let mut pruned_lines: Vec<(&str, usize)> = Vec::new();
     for domain in domains {
         // The already-read lenient lines — no second read+parse pass.
         let total = domain.lines.len();
@@ -610,22 +606,12 @@ fn apply_fixes(
             let verdict = match parsed {
                 None => FixVerdict::Invalid,
                 Some(record) => {
-                    let classification = record
-                        .as_object()
-                        .and_then(|o| o.get("classification"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("tactical");
-                    let recorded = record
-                        .as_object()
-                        .and_then(|o| o.get("recorded_at"))
-                        .and_then(Value::as_str)
-                        .and_then(|raw| raw.parse::<Timestamp>().ok());
-                    match recorded {
-                        // A record without a parsable timestamp is never
-                        // stale; schema errors catch it instead.
-                        Some(recorded) if rule.is_stale(classification, recorded, now) => {
-                            FixVerdict::Stale
-                        }
+                    // The verdict owns the extraction; an unparsable or
+                    // missing recorded_at never prunes (schema errors
+                    // catch it instead), and a missing/unknown
+                    // classification never decays (mulch-f9b9).
+                    match rule.verdict(record, now) {
+                        StaleVerdict::Stale => FixVerdict::Stale,
                         _ if doctor_detail(record).is_some() => FixVerdict::Invalid,
                         _ => FixVerdict::Keep,
                     }
@@ -647,19 +633,22 @@ fn apply_fixes(
                 .map_err(|source| {
                     Failure::handled("doctor", crate::output::chain_message(&source))
                 })?;
-            if stale_pruned > 0 {
-                fixes.push(format!(
-                    "Pruned {stale_pruned} stale record(s) from {}",
-                    domain.domain
-                ));
-            }
-            if invalid_removed > 0 {
-                fixes.push(format!(
-                    "Removed {invalid_removed} invalid record(s) from {}",
-                    domain.domain
-                ));
-            }
         }
+        // The reference reports by CHECK order (schema-validation before
+        // stale-records), not per domain: all Removed lines first, then
+        // all Pruned lines, each in domain order.
+        if invalid_removed > 0 {
+            removed_lines.push((domain.domain.as_str(), invalid_removed));
+        }
+        if stale_pruned > 0 {
+            pruned_lines.push((domain.domain.as_str(), stale_pruned));
+        }
+    }
+    for (domain, count) in removed_lines {
+        fixes.push(format!("Removed {count} invalid record(s) from {domain}"));
+    }
+    for (domain, count) in pruned_lines {
+        fixes.push(format!("Pruned {count} stale record(s) from {domain}"));
     }
     Ok(fixes)
 }

@@ -122,13 +122,10 @@ impl DomainStatus {
                 if newest_recorded.is_none_or(|n| recorded > n) {
                     newest_recorded = Some(recorded);
                 }
-                // Only explicit known classifications decay (reference
-                // isRecordStale: unknown/missing -> never stale).
-                if let Some(class) = field("classification")
-                    .and_then(Value::as_str)
-                    .filter(|c| CLASSIFICATIONS.contains(c))
-                    && rule.is_stale(class, recorded, now)
-                {
+                // The verdict owns the decay rule (reference
+                // isRecordStale: unknown/missing -> never stale, and
+                // the (shelf+1)-day boundary).
+                if rule.verdict(record, now) == crate::commands::stale::StaleVerdict::Stale {
                     stale_count += 1;
                 }
             }

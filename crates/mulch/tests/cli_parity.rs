@@ -1020,6 +1020,111 @@ fn nested_subschema_errors_match_reference() {
     }
 }
 
+// ---- sprint 18 (mulch-f9b9): staleness verdict seam — missing/unknown
+// classification never decays, the (shelf+1)-day boundary, fix-report
+// check order ----
+
+#[test]
+fn doctor_stale_policy_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("stale-ours");
+    let theirs = TempDir::new("stale-theirs");
+    // Fixed timestamps against a moving now: the 15th-day record may
+    // age past 15.0 days during the run; keep the windows wide (the
+    // boundary itself is unit-pinned in stale.rs).
+    let store = [
+        r#"{"type":"pattern","name":"missing-class","description":"d","recorded_at":"2026-08-20T12:00:00.000Z"}"#,
+        r#"{"type":"pattern","name":"tactical-14d","description":"d","classification":"tactical","recorded_at":"2026-09-22T12:00:00.000Z"}"#,
+        r#"{"type":"pattern","name":"tactical-15d","description":"d","classification":"tactical","recorded_at":"2026-09-21T12:00:00.000Z"}"#,
+        r#"{"type":"pattern","name":"observ-30d","description":"d","classification":"observational","recorded_at":"2026-09-06T12:00:00.000Z"}"#,
+        r#"{"type":"pattern","name":"foundational","description":"d","classification":"foundational","recorded_at":"2026-08-20T12:00:00.000Z"}"#,
+    ]
+    .join("\n")
+        + "\n";
+    let rust_store = r#"{"type":"pattern","name":"rust-stale","description":"d","classification":"tactical","recorded_at":"2026-09-01T12:00:00.000Z"}
+"#;
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "dev"]);
+        let _ = run_in(dir, &ml, &["add", "rust"]);
+        std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
+        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), &store).expect("dev store");
+        std::fs::write(dir.join(".mulch/expertise/rust.jsonl"), rust_store).expect("rust store");
+    }
+
+    let strip = |text: &str| -> String {
+        text.lines()
+            .filter(|line| {
+                !line.contains("Update available")
+                    && !line.contains("Run `mulch upgrade`")
+                    && !line.contains("Native binary")
+                    && !line.contains("passed,")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    // the stale check: the missing-classification record never decays
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["doctor"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(
+        strip(&ours_run.stdout),
+        strip(&theirs_run.stdout),
+        "doctor plain diverges"
+    );
+    assert!(ours_run.stdout.contains("2 stale record(s) found"));
+    assert!(ours_run.stdout.contains("dev: stale pattern (tactical)"));
+
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--json"]);
+    let theirs_json = run_in(&theirs.0, &ml, &["doctor", "--json"]);
+    assert_eq!(
+        normalize_doctor_json(&ours_json.stdout),
+        normalize_doctor_json(&theirs_json.stdout),
+        "doctor json diverges"
+    );
+
+    // --fix prunes the stale ones and removes the schema-invalid
+    // missing-classification record; the report follows the reference's
+    // CHECK order (all Removed lines, then all Pruned lines).
+    let ours_fix = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+    let theirs_fix = run_in(&theirs.0, &ml, &["doctor", "--fix"]);
+    assert_eq!(ours_fix.code, theirs_fix.code);
+    assert_eq!(
+        strip(&ours_fix.stdout),
+        strip(&theirs_fix.stdout),
+        "fix report diverges"
+    );
+    assert!(
+        ours_fix
+            .stdout
+            .contains("Removed 1 invalid record(s) from dev")
+    );
+    assert!(
+        ours_fix
+            .stdout
+            .contains("Pruned 1 stale record(s) from dev")
+    );
+    assert!(
+        ours_fix
+            .stdout
+            .contains("Pruned 1 stale record(s) from rust")
+    );
+    // the surviving store is identical
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/dev.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/dev.jsonl"))
+    );
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/dev.jsonl")
+            .lines()
+            .count(),
+        3
+    );
+}
+
 // ---- spec-review round 2: parse layer, schema-invalid strings, no-store
 // doctor, --fix --json, quiet matrix, blank-line numbering ----
 
