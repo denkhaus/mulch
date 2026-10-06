@@ -178,8 +178,26 @@ where
     let new_value = candidate.get(key);
     records.into_iter().position(|record| {
         record.get("type").and_then(Value::as_str) == Some(record_type)
-            && record.get(key) == new_value
+            && js_dedup_eq(record.get(key), new_value)
     })
+}
+
+/// JS strict equality (`===`) for the reference's dedup-field
+/// comparison (`findDuplicate`, utils/expertise.ts): missing fields
+/// compare equal (`undefined === undefined`), numbers compare as f64
+/// (`1` equals `1.0` — both parse to the same JS number), and objects
+/// or arrays never match because `===` compares object identity and
+/// separately parsed lines never share one.
+fn js_dedup_eq(a: Option<&Value>, b: Option<&Value>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(Value::Number(a)), Some(Value::Number(b))) => a.as_f64() == b.as_f64(),
+        (Some(Value::Object(_) | Value::Array(_)), _)
+        | (_, Some(Value::Object(_) | Value::Array(_))) => false,
+        (Some(a), Some(b)) => a == b,
+        // undefined never equals a present value (and vice versa)
+        _ => false,
+    }
 }
 
 /// Merges both sides' outcomes into `incoming` (reference
@@ -458,6 +476,45 @@ mod tests {
         );
         // a record without a type never duplicates
         assert_eq!(find_duplicate(store.iter(), &json!({"name": "p"})), None);
+    }
+
+    #[test]
+    fn find_duplicate_follows_js_strict_equality() {
+        // numbers compare as f64: 1 matches 1.0 (same JS number)
+        let store = [json!({"type": "pattern", "name": 1})];
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "pattern", "name": 1.0})),
+            Some(0)
+        );
+        // like-typed only: "1" never matches 1
+        assert_eq!(
+            find_duplicate(store.iter(), &json!({"type": "pattern", "name": "1"})),
+            None
+        );
+        // null only matches null, never a present value
+        let nulls = [json!({"type": "pattern", "name": null})];
+        assert_eq!(
+            find_duplicate(nulls.iter(), &json!({"type": "pattern", "name": null})),
+            Some(0)
+        );
+        assert_eq!(
+            find_duplicate(nulls.iter(), &json!({"type": "pattern"})),
+            None
+        );
+        // objects/arrays never match (JS === compares identity)
+        let objects = [json!({"type": "pattern", "name": {"a": 1}})];
+        assert_eq!(
+            find_duplicate(
+                objects.iter(),
+                &json!({"type": "pattern", "name": {"a": 1}})
+            ),
+            None
+        );
+        let arrays = [json!({"type": "pattern", "name": [1]})];
+        assert_eq!(
+            find_duplicate(arrays.iter(), &json!({"type": "pattern", "name": [1]})),
+            None
+        );
     }
 }
 
