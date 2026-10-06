@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::ids::{PAYLOAD_TYPES, id_key_field, record_id};
+use crate::ids::{PAYLOAD_TYPES, id_key_field, is_named_type, record_id};
 
 /// One parsed record with its physical line number.
 #[derive(Debug)]
@@ -319,6 +319,48 @@ impl OutcomeEntry<'_> {
     }
 }
 
+/// The dedup→update/skip/create decision for one candidate against a
+/// working set — the one owner of the registry rule shared by the
+/// record flag path and the batch/stdin loop (reference record.ts +
+/// `processStdinRecords`): a dedup-field match on a NAMED type upserts
+/// with merged outcomes, an anonymous duplicate skips, and `--force`
+/// (or no match) appends. The id-placement post-steps stay with the
+/// callers (flag: id last; batch: input-id position, generated ids
+/// after the merged outcomes).
+#[derive(Debug)]
+pub enum UpsertPlan {
+    /// Append as a new record (no dedup match, or `--force`).
+    Create,
+    /// Named-type upsert: replace the record at `index` with `merged`
+    /// (incoming fields, outcomes merged existing-first).
+    Update {
+        index:  usize,
+        merged: Map<String, Value>,
+    },
+    /// Anonymous duplicate: keep the existing record at `index`.
+    Skip { index: usize },
+}
+
+/// Computes the [`UpsertPlan`] for `candidate` against `working`
+/// (existing records plus this batch's own appends — within-batch
+/// duplicates upsert too; a dry-run pass keeps `working` unmutated so
+/// within-batch duplicates count as creates there).
+pub fn upsert_plan(working: &[Value], candidate: &Value, force: bool) -> UpsertPlan {
+    if !force && let Some(index) = find_duplicate(working, candidate) {
+        let named = candidate
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(is_named_type);
+        if named {
+            let incoming = candidate.as_object().cloned().unwrap_or_default();
+            let merged = merge_outcomes(&working[index], incoming);
+            return UpsertPlan::Update { index, merged };
+        }
+        return UpsertPlan::Skip { index };
+    }
+    UpsertPlan::Create
+}
+
 /// Merges both sides' outcomes into `incoming` (reference
 /// `{ ...record, outcomes: merged }`, existing first): replaces the
 /// `outcomes` key in place when the incoming record already has one,
@@ -334,19 +376,6 @@ pub fn merge_outcomes(existing: &Value, mut incoming: Map<String, Value>) -> Map
         incoming.insert("outcomes".into(), Value::Array(merged));
     }
     incoming
-}
-
-/// The flag-path upsert shape: merged outcomes, then the id LAST —
-/// the builder pre-assigns the id, so it lifts over the appended
-/// outcomes (probe-pinned key order; batch paths keep input-id
-/// positions and use [`merge_outcomes`] directly).
-pub fn upsert_record(existing: &Value, mut incoming: Map<String, Value>) -> Map<String, Value> {
-    let id_value = incoming.remove("id");
-    let mut merged = merge_outcomes(existing, incoming);
-    if let Some(id_value) = id_value {
-        merged.insert("id".into(), id_value);
-    }
-    merged
 }
 
 /// Writes records compactly (reference `writeExpertiseFile`): missing
@@ -638,6 +667,52 @@ mod tests {
 }
 
 #[cfg(test)]
+mod upsert_plan_tests {
+    use serde_json::json;
+
+    use super::{UpsertPlan, upsert_plan};
+
+    #[test]
+    fn plan_upserts_named_skips_anonymous_and_forces_creates() {
+        let working = [
+            json!({"type": "pattern", "name": "p", "outcomes": [{"status": "success"}]}),
+            json!({"type": "convention", "content": "c"}),
+        ];
+        // named duplicate: Update with outcomes merged existing-first
+        let incoming = json!({"type": "pattern", "name": "p", "outcomes": [{"status": "failure"}]});
+        match upsert_plan(&working, &incoming, false) {
+            UpsertPlan::Update { index, merged } => {
+                assert_eq!(index, 0);
+                assert_eq!(
+                    merged.get("outcomes"),
+                    Some(&json!([{"status": "success"}, {"status": "failure"}]))
+                );
+            }
+            other => panic!("expected Update, got {other:?}"),
+        }
+        // anonymous duplicate: Skip
+        match upsert_plan(
+            &working,
+            &json!({"type": "convention", "content": "c"}),
+            false,
+        ) {
+            UpsertPlan::Skip { index } => assert_eq!(index, 1),
+            other => panic!("expected Skip, got {other:?}"),
+        }
+        // force appends even on a duplicate
+        assert!(matches!(
+            upsert_plan(&working, &json!({"type": "pattern", "name": "p"}), true),
+            UpsertPlan::Create
+        ));
+        // no match: Create
+        assert!(matches!(
+            upsert_plan(&working, &json!({"type": "pattern", "name": "q"}), false),
+            UpsertPlan::Create
+        ));
+    }
+}
+
+#[cfg(test)]
 mod outcome_entry_tests {
     use serde_json::{Map, json};
 
@@ -750,43 +825,6 @@ mod outcome_entry_tests {
         assert_eq!(
             error,
             "--outcome-duration must be a non-negative number (got \"abc\")."
-        );
-    }
-}
-
-#[cfg(test)]
-mod upsert_record_tests {
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn merges_outcomes_existing_first_and_appends_the_id_last() {
-        let upserted = upsert_record(
-            &json!({"name": "p", "outcomes": [{"status": "success"}], "id": "mx-old"}),
-            json!({"name": "p", "id": "mx-new"})
-                .as_object()
-                .cloned()
-                .expect("object"),
-        );
-        assert_eq!(
-            Value::Object(upserted),
-            json!({"name": "p", "outcomes": [{"status": "success"}], "id": "mx-new"})
-        );
-    }
-
-    #[test]
-    fn keeps_an_explicit_id_and_skips_the_outcomes_key_when_both_empty() {
-        let upserted = upsert_record(
-            &json!({"name": "p"}),
-            json!({"name": "p", "id": "mx-explicit"})
-                .as_object()
-                .cloned()
-                .expect("object"),
-        );
-        assert_eq!(
-            Value::Object(upserted),
-            json!({"name": "p", "id": "mx-explicit"})
         );
     }
 }
