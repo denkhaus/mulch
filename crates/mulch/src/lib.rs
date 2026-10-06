@@ -23,9 +23,9 @@ pub use ids::{
     type_spec,
 };
 pub use records::{
-    LenientLine, LineRecord, ResolveError, assign_missing_id, find_duplicate, merge_outcomes,
-    read_lenient, read_strict, record_summary, resolve_record_id, upsert_record, value_text,
-    write_records,
+    LenientLine, LineRecord, OutcomeEntry, ResolveError, assign_missing_id, find_duplicate,
+    merge_outcomes, parse_non_negative_number, read_lenient, read_strict, record_summary,
+    resolve_record_id, upsert_record, value_text, write_records,
 };
 pub use store_files::{StoreFiles, StoreLocation};
 

@@ -204,6 +204,123 @@ fn js_dedup_eq(a: Option<&Value>, b: Option<&Value>) -> bool {
     }
 }
 
+/// The reference's strict numeric-flag parse (`parseStrictNonNegativeNumber`,
+/// utils/numeric-flags.ts): `/^\d+(\.\d+)?$/` — digits with an optional
+/// fractional part, nothing else (`-5`, `1e3`, `.5`, `5.`, `1.2.3`, spaces
+/// all reject). Values canonicalize like JS `Number()` + `JSON.stringify`:
+/// `"42.0"` stores as the integer `42`, `"42.5"` as the float `42.5`.
+pub fn parse_non_negative_number(raw: &str) -> Option<Value> {
+    let mut parts = raw.split('.');
+    let integral = parts.next().unwrap_or_default();
+    let fractional = parts.next();
+    if parts.next().is_some()
+        || integral.is_empty()
+        || !integral.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let fractional = match fractional {
+        Some(frac) => {
+            if frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some(frac)
+        }
+        None => None,
+    };
+    let number: f64 = raw.parse().ok()?;
+    if !number.is_finite() {
+        return None;
+    }
+    match fractional {
+        // Integer literal: exact u64; beyond u64::MAX the finite f64
+        // (absurd territory — JS keeps it finite too).
+        None => match raw.parse::<u64>() {
+            Ok(int) => Some(Value::from(int)),
+            Err(_) => Some(Value::from(number)),
+        },
+        // "42.0" is JS Number 42 — store the canonical integer form
+        // while the value stays inside the exact-integer range.
+        Some(_) if number.fract() == 0.0 && number <= 9_007_199_254_740_992.0 => Some(
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "guarded by the <= 2^53 exact-integer bound"
+            )]
+            Value::from(number as i64),
+        ),
+        Some(_) => Some(Value::from(number)),
+    }
+}
+
+/// One outcome entry's raw flag strings — the shared owner of the
+/// entry key order per command family and the strict duration parse
+/// (the three outcome builders in record.ts/edit.ts/outcome.ts plus
+/// utils/numeric-flags.ts). `timestamped` selects the `outcome`
+/// command family (status, recorded_at, duration, agent, notes,
+/// test_results); the record/edit family writes status, duration,
+/// test_results, agent. Plain data: fill the fields, call [`build`].
+///
+/// [`build`]: OutcomeEntry::build
+pub struct OutcomeEntry<'a> {
+    /// Whether recorded_at is stamped (the `outcome` command family).
+    pub timestamped:   bool,
+    /// Outcome verdict (`success` | `failure` | `partial`).
+    pub status:        &'a str,
+    /// `now` in ISO format — inserted as recorded_at when timestamped.
+    pub now:           &'a str,
+    /// Raw `--duration`/`--outcome-duration` flag value.
+    pub duration:      Option<&'a str>,
+    /// The flag name as it appears in the parse error.
+    pub duration_flag: &'a str,
+    /// Recording agent name.
+    pub agent:         Option<&'a str>,
+    /// Free-text notes (timestamped family only).
+    pub notes:         Option<&'a str>,
+    /// Test results summary.
+    pub test_results:  Option<&'a str>,
+}
+
+impl OutcomeEntry<'_> {
+    /// Builds the entry map in the family key order. `Err` carries the
+    /// reference's parse-error line WITHOUT the `Error: ` prefix — the
+    /// caller renders it through its command-named failure channel.
+    pub fn build(&self) -> std::result::Result<Map<String, Value>, String> {
+        let mut entry = Map::new();
+        entry.insert("status".into(), Value::String(self.status.into()));
+        if self.timestamped {
+            entry.insert("recorded_at".into(), Value::String(self.now.into()));
+        }
+        if let Some(raw) = self.duration {
+            let Some(value) = parse_non_negative_number(raw) else {
+                return Err(format!(
+                    "{} must be a non-negative number (got \"{raw}\").",
+                    self.duration_flag
+                ));
+            };
+            entry.insert("duration".into(), value);
+        }
+        if self.timestamped {
+            if let Some(agent) = self.agent {
+                entry.insert("agent".into(), Value::String(agent.into()));
+            }
+            if let Some(notes) = self.notes {
+                entry.insert("notes".into(), Value::String(notes.into()));
+            }
+            if let Some(test_results) = self.test_results {
+                entry.insert("test_results".into(), Value::String(test_results.into()));
+            }
+        } else {
+            if let Some(test_results) = self.test_results {
+                entry.insert("test_results".into(), Value::String(test_results.into()));
+            }
+            if let Some(agent) = self.agent {
+                entry.insert("agent".into(), Value::String(agent.into()));
+            }
+        }
+        Ok(entry)
+    }
+}
+
 /// Merges both sides' outcomes into `incoming` (reference
 /// `{ ...record, outcomes: merged }`, existing first): replaces the
 /// `outcomes` key in place when the incoming record already has one,
@@ -518,6 +635,107 @@ mod tests {
         assert_eq!(
             find_duplicate(arrays.iter(), &json!({"type": "pattern", "name": [1]})),
             None
+        );
+    }
+}
+
+#[cfg(test)]
+mod outcome_entry_tests {
+    use serde_json::{Map, json};
+
+    use super::{OutcomeEntry, parse_non_negative_number};
+
+    fn number(raw: &str) -> Option<serde_json::Value> {
+        parse_non_negative_number(raw)
+    }
+
+    #[test]
+    fn parse_accepts_digits_and_canonical_decimals() {
+        // plain integers stay integers
+        assert_eq!(number("42"), Some(json!(42)));
+        assert_eq!(number("0"), Some(json!(0)));
+        // leading zeros collapse like JS Number("007") === 7
+        assert_eq!(number("007"), Some(json!(7)));
+        // "42.0" is JS 42 — the canonical integer form
+        assert_eq!(number("42.0"), Some(json!(42)));
+        assert_eq!(number("0.500"), Some(json!(0.5)));
+        // decimals stay floats
+        assert_eq!(number("42.5"), Some(json!(42.5)));
+    }
+
+    #[test]
+    fn parse_rejects_everything_else_like_the_reference_regex() {
+        for raw in [
+            "", "abc", "-5", "+5", "1e3", ".5", "5.", "1.2.3", " 42", "42 ", "４２",
+        ] {
+            assert_eq!(number(raw), None, "raw {raw:?} must reject");
+        }
+    }
+
+    fn key_order(map: &Map<String, serde_json::Value>) -> Vec<&str> {
+        map.keys().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn build_orders_keys_per_family_and_errors_with_flag_name() {
+        let timestamped = OutcomeEntry {
+            timestamped:   true,
+            status:        "success",
+            now:           "2026-10-06T19:00:00.000Z",
+            duration:      Some("7.25"),
+            duration_flag: "--duration",
+            agent:         Some("oa"),
+            notes:         Some("on"),
+            test_results:  Some("ot"),
+        }
+        .build()
+        .expect("valid flags build");
+        assert_eq!(key_order(&timestamped), [
+            "status",
+            "recorded_at",
+            "duration",
+            "agent",
+            "notes",
+            "test_results"
+        ]);
+        assert_eq!(timestamped["duration"], json!(7.25));
+
+        let plain = OutcomeEntry {
+            timestamped:   false,
+            status:        "success",
+            now:           "",
+            duration:      Some("42.0"),
+            duration_flag: "--outcome-duration",
+            agent:         Some("ra"),
+            notes:         Some("ignored on this family"),
+            test_results:  Some("rt"),
+        }
+        .build()
+        .expect("valid flags build");
+        assert_eq!(key_order(&plain), [
+            "status",
+            "duration",
+            "test_results",
+            "agent"
+        ]);
+        // "42.0" canonicalizes to the integer 42
+        assert_eq!(plain["duration"], json!(42));
+
+        let error = OutcomeEntry {
+            timestamped:   false,
+            status:        "success",
+            now:           "",
+            duration:      Some("abc"),
+            duration_flag: "--outcome-duration",
+            agent:         None,
+            notes:         None,
+            test_results:  None,
+        }
+        .build()
+        .expect_err("invalid duration errors");
+        assert_eq!(
+            error,
+            "--outcome-duration must be a non-negative number (got \"abc\")."
         );
     }
 }
