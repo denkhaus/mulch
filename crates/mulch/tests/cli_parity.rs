@@ -1032,27 +1032,41 @@ fn doctor_stale_policy_matches_reference() {
     };
     let ours = TempDir::new("stale-ours");
     let theirs = TempDir::new("stale-theirs");
-    // Fixed timestamps against a moving now: the 15th-day record may
-    // age past 15.0 days during the run; keep the windows wide (the
-    // boundary itself is unit-pinned in stale.rs).
+    // Timestamps derive from the runtime clock (a fixed calendar date
+    // turns the fresh-side fixtures stale as the wall clock moves past
+    // their (shelf+1)-day boundary — the boundary itself is unit-pinned
+    // in stale.rs). The fresh cases sit a full day inside their shelf,
+    // the stale cases a full day past it.
+    let now = jiff::Timestamp::now();
+    let days_ago = |days: i64| {
+        let recorded = now - jiff::Span::new().hours(days * 24);
+        recorded.to_string()
+    };
+    let record = |name: &str, classification: Option<&str>, days: i64| {
+        let class =
+            classification.map_or(String::new(), |c| format!(",\"classification\":\"{c}\""));
+        format!(
+            r#"{{"type":"pattern","name":"{name}","description":"d"{class},"recorded_at":"{}"}}"#,
+            days_ago(days)
+        )
+    };
     let store = [
-        r#"{"type":"pattern","name":"missing-class","description":"d","recorded_at":"2026-08-20T12:00:00.000Z"}"#,
-        r#"{"type":"pattern","name":"tactical-14d","description":"d","classification":"tactical","recorded_at":"2026-09-22T12:00:00.000Z"}"#,
-        r#"{"type":"pattern","name":"tactical-15d","description":"d","classification":"tactical","recorded_at":"2026-09-21T12:00:00.000Z"}"#,
-        r#"{"type":"pattern","name":"observ-30d","description":"d","classification":"observational","recorded_at":"2026-09-06T12:00:00.000Z"}"#,
-        r#"{"type":"pattern","name":"foundational","description":"d","classification":"foundational","recorded_at":"2026-08-20T12:00:00.000Z"}"#,
+        record("missing-class", None, 40),
+        record("tactical-14d", Some("tactical"), 14),
+        record("tactical-15d", Some("tactical"), 15),
+        record("observ-30d", Some("observational"), 30),
+        record("foundational", Some("foundational"), 40),
     ]
     .join("\n")
         + "\n";
-    let rust_store = r#"{"type":"pattern","name":"rust-stale","description":"d","classification":"tactical","recorded_at":"2026-09-01T12:00:00.000Z"}
-"#;
+    let rust_store = record("rust-stale", Some("tactical"), 35) + "\n";
     for dir in [&ours.0, &theirs.0] {
         let _ = run_in(dir, &ml, &["init"]);
         let _ = run_in(dir, &ml, &["add", "dev"]);
         let _ = run_in(dir, &ml, &["add", "rust"]);
         std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
         std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), &store).expect("dev store");
-        std::fs::write(dir.join(".mulch/expertise/rust.jsonl"), rust_store).expect("rust store");
+        std::fs::write(dir.join(".mulch/expertise/rust.jsonl"), &rust_store).expect("rust store");
     }
 
     let strip = |text: &str| -> String {

@@ -31,7 +31,7 @@ impl StaleRule {
     /// recorded_at extraction (status, doctor's check and doctor --fix
     /// all render from this; reference `isStale`/`isRecordStale` are
     /// identical twins over prune.ts and utils/expertise.ts).
-    pub(crate) fn verdict(&self, record: &serde_json::Value, now: Timestamp) -> StaleVerdict {
+    pub(crate) fn verdict(&self, record: &Value, now: Timestamp) -> StaleVerdict {
         let Some(classification) = record.get("classification").and_then(Value::as_str) else {
             return StaleVerdict::Fresh;
         };
@@ -60,7 +60,7 @@ impl StaleRule {
 }
 
 /// One record's staleness verdict.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StaleVerdict {
     /// Never decays: foundational, unknown/missing/non-string
     /// classification, or within shelf life.
@@ -149,5 +149,19 @@ mod tests {
         assert_eq!(rule.verdict(&garbage, now), StaleVerdict::Unparsable);
         let absent = json!({"type": "pattern", "classification": "tactical"});
         assert_eq!(rule.verdict(&absent, now), StaleVerdict::Unparsable);
+    }
+
+    #[test]
+    fn non_string_classification_and_future_records_stay_fresh() {
+        let rule = rule();
+        let now = now();
+        // a non-string classification never decays
+        let numeric = json!({"type": "pattern", "classification": 42, "recorded_at": ago(100)});
+        assert_eq!(rule.verdict(&numeric, now), StaleVerdict::Fresh);
+        // a future recorded_at has a negative age — floor() makes it
+        // never greater than the shelf
+        let future =
+            json!({"type": "pattern", "classification": "tactical", "recorded_at": ago(-5)});
+        assert_eq!(rule.verdict(&future, now), StaleVerdict::Fresh);
     }
 }

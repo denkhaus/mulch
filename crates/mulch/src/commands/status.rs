@@ -6,7 +6,7 @@ use jiff::Timestamp;
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::stale::StaleRule;
+use crate::commands::stale::{StaleRule, StaleVerdict};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Record types in the reference's fixed distribution order (the
@@ -122,12 +122,12 @@ impl DomainStatus {
                 if newest_recorded.is_none_or(|n| recorded > n) {
                     newest_recorded = Some(recorded);
                 }
-                // The verdict owns the decay rule (reference
-                // isRecordStale: unknown/missing -> never stale, and
-                // the (shelf+1)-day boundary).
-                if rule.verdict(record, now) == crate::commands::stale::StaleVerdict::Stale {
-                    stale_count += 1;
-                }
+            }
+            // The verdict owns the decay rule (reference isRecordStale:
+            // unknown/missing -> never stale, and the (shelf+1)-day
+            // boundary); it parses recorded_at itself.
+            if rule.verdict(record, now) == StaleVerdict::Stale {
+                stale_count += 1;
             }
         }
 

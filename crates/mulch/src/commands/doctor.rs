@@ -445,10 +445,12 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
             // `isStale` falls through to `false`, it does NOT default
             // to tactical).
             if rule.verdict(record, now) == StaleVerdict::Stale {
+                // Stale implies a known string classification (the
+                // verdict never flags anything else).
                 let classification = record
                     .get("classification")
                     .and_then(Value::as_str)
-                    .unwrap_or("undefined");
+                    .expect("verdict Stale implies a string classification");
                 let kind = record
                     .get("type")
                     .and_then(Value::as_str)
