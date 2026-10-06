@@ -9,10 +9,13 @@ One iteration = one **sprint**: a coherent unit of work (milestone step, ticket,
 review-fix round). Sprints are counted per project (state file below).
 
 **LOCAL ONLY, and strictly separate from the fabro develop line** (user
-directive 2026-10-03): this loop works in this checkout on the `iterate`
-virtual branch, commits via `but`, and never pushes, never opens PRs, never
-assigns seeds to `fabro`, and never touches `.fabro/workflows`. Landing local
-work to `main` happens only through the engine flow on an explicit user order.
+directive 2026-10-03, amended 2026-10-06): this loop works in this checkout
+on the `iterate` virtual branch, commits via `but`, never opens PRs, never
+assigns seeds to `fabro`, and never touches `.fabro/workflows`. After every
+sprint closeout the LANE IS PUSHED to `origin/iterate` (through the push
+gate) so the work is available on other machines — pushing the branch is
+not landing. Landing local work to `main` happens only through the engine
+flow on an explicit user order.
 
 This skill is deliberately THIN. All process knowledge lives cross-referenced
 in **Seeds** (issues, decisions, milestones) and **Mulch** (domain expertise,
@@ -227,6 +230,10 @@ Procedure (driven by Mulch; do not bloat the skill):
    decision`, evidence = the commit touching this skill) so future sessions
    see WHY the loop looks like this.
 5. Update the sprint counter and last-reflection pointer in the state file.
+6. Push the lane: `nu .fabro/scripts/push-gate.nu` (exit 0 = open), then
+   `but push iterate` — the sprint's closeout commit must reach
+   `origin/iterate` so the work is available on other machines. PRs and
+   landing to `main` stay out of scope (explicit user order only).
 
 This skill is a LOCAL loop asset owned by this loop (user directive
 2026-10-03): it evolves through its own reflection procedure. The
