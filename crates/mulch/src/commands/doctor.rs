@@ -1,6 +1,8 @@
 //! `mulch doctor` — the 17-check health report, plain and `--json`,
 //! with `--fix` for stale and schema-invalid records.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry as HashMapEntry;
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
@@ -217,13 +219,7 @@ fn run_checks(opts: &GlobalOpts, rule: &StaleRule, domains: &[DomainLines]) -> V
             fixable: true,
             details: Vec::new(),
         },
-        Check {
-            name:    "duplicates",
-            status:  Status::Pass,
-            message: "No duplicates".into(),
-            fixable: false,
-            details: Vec::new(),
-        },
+        duplicates(domains),
         Check {
             name:    "file-anchors",
             status:  Status::Pass,
@@ -487,6 +483,104 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
             details,
         }
     }
+}
+
+/// Duplicates: the reference's `checkDuplicates` (doctor.ts) — per
+/// domain, in parsed-record order, every record whose registry dedup
+/// field matches a same-type earlier record counts once (redundant
+/// records, not ids); warn, never fixable, `--fix` keeps them.
+///
+/// EXTENSION (README DEVIATIONS): a repeated id with DIVERGENT content
+/// — a content-hash id whose record was edited in place — is invisible
+/// to the reference's dedup-field match. We report it as our own
+/// fail-class finding after the reference details, never auto-fixed.
+fn duplicates(domains: &[DomainLines]) -> Check {
+    let mut reference_details = Vec::new();
+    let mut divergent_details = Vec::new();
+    for domain in domains {
+        let records: Vec<&Value> = records_of(domain).map(|(_, record)| record).collect();
+        for (index, record) in records.iter().enumerate().skip(1) {
+            let Some(matched) = mulch::find_duplicate(records[..index].iter().copied(), record)
+            else {
+                continue;
+            };
+            reference_details.push(format!(
+                "{}: duplicate {} at index {} (matches #{})",
+                domain.domain,
+                record
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                index + 1,
+                matched + 1
+            ));
+        }
+        divergent_details.extend(divergent_ids(&domain.domain, &records));
+    }
+
+    let duplicates = reference_details.len();
+    let divergent = divergent_details.len();
+    let mut details = reference_details;
+    details.append(&mut divergent_details);
+    let (status, message) = if divergent > 0 {
+        // Deviation: the reference passes this store; we fail it.
+        let base = if duplicates > 0 {
+            format!("{duplicates} duplicate record(s) found; ")
+        } else {
+            String::new()
+        };
+        (
+            Status::Fail,
+            format!("{base}{divergent} divergent id(s) found"),
+        )
+    } else if duplicates > 0 {
+        (
+            Status::Warn,
+            format!("{duplicates} duplicate record(s) found"),
+        )
+    } else {
+        (Status::Pass, "No duplicates".into())
+    };
+    Check {
+        name: "duplicates",
+        status,
+        message,
+        fixable: false,
+        details,
+    }
+}
+
+/// The divergent-id extension: the first record per non-empty id is
+/// the anchor; every later record with the SAME id but structurally
+/// DIFFERENT content is one finding (identical repeats stay the
+/// reference's duplicate class).
+fn divergent_ids(domain: &str, records: &[&Value]) -> Vec<String> {
+    let mut first_by_id: HashMap<&str, (usize, &Value)> = HashMap::new();
+    let mut details = Vec::new();
+    for (index, record) in records.iter().enumerate() {
+        let Some(id) = record.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if id.is_empty() {
+            continue;
+        }
+        match first_by_id.entry(id) {
+            HashMapEntry::Vacant(anchor) => {
+                anchor.insert((index, record));
+            }
+            HashMapEntry::Occupied(anchor) => {
+                let (anchor_index, anchor_record) = anchor.get();
+                if anchor_record != record {
+                    details.push(format!(
+                        "{domain}: divergent id {id} at index {} (matches #{}, different content)",
+                        index + 1,
+                        anchor_index + 1
+                    ));
+                }
+            }
+        }
+    }
+    details
 }
 
 /// Applies the probed `--fix` semantics: stale records are pruned and

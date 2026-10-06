@@ -85,12 +85,23 @@ expectation (the parity rule: never silently):
   also differs (clap renderer; the reference reuses its root template
   with the command name swapped in) — help text lists only
   implemented commands either way.
-- **Seven doctor checks evaluate as unconditional pass** on clean
-  stores only: `duplicates`, `orphaned-domains`, `file-anchors`,
-  `governance`, `domain-violations`, `domain-rules-compatibility`,
-  `decay-config`. Their warn/fail semantics (real duplicates, orphaned
-  files, governance overruns) land with the later CLI-parity slices;
-  until then they hold the reference's clean-store output shape.
+- **Six doctor checks evaluate as unconditional pass** on clean
+  stores only: `orphaned-domains`, `file-anchors`, `governance`,
+  `domain-violations`, `domain-rules-compatibility`, `decay-config`.
+  Their warn/fail semantics (orphaned files, governance overruns) land
+  with the later CLI-parity slices; until then they hold the
+  reference's clean-store output shape. The `duplicates` check left
+  this list (mulch-7ac9): it now computes the reference's per-record
+  duplicate report.
+- **`doctor` duplicates reports a class the reference misses.** The
+  check matches the reference on duplicate records — registry dedup
+  field per type, warn with per-record details
+  (`domain: duplicate <type> at index N (matches #M)` over parsed
+  records), `--fix` never touches them. Additionally a repeated record
+  id with divergent content (a content-hash id whose record was edited
+  in place) fails our report with `divergent id` details where the
+  reference still reports `No duplicates` and exits 0; ours exits 1.
+  Never auto-fixed.
 - **`doctor` upgrade check is inert.** The reference warns when the npm
   registry offers a newer version. The native binary has no npm
   registry; the `upgrade` check reports pass with a cargo hint.

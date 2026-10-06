@@ -442,6 +442,206 @@ fn recent_timestamp(file: &Path) -> String {
     rest[..24].to_string()
 }
 
+#[test]
+fn doctor_duplicates_warn_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("dup-ours");
+    let theirs = TempDir::new("dup-theirs");
+    let fixture = |dir: &Path| {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p1",
+            "--description",
+            "dp1",
+        ]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "rust",
+            "--type",
+            "guide",
+            "--name",
+            "g",
+            "--description",
+            "dg",
+        ]);
+        // byte-identical repeat (dev: once, rust: twice) plus a distinct
+        // record per domain — indexes count PARSED records per domain
+        for (domain, kind, repeat) in [("dev", "pattern", 1), ("rust", "guide", 2)] {
+            let name = if kind == "pattern" { "p1" } else { "g" };
+            let file = dir.join(format!(".mulch/expertise/{domain}.jsonl"));
+            let first = std::fs::read_to_string(&file).expect("domain file");
+            let base = first.trim_end().to_string();
+            let distinct = format!(
+                "{{\"type\":\"{kind}\",\"name\":\"{name}-other\",\"description\":\"other\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-05T10:00:00.000Z\"}}"
+            );
+            let mut lines = vec![base.clone()];
+            for _ in 0..repeat {
+                lines.push(base.clone());
+            }
+            lines.push(distinct);
+            std::fs::write(&file, lines.join("\n") + "\n").expect("duplicate fixture");
+        }
+    };
+    fixture(&ours.0);
+    fixture(&theirs.0);
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["doctor"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    let strip = |text: &str| -> String {
+        text.lines()
+            .filter(|line| {
+                !line.contains("Update available")
+                    && !line.contains("Run `mulch upgrade`")
+                    && !line.contains("Native binary")
+                    && !line.contains("passed,")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(strip(&ours_run.stdout), strip(&theirs_run.stdout));
+    // the reference contract itself: redundant records counted per record,
+    // 1-based parsed indexes, first prior occurrence as the match
+    assert!(ours_run.stdout.contains("! 3 duplicate record(s) found"));
+    assert!(
+        ours_run
+            .stdout
+            .contains("dev: duplicate pattern at index 2 (matches #1)")
+    );
+    assert!(
+        ours_run
+            .stdout
+            .contains("rust: duplicate guide at index 2 (matches #1)")
+    );
+    assert!(
+        ours_run
+            .stdout
+            .contains("rust: duplicate guide at index 3 (matches #1)")
+    );
+
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--json"]);
+    let theirs_json = run_in(&theirs.0, &ml, &["doctor", "--json"]);
+    assert_eq!(ours_json.code, theirs_json.code);
+    assert_eq!(
+        normalize_doctor_json(&ours_json.stdout),
+        normalize_doctor_json(&theirs_json.stdout)
+    );
+}
+
+#[test]
+fn doctor_fix_keeps_duplicates_like_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("dupfix-ours");
+    let theirs = TempDir::new("dupfix-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p1",
+            "--description",
+            "dp1",
+        ]);
+        let file = dir.join(".mulch/expertise/dev.jsonl");
+        let base = std::fs::read_to_string(&file).expect("domain file");
+        let repeated = format!("{base}{base}");
+        std::fs::write(&file, repeated).expect("byte-identical repeat");
+    }
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["doctor", "--fix"]);
+    // duplicates warn (never fail) and --fix never touches them
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.code, 0);
+    assert!(!ours_run.stdout.contains("Fixed:"));
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/dev.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/dev.jsonl"))
+    );
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/dev.jsonl")
+            .lines()
+            .count(),
+        2
+    );
+}
+
+/// Our documented extension beyond the reference (README DEVIATIONS):
+/// a repeated id with divergent content fails OUR report while the
+/// reference stays on its own output ("No duplicates", exit 0).
+#[test]
+fn doctor_flags_divergent_ids_beyond_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("div-ours");
+    let theirs = TempDir::new("div-theirs");
+    let fixture = |dir: &Path| {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p1",
+            "--description",
+            "dp1",
+        ]);
+        // same id, different content — no dedup-field match between them
+        let a = "{\"type\":\"failure\",\"description\":\"d1\",\"resolution\":\"r1\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-05T10:00:00.000Z\",\"id\":\"mx-ae4f85\"}";
+        let b = "{\"type\":\"failure\",\"description\":\"d2\",\"resolution\":\"r2\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-05T11:00:00.000Z\",\"id\":\"mx-ae4f85\"}";
+        std::fs::write(
+            dir.join(".mulch/expertise/dev.jsonl"),
+            format!("{a}\n{b}\n"),
+        )
+        .expect("divergent fixture");
+    };
+    fixture(&ours.0);
+    fixture(&theirs.0);
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["doctor"]);
+    // the reference's output stays unchanged: pass, exit 0
+    assert_eq!(theirs_run.code, 0);
+    assert!(theirs_run.stdout.contains("✓ No duplicates"));
+    // ours additionally reports the divergence as a fail
+    assert_eq!(ours_run.code, 1);
+    assert!(ours_run.stdout.contains("✗ 1 divergent id(s) found"));
+    assert!(
+        ours_run
+            .stdout
+            .contains("dev: divergent id mx-ae4f85 at index 2 (matches #1, different content)")
+    );
+
+    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--json"]);
+    let report: serde_json::Value =
+        serde_json::from_str(&ours_json.stdout).expect("doctor json parses");
+    let duplicates = report["checks"]
+        .as_array()
+        .expect("checks array")
+        .iter()
+        .find(|check| check["name"] == "duplicates")
+        .expect("duplicates check");
+    assert_eq!(duplicates["status"], "fail");
+    assert_eq!(duplicates["fixable"], false);
+}
+
 // ---- spec-review round 2: parse layer, schema-invalid strings, no-store
 // doctor, --fix --json, quiet matrix, blank-line numbering ----
 
