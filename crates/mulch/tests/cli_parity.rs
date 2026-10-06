@@ -860,6 +860,16 @@ fn outcome_duration_decimals_canonicalize_like_reference() {
             "--test-results",
             "ot",
         ],
+        // above 2^53: JS Number rounds the literal before storing
+        &[
+            "outcome",
+            "dev",
+            "mx-31be4b",
+            "--status",
+            "partial",
+            "--duration",
+            "9007199254740993",
+        ],
     ];
     for args in cases {
         let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);

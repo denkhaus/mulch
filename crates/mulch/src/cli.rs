@@ -241,8 +241,9 @@ pub(crate) struct RecordArgs {
     #[arg(long = "outcome-status", value_parser = ["success", "failure", "partial"])]
     pub(crate) outcome_status: Option<String>,
 
-    /// Outcome duration in milliseconds (hyphen values pass through so
-    /// the strict parse rejects them with the reference error, not clap).
+    /// Outcome duration in milliseconds.
+    // allow_hyphen_values: hyphen values reach the strict parse (the
+    // reference error), not a clap usage error.
     #[arg(long = "outcome-duration", allow_hyphen_values = true)]
     pub(crate) outcome_duration: Option<String>,
 
@@ -329,8 +330,9 @@ pub(crate) struct EditOutcomeFlags {
     )]
     pub(crate) status: Option<String>,
 
-    /// Duration in milliseconds (hyphen values pass through so the
-    /// strict parse rejects them with the reference error, not clap).
+    /// Duration in milliseconds.
+    // allow_hyphen_values: hyphen values reach the strict parse (the
+    // reference error), not a clap usage error.
     #[arg(long = "outcome-duration", allow_hyphen_values = true)]
     pub(crate) duration: Option<String>,
 
@@ -350,8 +352,9 @@ pub(crate) struct OutcomeFlags {
     #[arg(long = "status", value_parser = ["success", "failure", "partial"])]
     pub(crate) status: Option<String>,
 
-    /// Duration in milliseconds (hyphen values pass through so the
-    /// strict parse rejects them with the reference error, not clap).
+    /// Duration in milliseconds.
+    // allow_hyphen_values: hyphen values reach the strict parse (the
+    // reference error), not a clap usage error.
     #[arg(long, allow_hyphen_values = true)]
     pub(crate) duration: Option<String>,
 

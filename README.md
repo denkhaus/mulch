@@ -109,6 +109,12 @@ expectation (the parity rule: never silently):
   registry; the `upgrade` check reports pass with a cargo hint.
   Expectation: check name and order stay, status does not.
 - **`--version` reports this binary's version**, not the reference's.
+- **Absurd numeric durations above the i64 range** (≈ 9.2×10^18 ms
+  ≈ 292 million years) store in serde's f64 byte form where
+  `JSON.stringify` expands full digits below 10^21 — the same NUMBER,
+  different bytes. Values through i64::MAX (including JS's rounding
+  above 2^53, e.g. `9007199254740993` → `9007199254740992`) stay
+  byte-identical; the battery pins that range.
 - **`doctor --fix` removes malformed JSONL lines** instead of crashing
   (the reference crashes on them before fixing anything); stale records
   are pruned, schema-invalid and malformed records removed — all

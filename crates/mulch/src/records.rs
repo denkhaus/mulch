@@ -205,7 +205,10 @@ fn js_dedup_eq(a: Option<&Value>, b: Option<&Value>) -> bool {
 }
 
 /// The reference's strict numeric-flag parse (`parseStrictNonNegativeNumber`,
-/// utils/numeric-flags.ts): `/^\d+(\.\d+)?$/` — digits with an optional
+/// utils/numeric-flags.ts). A deliberate public seam of its own: the
+/// reference feeds `rank --min-score` from the same util (mulch-16da
+/// consumes it when that surface lands). Accepts `/^\d+(\.\d+)?$/` —
+/// digits with an optional
 /// fractional part, nothing else (`-5`, `1e3`, `.5`, `5.`, `1.2.3`, spaces
 /// all reject). Values canonicalize like JS `Number()` + `JSON.stringify`:
 /// `"42.0"` stores as the integer `42`, `"42.5"` as the float `42.5`.
@@ -219,37 +222,32 @@ pub fn parse_non_negative_number(raw: &str) -> Option<Value> {
     {
         return None;
     }
-    let fractional = match fractional {
-        Some(frac) => {
-            if frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            Some(frac)
-        }
-        None => None,
-    };
+    if let Some(frac) = fractional
+        && (frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()))
+    {
+        return None;
+    }
     let number: f64 = raw.parse().ok()?;
     if !number.is_finite() {
         return None;
     }
-    match fractional {
-        // Integer literal: exact u64; beyond u64::MAX the finite f64
-        // (absurd territory — JS keeps it finite too).
-        None => match raw.parse::<u64>() {
-            Ok(int) => Some(Value::from(int)),
-            Err(_) => Some(Value::from(number)),
-        },
-        // "42.0" is JS Number 42 — store the canonical integer form
-        // while the value stays inside the exact-integer range.
-        Some(_) if number.fract() == 0.0 && number <= 9_007_199_254_740_992.0 => Some(
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "guarded by the <= 2^53 exact-integer bound"
-            )]
-            Value::from(number as i64),
-        ),
-        Some(_) => Some(Value::from(number)),
+    // Everything routes through f64 — JS Number rounds literals above
+    // 2^53 to the nearest f64 BEFORE any canonicalization, so the
+    // rounded value is what both sides store ("9007199254740993" is
+    // 9007199254740992 on both). Integral values keep the full-digit
+    // integer FORM while exactly castable (through i64::MAX ≈ 9.2e18 —
+    // JS stringify expands digits to 1e21, and serde's f64 form
+    // diverges from that above the i64 range: absurd territory for a
+    // millisecond duration, documented in README DEVIATIONS).
+    if number.fract() == 0.0 && number <= i64::MAX as f64 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "guarded by the fract()==0 and <= i64::MAX bounds"
+        )]
+        let exact = number as i64;
+        return Some(Value::from(exact));
     }
+    Some(Value::from(number))
 }
 
 /// One outcome entry's raw flag strings — the shared owner of the
@@ -661,6 +659,22 @@ mod outcome_entry_tests {
         assert_eq!(number("0.500"), Some(json!(0.5)));
         // decimals stay floats
         assert_eq!(number("42.5"), Some(json!(42.5)));
+    }
+
+    #[test]
+    fn parse_rounds_above_js_safe_integers_like_number() {
+        // JS Number rounds literals above 2^53 BEFORE storing — the
+        // rounded value is what both sides keep (sprint-16 spec review).
+        assert_eq!(
+            number("9007199254740993"),
+            Some(json!(9_007_199_254_740_992i64))
+        );
+        // Beyond the i64 range the f64 holds the same NUMBER as JS,
+        // with serde's float byte form (README DEVIATIONS).
+        assert_eq!(
+            number("18446744073709551615").and_then(|value| value.as_f64()),
+            Some(1.844_674_407_370_955_2e19)
+        );
     }
 
     #[test]
