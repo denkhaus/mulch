@@ -353,6 +353,10 @@ const OUTCOME_FIELDS: [&str; 6] = [
 /// The outcome status enum (`definitions.outcome.properties.status`).
 const OUTCOME_STATUSES: [&str; 3] = ["success", "failure", "partial"];
 
+/// The outcome item's plain-string fields, in declaration order
+/// (after `status` and `duration`).
+const OUTCOME_STRING_FIELDS: [&str; 4] = ["test_results", "agent", "notes", "recorded_at"];
+
 /// The evidence subschema (`definitions.evidence`): an object of the
 /// eight declared string fields with `additionalProperties: false` and
 /// no required keys — first failure only (additional, then fields in
@@ -420,7 +424,6 @@ fn outcomes_errors(value: &serde_json::Value) -> Vec<SubError> {
                 path: format!("outcomes/{index}"),
             }];
         }
-        let mut errors = Vec::new();
         match object.get("status") {
             Some(serde_json::Value::String(text)) if OUTCOME_STATUSES.contains(&text.as_str()) => {}
             Some(serde_json::Value::String(_)) => {
@@ -429,38 +432,34 @@ fn outcomes_errors(value: &serde_json::Value) -> Vec<SubError> {
                 }];
             }
             _ => {
-                errors.push(SubError::Type {
-                    path:     format!("outcomes/{index}/status"),
-                    expected: "string",
-                });
-                errors.push(SubError::EnumAt {
-                    path: format!("outcomes/{index}/status"),
-                });
-                return errors;
+                return vec![
+                    SubError::Type {
+                        path:     format!("outcomes/{index}/status"),
+                        expected: "string",
+                    },
+                    SubError::EnumAt {
+                        path: format!("outcomes/{index}/status"),
+                    },
+                ];
             }
         }
         if let Some(duration) = object.get("duration")
             && !duration.is_number()
         {
-            errors.push(SubError::Type {
+            return vec![SubError::Type {
                 path:     format!("outcomes/{index}/duration"),
                 expected: "number",
-            });
-            return errors;
+            }];
         }
-        for field in ["test_results", "agent", "notes", "recorded_at"] {
+        for field in OUTCOME_STRING_FIELDS {
             if let Some(field_value) = object.get(field)
                 && !field_value.is_string()
             {
-                errors.push(SubError::Type {
+                return vec![SubError::Type {
                     path:     format!("outcomes/{index}/{field}"),
                     expected: "string",
-                });
-                return errors;
+                }];
             }
-        }
-        if !errors.is_empty() {
-            return errors;
         }
     }
     Vec::new()

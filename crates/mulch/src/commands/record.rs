@@ -650,39 +650,34 @@ fn stdin_batch(
         "batch"
     };
 
-    // The caller prints the error block BEFORE the surfaces (stderr:
-    // console.error per entry plain, outputJsonError joined in json).
-    // The exit-1 plain case carries the block as its failure message
-    // instead of printing it here.
-    if failed {
-        let summary = errors
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-            .join("; ");
-        if opts.json {
-            let mut body = serde_json::Map::new();
-            body.insert("success".into(), Value::Bool(false));
-            body.insert("command".into(), Value::String("record".into()));
-            body.insert(
-                "error".into(),
-                Value::String(format!("Validation errors: {summary}")),
-            );
-            print_json(&Value::Object(body), true);
-        } else if wrote {
-            #[allow(
-                clippy::print_stderr,
-                reason = "batch error rendering is the CLI boundary"
-            )]
-            {
-                eprintln!("Validation errors:");
-                for error in &errors {
-                    if let Some(text) = error.as_str() {
-                        eprintln!("  {text}");
-                    }
-                }
-            }
+    // Reference: the caller prints the error block BEFORE the surfaces
+    // (stderr: console.error per entry plain, outputJsonError joined
+    // in json); here that printing lives in this function, ahead of
+    // the surface rendering below. The exit-1 tail then carries an
+    // already-rendered, empty-message failure.
+    let summary = errors
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+        .join("; ");
+    if failed && opts.json {
+        let mut body = serde_json::Map::new();
+        body.insert("success".into(), Value::Bool(false));
+        body.insert("command".into(), Value::String("record".into()));
+        body.insert(
+            "error".into(),
+            Value::String(format!("Validation errors: {summary}")),
+        );
+        print_json(&Value::Object(body), true);
+    }
+    if failed && !opts.json {
+        #[allow(
+            clippy::print_stderr,
+            reason = "batch error rendering is the CLI boundary"
+        )]
+        for line in validation_errors_block(&errors) {
+            eprintln!("{line}");
         }
     }
 
@@ -752,30 +747,27 @@ fn stdin_batch(
     if failed && !wrote {
         // Exit 1 only when nothing was written (reference:
         // `errors.length > 0 && created + updated === 0`). Plain: the
-        // block renders as the failure message; json: both envelopes
-        // already printed above.
-        let summary = errors
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-            .join("; ");
-        let mut plain = String::from("Validation errors:");
-        for error in &errors {
-            if let Some(text) = error.as_str() {
-                plain.push_str("\n  ");
-                plain.push_str(text);
-            }
-        }
-        let mut failure = Failure::handled("record", plain);
+        // block already printed above (both modes); only the exit
+        // code remains.
+        let mut failure = Failure::handled("record", "");
         failure.envelope["error"] = Value::String(format!("Validation errors: {summary}"));
         failure.envelope_to_stderr = true;
-        if opts.json {
-            failure.rendered = true;
-        }
+        failure.rendered = true;
         return Err(failure);
     }
     Ok(())
+}
+
+/// The plain `Validation errors:` block, one entry per line
+/// (reference console.error shape).
+fn validation_errors_block(errors: &[Value]) -> Vec<String> {
+    let mut lines = vec!["Validation errors:".to_string()];
+    for error in errors {
+        if let Some(text) = error.as_str() {
+            lines.push(format!("  {text}"));
+        }
+    }
+    lines
 }
 
 #[cfg(test)]
