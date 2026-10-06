@@ -8,7 +8,7 @@ Issues (explicitly unused, see `AGENTS.md`). Seed ids carry the prefix
 ## Conventions
 
 - **Create**: `seeds create --title "..." --type <task|bug|feature|epic> --priority <0-4> --desc "..."`. Filers file UNASSIGNED: never pass `--assignee` — new seeds land in the backlog; assignment is the operator's ownership switch.
-- **Read one**: `seeds show <id> --format json` — the supported read path; never parse `.seeds/issues.jsonl` by hand.
+- **Read one**: `seeds show <id> --format json` — the supported read path; never parse `.seeds/issues.jsonl` by hand. JSON shape: a single id returns `{"issue": …}`; several ids return `{"issues": [...]}`.
 - **List / queue**: `seeds ready --assignee fabro --limit 200` (unblocked, line-assigned); `seeds list --format json --assignee fabro --limit 200` for the full picture. Always `--limit 200` — the default 50 silently truncates.
 - **Claim**: `seeds update <id> --status in_progress --assignee fabro`.
 - **Amend body**: `seeds update <id> --description "<full corrected body>"` (replaces wholesale — re-emit the complete body).

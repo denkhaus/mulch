@@ -16,6 +16,10 @@ from the seeds pattern).
   --profile minimal --component clippy,rustfmt`)
 - `cargo +nightly-2026-09-22 clippy --workspace --all-targets -- -D warnings`
 - `just qualitygate` — the develop loop's touched-crates gate
+- Reference `ml` TS source (read before implementing any parity
+  surface): `mise where npm:@os-eco/mulch-cli` →
+  `<root>/node_modules/@os-eco/mulch-cli/src` (fallback:
+  `readlink -f $(command -v ml)`)
 - No toolchain image recipe here: runs use the SHARED
   `ghcr.io/denkhaus/seeds-toolchain` image (owned by denkhaus/seeds)
   through the server-managed `mulch-toolchain` environment. Environment-

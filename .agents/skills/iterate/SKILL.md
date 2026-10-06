@@ -140,19 +140,24 @@ architecture direction, milestone content, go/no-go):
   absorbed). Commit messages are NOT trackers: a deliberate behaviour
   deviation discovered mid-sprint gets its seed BEFORE the commit that
   contains it; the commit then links the seed id.
-- **Quality gates (mulch's, before every commit round)**:
-  `cargo nextest run --workspace`; `cargo +nightly-2026-09-22 fmt --check
-  --all`; `cargo +nightly-2026-09-22 clippy --workspace --all-targets --
-  -D warnings`; at sprint end additionally `just qualitygate`
-  (touched-crates gate). No coverage percentage gate exists yet — when one
-  lands as a seed, it joins this list (nu-agent precedent: >= 80% lines).
+- **Quality gates (before every commit round)**: `timeout 600 just
+  qualitygate` — it runs fmt --check (workspace), clippy `-D warnings`
+  and nextest (touched crates) nushell-side, where no bash pipe can mask
+  a gate result. At sprint end additionally one full-workspace battery:
+  `timeout 600 cargo nextest run --workspace`. The raw cargo commands
+  stay documented in AGENTS.md (single source of truth for them). No
+  coverage percentage gate exists yet — when one lands as a seed, it
+  joins this list (nu-agent precedent: >= 80% lines).
 - **Hang guard**: run full suites under a TIMEOUT (e.g. `timeout 420 cargo
   nextest ...`) — a hung test must fail fast, not stall the session.
 - **PIPE-TRUTH**: a gate piped through `tail`/`grep` returns the PIPE's
   exit code, not the gate's; a trailing `; echo EXIT=$?` resets even a
   pipefail'd script to exit 0. Gate shape that holds: `set -o pipefail; cmd
   2>&1 | tee <log>; rc=${PIPESTATUS[0]}; echo GATE_RC=$rc; exit $rc` —
-  never trust a piped or echo-followed gate's exit.
+  never trust a piped or echo-followed gate's exit. (Retro 2026-10-06:
+  two masked gate failures in one sprint — hence the `just qualitygate`
+  recipe above as the default; this rule binds any manually typed gate,
+  e.g. the sprint-end workspace battery.)
 
 ## 4. Review — ALWAYS after each sprint
 

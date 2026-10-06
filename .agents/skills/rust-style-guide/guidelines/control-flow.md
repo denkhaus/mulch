@@ -24,6 +24,7 @@ Control flow carries invariants, error paths, and state transitions. Explicit br
 - Validate fallible inputs before mutating long-lived state; prefer computing a new value locally and assigning it once when that avoids partial updates.
 - Use `std::mem::take` or `std::mem::replace` when moving a field out while leaving the struct valid.
 - Treat Clippy as authoritative for local control-flow idioms; refactor instead of adding local bypasses ([rustc and Clippy lints](rustc-and-clippy-lints.md)).
+- Treat match-arm ORDER as semantics when earlier arms are more specific: merging same-body arms (`clippy::match_same_arms`) keeps the original arm order — a load-bearing order (e.g. a never-match guard before a general equality arm) gets a one-line comment plus a pinning test, because the lint's suggested fix text can reorder arms silently (mulch sprint 15, 2026-10-06).
 
 ## Avoid
 
