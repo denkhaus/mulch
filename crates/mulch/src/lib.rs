@@ -31,12 +31,6 @@ pub use records::{
     find_duplicate, merge_outcomes, parse_non_negative_number, read_lenient, read_strict,
     record_summary, resolve_record_id, upsert_plan, value_text, write_records,
 };
-pub use schema::{
-    FullVerdict, ID_PATTERN, REF_PATTERN, SUB_SEP, SubError, VALIDATION_PREFIX, Verdict,
-    doctor_detail, full_verdict, plain_detail_lines, ref_matches, render_subs, validate_message,
-    verdict,
-};
-pub use stale::{StaleRule, StaleVerdict};
 pub use store_files::{StoreFiles, StoreLocation};
 
 /// The reference implementation this crate is read+write compatible with

@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use mulch::{record_summary, resolve_record_id};
+use mulch::{record_summary, resolve_record_id, schema};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -70,12 +70,12 @@ pub(super) fn run(
     }
 
     // move validates what delete does not.
-    if let mulch::schema::FullVerdict::Invalid { subs, .. } = mulch::schema::full_verdict(&record) {
+    if let schema::FullVerdict::Invalid { subs, .. } = schema::full_verdict(&record) {
         return Err(Failure::handled_on_stderr(
             "move",
             format!(
                 "Error: Record fails schema validation: {}. Edit the record before moving.",
-                mulch::schema::render_subs(&subs).join("; ")
+                schema::render_subs(&subs).join(schema::SUB_SEP)
             ),
         ));
     }

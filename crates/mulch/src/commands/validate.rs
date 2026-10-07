@@ -1,6 +1,6 @@
 //! `mulch validate` — schema validation over every live record.
 
-use mulch::schema::{plain_detail_lines, validate_message};
+use mulch::schema::{self, plain_detail_lines, validate_message};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -39,10 +39,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
                     message: "Invalid JSON: failed to parse".into(),
                 })),
                 mulch::LenientLine::Record { line, record } => {
-                    let unknown = matches!(
-                        mulch::schema::verdict(&record),
-                        mulch::schema::Verdict::Unknown(_)
-                    );
+                    let unknown = matches!(schema::verdict(&record), schema::Verdict::Unknown(_));
                     if unknown && opts.allow_unknown_types {
                         continue;
                     }

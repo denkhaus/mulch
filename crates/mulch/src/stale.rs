@@ -1,8 +1,10 @@
-//! The shelf-life staleness rule, shared by `status` and `doctor`.
+//! The staleness law of the format: the shelf-life decay rule.
 //!
 //! Tactical records expire after 14 days, observational after 30
 //! (reference defaults); foundational records do not decay. Config
-//! `classification_defaults.shelf_life` overrides the day counts.
+//! `classification_defaults.shelf_life` overrides the day counts. The
+//! CLI's `status` and `doctor` render from this rule; embedders
+//! consume it directly.
 
 use jiff::Timestamp;
 use serde_json::Value;
@@ -10,7 +12,7 @@ use serde_json::Value;
 use crate::config::ShelfLife;
 
 /// The staleness rule derived from a store's shelf-life config.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct StaleRule {
     tactical_days:      i64,
     observational_days: i64,

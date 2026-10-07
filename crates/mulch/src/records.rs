@@ -28,11 +28,7 @@ impl LineRecord {
 
     /// The record's `type`.
     pub fn record_type(&self) -> String {
-        self.record
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("convention")
-            .to_string()
+        crate::ids::effective_type(self.record.get("type").and_then(Value::as_str)).to_string()
     }
 }
 
@@ -424,11 +420,7 @@ pub fn assign_missing_id(record: &mut Value) {
     if object.get("id").and_then(Value::as_str).is_some() {
         return;
     }
-    let kind = object
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("convention")
-        .to_string();
+    let kind = crate::ids::effective_type(object.get("type").and_then(Value::as_str)).to_string();
     let key_value = object
         .get(id_key_field(&kind))
         .and_then(Value::as_str)
@@ -530,10 +522,7 @@ pub fn resolve_record_id(
 
 /// Reference per-type summary (`getRecordSummary`).
 pub fn record_summary(record: &Value) -> String {
-    let kind = record
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("convention");
+    let kind = crate::ids::effective_type(record.get("type").and_then(Value::as_str));
     let value = record
         .get(id_key_field(kind))
         .and_then(Value::as_str)

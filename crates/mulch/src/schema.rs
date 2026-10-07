@@ -552,7 +552,16 @@ pub enum FullVerdict {
 }
 
 pub fn full_verdict(record: &serde_json::Value) -> FullVerdict {
-    let object = record.as_object().expect("built records are objects");
+    let Some(object) = record.as_object() else {
+        // A non-object line is not a record; ajv's wrapper type fires
+        // (mirrors `verdict` — the CLI only ever passes built records,
+        // embedders may not).
+        let kind = effective_type(None);
+        return FullVerdict::Invalid {
+            subs: vec![SubError::MustBeObject],
+            hint: format!("Hint: {kind} records require: {}", hint_fields(kind)),
+        };
+    };
     let record_type = object.get("type").and_then(serde_json::Value::as_str);
     let Some(subs) = one_of_subs(object) else {
         return FullVerdict::Valid;
