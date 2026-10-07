@@ -46,9 +46,11 @@ expectation (the parity rule: never silently):
   (c) malformed JSONL lines in `doctor`. We render the reference's own
   message as a handled error envelope (status-channel) or report the
   bad lines as `jsonl-integrity` findings — and `doctor --fix` then
-  removes them (the reference never repairs: its checks crash on the
-  first malformed line before any report renders). Expectation: same
-  exit code 1, clean text instead of a stack trace.
+  removes them (truly malformed lines crash the reference's strict
+  checks before any report renders; comment lines it repairs
+  identically). Primitive JSON lines (e.g. a bare `5`) crash the
+  reference's checks/repairs the same way; we report and keep them.
+  Expectation: same exit code 1, clean text instead of a stack trace.
 - **`doctor --fix` repairs stores the reference crashes on.** When a
   repair rewrite (schema-validation or stale-records pass) reaches a
   kept record with an unknown or missing type and no id, the

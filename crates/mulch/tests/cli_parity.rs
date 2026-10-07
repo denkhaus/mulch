@@ -5051,3 +5051,47 @@ fn doctor_reports_and_repairs_malformed_lines_where_reference_crashes() {
         format!("{valid}\n")
     );
 }
+
+/// DEVIATION PIN (README Deviations): the reference's repair rewrite
+/// CRASHES on a kept id-less record of unregistered type
+/// (`generateRecordId` throws, no report at all) — we complete the
+/// repair and the writer assigns the deterministic id.
+#[test]
+fn doctor_fix_survives_id_less_unknown_type_records() {
+    let ours = TempDir::new("fix19i-ours");
+    let now = jiff::Timestamp::now();
+    let stale_at = (now - jiff::Span::new().hours(40 * 24)).to_string();
+    let fresh_at = (now - jiff::Span::new().hours(24)).to_string();
+    let valid = format!(
+        r#"{{"type":"pattern","name":"p1","description":"d","classification":"tactical","recorded_at":"{fresh_at}"}}"#
+    );
+    let stale = format!(
+        r#"{{"type":"pattern","name":"p2","description":"d","classification":"tactical","recorded_at":"{stale_at}"}}"#
+    );
+    let unknown_no_id = format!(
+        r#"{{"type":"wtf","name":"u1","classification":"tactical","recorded_at":"{fresh_at}"}}"#
+    );
+    std::fs::create_dir_all(ours.0.join(".mulch/expertise")).expect("expertise dir");
+    std::fs::write(
+        ours.0.join(".mulch/mulch.config.yaml"),
+        "version: '1'\ndomains:\n  dev: {}\n",
+    )
+    .expect("config");
+    std::fs::write(
+        ours.0.join(".mulch/expertise/dev.jsonl"),
+        format!("{valid}\n{stale}\n{unknown_no_id}\n"),
+    )
+    .expect("dev store");
+
+    let fixed = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+    assert!(fixed.stdout.contains("Pruned 1 stale record(s) from dev"));
+    let after = std::fs::read_to_string(ours.0.join(".mulch/expertise/dev.jsonl")).expect("file");
+    // the id-less unknown-type record survives the rewrite WITH its
+    // assigned deterministic id (same hash the known types get)
+    assert_eq!(after.lines().count(), 2);
+    let unknown_line = after
+        .lines()
+        .find(|l| l.contains("\"type\":\"wtf\""))
+        .expect("unknown record survives");
+    assert!(unknown_line.contains("\"id\":\"mx-"));
+}

@@ -174,8 +174,9 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
 /// failures are carried as `Err` (doctor reports them instead of
 /// crashing like the reference — README DEVIATIONS).
 fn read_domains(store: &mulch::StoreFiles) -> Vec<DomainLines> {
-    // The one lenient reader (lib seam) — apply_fixes works on these
-    // already-read lines, no second read+parse pass.
+    // The one lenient reader (lib seam): the checks work on these
+    // already-read lines; the repair passes re-read the current bytes
+    // per pass, like the reference's sequential fix cases.
     store
         .domains()
         .into_iter()
@@ -819,9 +820,10 @@ fn remove_invalid_records(
         if trimmed.is_empty() {
             continue;
         }
-        // Unparsable lines cannot survive an open jsonl-integrity gate;
-        // skipping them only matters in states the reference never
-        // reaches (its checks crash on malformed lines first).
+        // Unparsable lines drop uncounted (unreachable in practice: the
+        // reference's strict checks crash on truly malformed lines
+        // before any repair; comment lines were removed by the
+        // jsonl-integrity pass above).
         let Ok(record) = serde_json::from_str::<Value>(trimmed) else {
             continue;
         };
@@ -871,6 +873,10 @@ fn prune_stale_records(
         if trimmed.is_empty() {
             continue;
         }
+        // Unparsable lines drop uncounted (unreachable in practice: the
+        // reference's strict checks crash on truly malformed lines
+        // before any repair; comment lines were removed by the
+        // jsonl-integrity pass above).
         let Ok(record) = serde_json::from_str::<Value>(trimmed) else {
             continue;
         };
@@ -1050,16 +1056,19 @@ mod tests {
                 details: Vec::new(),
             }
         }
+        let mut unfixable = check("stale-records", Status::Fail);
+        unfixable.fixable = false;
         let checks = vec![
             check("jsonl-integrity", Status::Pass),
             check("legacy-outcome", Status::Warn),
             check("schema-validation", Status::Fail),
-            check("stale-records", Status::Pass),
+            unfixable,
         ];
         let gates = FixGates::from_checks(&checks);
         assert!(!gates.jsonl);
         assert!(gates.legacy);
         assert!(gates.schema);
+        // failed but not fixable: the pass stays closed
         assert!(!gates.stale);
     }
 }
