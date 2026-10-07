@@ -99,6 +99,21 @@ pub fn is_named_type(record_type: &str) -> bool {
     type_spec(record_type).is_none_or(|spec| spec.named)
 }
 
+/// The required-fields hint line content for a record type (registry
+/// knowledge: the payload fields joined like the reference hint).
+#[must_use]
+pub fn hint_fields(record_type: &str) -> String {
+    payload_fields(record_type).join(", ")
+}
+
+/// The record's effective type: a missing or non-string `type` means
+/// `convention` (the reference default — a format law, not a local
+/// choice; mulch-3f08).
+#[must_use]
+pub fn effective_type(record_type: Option<&str>) -> &str {
+    record_type.unwrap_or("convention")
+}
+
 /// Payload fields per record type, in canonical write order (registry
 /// row; convention and unknown types carry only content).
 #[must_use]

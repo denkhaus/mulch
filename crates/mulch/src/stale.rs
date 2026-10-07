@@ -5,19 +5,20 @@
 //! `classification_defaults.shelf_life` overrides the day counts.
 
 use jiff::Timestamp;
-use mulch::ShelfLife;
 use serde_json::Value;
+
+use crate::config::ShelfLife;
 
 /// The staleness rule derived from a store's shelf-life config.
 #[derive(Clone, Copy)]
-pub(crate) struct StaleRule {
+pub struct StaleRule {
     tactical_days:      i64,
     observational_days: i64,
 }
 
 impl StaleRule {
     /// From config values, falling back to the reference defaults.
-    pub(crate) fn from_config(shelf_life: Option<&ShelfLife>) -> Self {
+    pub fn from_config(shelf_life: Option<&ShelfLife>) -> Self {
         match shelf_life {
             Some(shelf) => Self {
                 tactical_days:      i64::try_from(shelf.tactical).unwrap_or(14),
@@ -31,7 +32,7 @@ impl StaleRule {
     /// recorded_at extraction (status, doctor's check and doctor --fix
     /// all render from this; reference `isStale`/`isRecordStale` are
     /// identical twins over prune.ts and utils/expertise.ts).
-    pub(crate) fn verdict(&self, record: &Value, now: Timestamp) -> StaleVerdict {
+    pub fn verdict(&self, record: &Value, now: Timestamp) -> StaleVerdict {
         let Some(classification) = record.get("classification").and_then(Value::as_str) else {
             return StaleVerdict::Fresh;
         };
@@ -61,7 +62,7 @@ impl StaleRule {
 
 /// One record's staleness verdict.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum StaleVerdict {
+pub enum StaleVerdict {
     /// Never decays: foundational, unknown/missing/non-string
     /// classification, or within shelf life.
     Fresh,

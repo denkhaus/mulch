@@ -70,14 +70,12 @@ pub(super) fn run(
     }
 
     // move validates what delete does not.
-    if let crate::commands::schema::FullVerdict::Invalid { subs, .. } =
-        crate::commands::schema::full_verdict(&record)
-    {
+    if let mulch::schema::FullVerdict::Invalid { subs, .. } = mulch::schema::full_verdict(&record) {
         return Err(Failure::handled_on_stderr(
             "move",
             format!(
                 "Error: Record fails schema validation: {}. Edit the record before moving.",
-                crate::commands::schema::render_subs(&subs).join("; ")
+                mulch::schema::render_subs(&subs).join("; ")
             ),
         ));
     }

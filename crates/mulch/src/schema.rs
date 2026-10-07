@@ -14,17 +14,19 @@
 //! with [`SUB_SEP`]. Records with a present-but-unregistered `type`
 //! fail with ``Unknown record `X` `` instead of the oneOf blob.
 
+use crate::ids::{effective_type, hint_fields};
+
 /// The separator between oneOf sub-errors (reference join).
-pub(crate) const SUB_SEP: &str = "; ";
+pub const SUB_SEP: &str = "; ";
 
 /// The validate prefix before the joined sub-errors.
-pub(crate) const VALIDATION_PREFIX: &str = "Schema validation failed: ";
+pub const VALIDATION_PREFIX: &str = "Schema validation failed: ";
 
 /// The reference id pattern (`baseSchemaProps.id`).
-pub(crate) const ID_PATTERN: &str = "^mx-[0-9a-f]{4,8}$";
+pub const ID_PATTERN: &str = "^mx-[0-9a-f]{4,8}$";
 
 /// The reference link pattern (`relates_to`/`supersedes` items).
-pub(crate) const REF_PATTERN: &str = "^([a-z0-9-]+:)?mx-[0-9a-f]{4,8}$";
+pub const REF_PATTERN: &str = "^([a-z0-9-]+:)?mx-[0-9a-f]{4,8}$";
 
 /// The base properties every branch declares, in the reference's
 /// declaration order (`baseSchemaProps` key order — the evaluation
@@ -54,7 +56,7 @@ const STATUSES: [&str; 3] = ["draft", "active", "deprecated"];
 
 /// One structured sub-error; rendering adds the ajv path.
 #[derive(Debug, PartialEq)]
-pub(crate) enum SubError {
+pub enum SubError {
     /// The instance is not an object at all.
     MustBeObject,
     /// A required key is absent (key presence — a `null` value counts
@@ -127,13 +129,13 @@ impl SubError {
 
 /// Renders the sub-error list (validate, doctor, batch and `move`
 /// share this).
-pub(crate) fn render_subs(subs: &[SubError]) -> Vec<String> {
+pub fn render_subs(subs: &[SubError]) -> Vec<String> {
     subs.iter().map(SubError::render).collect()
 }
 
 /// A record's schema verdict.
 #[derive(Debug)]
-pub(crate) enum Verdict {
+pub enum Verdict {
     /// The record matches a branch.
     Valid,
     /// Unregistered `type` value; carries the offending type.
@@ -143,14 +145,14 @@ pub(crate) enum Verdict {
 }
 
 /// The oneOf verdict for one parsed record.
-pub(crate) fn verdict(record: &serde_json::Value) -> Verdict {
+pub fn verdict(record: &serde_json::Value) -> Verdict {
     let Some(object) = record.as_object() else {
         // A non-object line is not a record; ajv's wrapper type fires.
         return Verdict::OneOf(vec![SubError::MustBeObject]);
     };
     let record_type = object.get("type").and_then(serde_json::Value::as_str);
 
-    if let Some(kind) = record_type.filter(|kind| mulch::type_spec(kind).is_none()) {
+    if let Some(kind) = record_type.filter(|kind| crate::ids::type_spec(kind).is_none()) {
         return Verdict::Unknown(kind.into());
     }
 
@@ -164,7 +166,7 @@ pub(crate) fn verdict(record: &serde_json::Value) -> Verdict {
 /// a branch matched. Every surface carries the tail.
 fn one_of_subs(object: &serde_json::Map<String, serde_json::Value>) -> Option<Vec<SubError>> {
     let mut subs = Vec::new();
-    for spec in mulch::REGISTRY {
+    for spec in crate::ids::REGISTRY {
         subs.extend(branch_error(&spec, object)?);
     }
     subs.push(SubError::OneOfTail);
@@ -172,7 +174,7 @@ fn one_of_subs(object: &serde_json::Map<String, serde_json::Value>) -> Option<Ve
 }
 
 /// The branch's required keys in reference order.
-fn required_keys(spec: &mulch::TypeSpec) -> Vec<&'static str> {
+fn required_keys(spec: &crate::ids::TypeSpec) -> Vec<&'static str> {
     std::iter::once("type")
         .chain(spec.payload.iter().copied())
         .chain(["classification", "recorded_at"])
@@ -182,7 +184,7 @@ fn required_keys(spec: &mulch::TypeSpec) -> Vec<&'static str> {
 /// The branch's declared property set (the additionalProperties
 /// guard): the base keys, `type`, the payload fields and the branch's
 /// optional fields.
-fn declared_properties(spec: &mulch::TypeSpec) -> Vec<&'static str> {
+fn declared_properties(spec: &crate::ids::TypeSpec) -> Vec<&'static str> {
     BASE_PROPERTIES
         .iter()
         .copied()
@@ -195,7 +197,7 @@ fn declared_properties(spec: &mulch::TypeSpec) -> Vec<&'static str> {
 /// One branch's failing sub-errors, `None` when the branch matches:
 /// the FIRST failing property contributes ALL its failing keywords.
 fn branch_error(
-    spec: &mulch::TypeSpec,
+    spec: &crate::ids::TypeSpec,
     object: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<Vec<SubError>> {
     // 1. required — key presence, in required-array order.
@@ -522,7 +524,7 @@ fn id_hex_ok(hex: &str) -> bool {
 }
 
 /// Lowercase-hex tail check of the link pattern.
-pub(crate) fn ref_matches(text: &str) -> bool {
+pub fn ref_matches(text: &str) -> bool {
     match text.strip_prefix("mx-") {
         Some(hex) => id_hex_ok(hex),
         None => match text.split_once(":mx-") {
@@ -541,7 +543,7 @@ pub(crate) fn ref_matches(text: &str) -> bool {
 /// A full-record verdict for BUILT/batch records (validate's verdict
 /// minus the unknown-type short-circuit — an unregistered type is one
 /// more failing branch there, matching the batch error surface).
-pub(crate) enum FullVerdict {
+pub enum FullVerdict {
     /// The record matches a branch.
     Valid,
     /// Validation failed; carries the sub-error list and the
@@ -549,25 +551,21 @@ pub(crate) enum FullVerdict {
     Invalid { subs: Vec<SubError>, hint: String },
 }
 
-pub(crate) fn full_verdict(record: &serde_json::Value) -> FullVerdict {
+pub fn full_verdict(record: &serde_json::Value) -> FullVerdict {
     let object = record.as_object().expect("built records are objects");
     let record_type = object.get("type").and_then(serde_json::Value::as_str);
     let Some(subs) = one_of_subs(object) else {
         return FullVerdict::Valid;
     };
-    let fields = crate::commands::hint_fields(record_type.unwrap_or("convention"));
+    let kind = effective_type(record_type);
     FullVerdict::Invalid {
         subs,
-        hint: format!(
-            "Hint: {} records require: {}",
-            record_type.unwrap_or("convention"),
-            fields
-        ),
+        hint: format!("Hint: {kind} records require: {}", hint_fields(kind)),
     }
 }
 
 /// The validate finding message for a non-valid record.
-pub(crate) fn validate_message(record: &serde_json::Value) -> Option<String> {
+pub fn validate_message(record: &serde_json::Value) -> Option<String> {
     match verdict(record) {
         Verdict::Valid => None,
         Verdict::Unknown(kind) => Some(format!("Unknown record `{kind}`")),
@@ -581,7 +579,7 @@ pub(crate) fn validate_message(record: &serde_json::Value) -> Option<String> {
 /// The doctor detail line for a non-valid record: no wrapper; the
 /// caller prefixes `domain:line - ` and the sub-errors' own path
 /// spaces provide the reference's extra gap.
-pub(crate) fn doctor_detail(record: &serde_json::Value) -> Option<String> {
+pub fn doctor_detail(record: &serde_json::Value) -> Option<String> {
     match verdict(record) {
         Verdict::Valid => None,
         Verdict::Unknown(kind) => Some(format!("Unknown record `{kind}`")),
@@ -590,7 +588,7 @@ pub(crate) fn doctor_detail(record: &serde_json::Value) -> Option<String> {
 }
 
 /// The plain-mode stderr rendering of a validate finding.
-pub(crate) fn plain_detail_lines(message: &str) -> Vec<String> {
+pub fn plain_detail_lines(message: &str) -> Vec<String> {
     if let Some(payload) = message.strip_prefix(VALIDATION_PREFIX) {
         let mut lines = vec!["Schema validation failed:".into()];
         // Each entry carries its own ajv path prefix: "  " + path +

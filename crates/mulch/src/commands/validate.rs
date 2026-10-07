@@ -1,9 +1,9 @@
 //! `mulch validate` — schema validation over every live record.
 
+use mulch::schema::{plain_detail_lines, validate_message};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::schema::{plain_detail_lines, validate_message};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// The legacy-outcome warning text (reference validate.ts).
@@ -40,8 +40,8 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
                 })),
                 mulch::LenientLine::Record { line, record } => {
                     let unknown = matches!(
-                        crate::commands::schema::verdict(&record),
-                        crate::commands::schema::Verdict::Unknown(_)
+                        mulch::schema::verdict(&record),
+                        mulch::schema::Verdict::Unknown(_)
                     );
                     if unknown && opts.allow_unknown_types {
                         continue;

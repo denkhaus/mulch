@@ -8,11 +8,11 @@ use std::collections::hash_map::Entry as HashMapEntry;
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
+use mulch::schema::doctor_detail;
+use mulch::stale::{StaleRule, StaleVerdict};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::schema::doctor_detail;
-use crate::commands::stale::{StaleRule, StaleVerdict};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One check result.

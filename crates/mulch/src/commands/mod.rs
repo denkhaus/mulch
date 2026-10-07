@@ -9,8 +9,6 @@ mod init;
 mod move_cmd;
 mod outcome;
 mod record;
-pub(crate) mod schema;
-pub(crate) mod stale;
 mod status;
 mod validate;
 
@@ -200,11 +198,6 @@ pub(crate) fn resolve_failure(command: &str, error: ResolveError) -> Failure {
             ),
         ),
     }
-}
-
-/// The required-fields hint line content for a record type.
-pub(crate) fn hint_fields(record_type: &str) -> String {
-    mulch::payload_fields(record_type).join(", ")
 }
 
 /// Reads a one-line answer from stdin (the delete-domain prompt).

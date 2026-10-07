@@ -49,11 +49,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
             ));
         }
     };
-    let record_type = record
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("convention")
-        .to_string();
+    let record_type = mulch::effective_type(record.get("type").and_then(Value::as_str)).to_string();
 
     // In-place scalar updates keep their key position.
     if let Some(classification) = &args.classification {

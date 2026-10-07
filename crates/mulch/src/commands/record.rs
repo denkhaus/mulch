@@ -114,8 +114,8 @@ fn build_record(
 
     // Reference-list pattern validation runs on the built record and
     // surfaces the reference's schema-validation blob (probe 3).
-    if let crate::commands::schema::FullVerdict::Invalid { subs, hint } =
-        crate::commands::schema::full_verdict(&Value::Object(record.clone()))
+    if let mulch::schema::FullVerdict::Invalid { subs, hint } =
+        mulch::schema::full_verdict(&Value::Object(record.clone()))
     {
         return Err(ref_validation_failure(&subs, &hint));
     }
@@ -129,18 +129,18 @@ fn build_record(
 /// The reference-pattern failure: plain renders as multi-line
 /// `record failed schema validation` with the Hint line; the json
 /// envelope says `Schema validation failed: <joined>. <hint>`.
-fn ref_validation_failure(subs: &[crate::commands::schema::SubError], hint: &str) -> Failure {
-    let rendered = crate::commands::schema::render_subs(subs);
+fn ref_validation_failure(subs: &[mulch::schema::SubError], hint: &str) -> Failure {
+    let rendered = mulch::schema::render_subs(subs);
     let mut message = String::from("Error: record failed schema validation:");
     for sub in &rendered {
         let _ = write!(message, "\n  {sub}");
     }
     let _ = write!(message, "\n{hint}");
     let mut failure = Failure::handled("record", message);
-    let joined = rendered.join(crate::commands::schema::SUB_SEP);
+    let joined = rendered.join(mulch::schema::SUB_SEP);
     failure.envelope["error"] = Value::String(format!(
         "{}{joined}. {hint}",
-        crate::commands::schema::VALIDATION_PREFIX
+        mulch::schema::VALIDATION_PREFIX
     ));
     failure
 }
@@ -558,8 +558,8 @@ fn stdin_batch(
             .or_insert_with(|| Value::String("tactical".into()));
 
         // Schema validation on the enriched record (reference blobs).
-        if let crate::commands::schema::FullVerdict::Invalid { subs, hint } =
-            crate::commands::schema::full_verdict(&Value::Object(line.clone()))
+        if let mulch::schema::FullVerdict::Invalid { subs, hint } =
+            mulch::schema::full_verdict(&Value::Object(line.clone()))
         {
             // Reference batch entry: `Record ${i}: ${subs}` with the
             // type hint only when the record declares a registered
@@ -575,15 +575,12 @@ fn stdin_batch(
             };
             errors.push(Value::String(format!(
                 "Record {index}: {}{hint_part}",
-                crate::commands::schema::render_subs(&subs).join(crate::commands::schema::SUB_SEP)
+                mulch::schema::render_subs(&subs).join(mulch::schema::SUB_SEP)
             )));
             continue;
         }
-        let record_type = line
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("convention")
-            .to_string();
+        let record_type =
+            mulch::effective_type(line.get("type").and_then(Value::as_str)).to_string();
         let id_key = id_key_field(&record_type);
         let id_value = line
             .get(id_key)

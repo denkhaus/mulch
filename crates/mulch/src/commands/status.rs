@@ -3,10 +3,10 @@
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
+use mulch::stale::{StaleRule, StaleVerdict};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::stale::{StaleRule, StaleVerdict};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Record types in the reference's fixed distribution order (the
