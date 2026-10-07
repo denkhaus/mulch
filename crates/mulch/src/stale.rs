@@ -22,6 +22,7 @@ impl StaleRule {
     /// From the config's effective shelf life (the config module owns
     /// the reference defaults — mulch-53cb; absurd day counts beyond
     /// i64 saturate: a gigantic shelf is never stale).
+    #[must_use]
     pub fn from_shelf_life(shelf_life: &ShelfLife) -> Self {
         Self {
             tactical_days:      i64::try_from(shelf_life.tactical).unwrap_or(i64::MAX),
@@ -52,8 +53,15 @@ impl StaleRule {
         };
         // Reference boundary: Math.floor(age_in_days) > shelf — a
         // record goes stale at the FIRST instant of the (shelf+1)-th
-        // day, not after shelf days exactly.
-        if now >= recorded + jiff::Span::new().hours((days + 1) * 24) {
+        // day, not after shelf days exactly. The comparison runs in
+        // plain i64 milliseconds: exact to the reference's
+        // millisecond semantics, and an absurd day count (an absurd
+        // config saturating the shelf) saturates the boundary out of
+        // reach instead of overflowing the verdict — a gigantic shelf
+        // is never stale.
+        let boundary_ms = days.saturating_add(1).saturating_mul(86_400_000);
+        let age_ms = now.as_millisecond() - recorded.as_millisecond();
+        if age_ms >= boundary_ms {
             StaleVerdict::Stale
         } else {
             StaleVerdict::Fresh
@@ -162,5 +170,29 @@ mod tests {
         let future =
             json!({"type": "pattern", "classification": "tactical", "recorded_at": ago(-5)});
         assert_eq!(rule.verdict(&future, now), StaleVerdict::Fresh);
+    }
+
+    #[test]
+    fn absurd_day_counts_never_overflow_the_verdict() {
+        // a config saturating the shelf past i64 never inverts the
+        // verdict (no panic in debug, no wrap in release): the record
+        // stays fresh
+        let rule = StaleRule {
+            tactical_days:      i64::MAX,
+            observational_days: i64::MAX,
+        };
+        let mut record = serde_json::json!({
+            "classification": "tactical",
+            "recorded_at": "2020-01-01T00:00:00.000Z",
+        });
+        assert_eq!(
+            rule.verdict(&record, jiff::Timestamp::now()),
+            StaleVerdict::Fresh
+        );
+        record["recorded_at"] = serde_json::json!("not a timestamp");
+        assert_eq!(
+            rule.verdict(&record, jiff::Timestamp::now()),
+            StaleVerdict::Unparsable
+        );
     }
 }

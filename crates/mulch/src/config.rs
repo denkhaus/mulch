@@ -199,7 +199,9 @@ impl Config {
 
     /// The effective governance thresholds: the user block with the
     /// reference defaults backfilled per field (partial blocks keep
-    /// their set values, like the reference's `withDefaults`).
+    /// their set values, like the reference's `applyConfigDefaults`
+    /// shallow spread; a block with a wrong-typed field falls back to
+    /// the reference defaults wholesale).
     #[must_use]
     pub fn effective_governance(&self) -> Governance {
         serde_yaml::from_value(self.governance_mapping())
@@ -207,7 +209,8 @@ impl Config {
     }
 
     /// The effective shelf life: the user block with the reference
-    /// defaults backfilled per field.
+    /// defaults backfilled per field; a wrong-typed field falls back
+    /// to the reference defaults wholesale.
     #[must_use]
     pub fn effective_shelf_life(&self) -> ShelfLife {
         self.classification_defaults_mapping()
@@ -636,6 +639,24 @@ custom_types:
         assert_eq!(
             crate::stale::StaleRule::default(),
             crate::stale::StaleRule::from_shelf_life(&ShelfLife::reference_default())
+        );
+    }
+
+    #[test]
+    fn wrong_typed_fields_fall_back_to_reference_defaults() {
+        let malformed = Config::parse(
+            "version: '1'\ndomains: {}\ngovernance:\n  max_entries: 5\n  warn_entries: lots\nclassification_defaults:\n  shelf_life:\n    tactical: nope\n",
+        )
+        .expect("config parses (yaml is valid)");
+        // a wrong-typed field drops the whole block to the reference
+        // defaults (documented caveat of the effective accessors)
+        assert_eq!(
+            malformed.effective_governance(),
+            Governance::reference_default()
+        );
+        assert_eq!(
+            malformed.effective_shelf_life(),
+            ShelfLife::reference_default()
         );
     }
 }
