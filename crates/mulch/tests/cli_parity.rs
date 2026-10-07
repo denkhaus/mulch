@@ -4816,3 +4816,238 @@ fn delete_duplicate_records_delete_once_like_reference() {
     assert_eq!(our.stdout, their.stdout);
     assert_same_file(&ours, &theirs, "expertise/alpha.jsonl");
 }
+
+// ---- sprint 19 (mulch-d45c): doctor --fix repair alignment ----
+
+/// Masks `recorded_at` values: twin fixtures record `now` microseconds
+/// apart, and the final stores otherwise match byte-for-byte.
+fn mask_timestamps(text: &str) -> String {
+    const KEY: &str = "\"recorded_at\":\"";
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find(KEY) {
+        let value_start = pos + KEY.len();
+        out.push_str(&rest[..value_start]);
+        rest = &rest[value_start..];
+        let end = rest.find('"').expect("timestamp end");
+        out.push_str("<TS>");
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The sprint-19 pathological fixture: a comment line
+/// (jsonl-integrity), a legacy singular `outcome`, a stale-valid
+/// record, a stale AND schema-invalid record, and a fresh valid one —
+/// all four repair passes fire in check order. Timestamps derive from
+/// the runtime clock (stale a full day past the 14-day tactical
+/// shelf; fresh a full day inside it).
+fn repair_fixture(dir: &Path, ml: &Path) {
+    let now = jiff::Timestamp::now();
+    let stale_at = (now - jiff::Span::new().hours(40 * 24)).to_string();
+    let fresh_at = (now - jiff::Span::new().hours(24)).to_string();
+    let _ = run_in(dir, ml, &["init"]);
+    let _ = run_in(dir, ml, &["add", "dev"]);
+    let store = [
+        "# archived banner".to_string(),
+        format!(
+            r#"{{"type":"pattern","name":"stale-valid","description":"d","classification":"tactical","recorded_at":"{stale_at}"}}"#
+        ),
+        // stale AND invalid (no payload fields): the schema pass must
+        // claim it (Removed), never the stale pass (Pruned).
+        format!(
+            r#"{{"type":"pattern","classification":"tactical","recorded_at":"{stale_at}"}}"#
+        ),
+        format!(
+            r#"{{"type":"pattern","name":"legacy","description":"d","classification":"tactical","recorded_at":"{fresh_at}","outcome":{{"status":"success","duration":5}}}}"#
+        ),
+    ]
+    .join("\n")
+        + "\n";
+    std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
+    std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), store).expect("dev store");
+}
+
+#[test]
+fn doctor_fix_repair_order_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("fix19-ours");
+    let theirs = TempDir::new("fix19-theirs");
+    repair_fixture(&ours.0, &ml);
+    repair_fixture(&theirs.0, &ml);
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["doctor", "--fix"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    let strip = |text: &str| -> String {
+        text.lines()
+            .filter(|line| {
+                !line.contains("Update available")
+                    && !line.contains("Run `mulch upgrade`")
+                    && !line.contains("Native binary")
+                    && !line.contains("passed,")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(strip(&ours_run.stdout), strip(&theirs_run.stdout));
+    assert_eq!(strip(&ours_run.stderr), strip(&theirs_run.stderr));
+    // the report carries all three repair lines in CHECK order
+    let fixed = &ours_run.stdout[ours_run.stdout.find("Fixed:").expect("fixed block")..];
+    let lines: Vec<&str> = fixed.lines().collect();
+    assert_eq!(lines[1..], [
+        "  \u{2713} Removed 1 invalid JSON line(s) from dev",
+        "  \u{2713} Migrated 1 legacy \"outcome\" field(s) to \"outcomes[]\" in dev",
+        "  \u{2713} Removed 1 invalid record(s) from dev",
+        "  \u{2713} Pruned 1 stale record(s) from dev",
+    ]);
+    // the twin fixtures record `now` microseconds apart — mask before
+    // comparing the final store bytes
+    assert_eq!(
+        mask_timestamps(&read_store_file(&ours.0, "expertise/dev.jsonl")),
+        mask_timestamps(&read_store_file(&theirs.0, "expertise/dev.jsonl"))
+    );
+}
+
+#[test]
+fn doctor_fix_keeps_unknown_type_records() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("fix19u-ours");
+    let theirs = TempDir::new("fix19u-theirs");
+    let now = jiff::Timestamp::now();
+    let fresh_at = (now - jiff::Span::new().hours(24)).to_string();
+    let unknown = format!(
+        r#"{{"type":"wtf","name":"u1","classification":"tactical","recorded_at":"{fresh_at}","id":"mx-bbbb02"}}"#
+    );
+    let valid = format!(
+        r#"{{"type":"pattern","name":"p1","description":"d","classification":"tactical","recorded_at":"{fresh_at}"}}"#
+    );
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "dev"]);
+        std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
+        std::fs::write(
+            dir.join(".mulch/expertise/dev.jsonl"),
+            format!("{valid}\n{unknown}\n"),
+        )
+        .expect("dev store");
+    }
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["doctor", "--fix"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    // nothing fixable fires: unknown-type records are flagged, never
+    // silently deleted (the reference keeps them byte-identical)
+    assert!(!ours_run.stdout.contains("Fixed:"));
+    assert!(!theirs_run.stdout.contains("Fixed:"));
+    assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
+}
+
+#[test]
+fn doctor_json_fix_envelope_carries_fixed_lines() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("fix19j-ours");
+    let theirs = TempDir::new("fix19j-theirs");
+    repair_fixture(&ours.0, &ml);
+    repair_fixture(&theirs.0, &ml);
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "doctor", "--fix", "--json",
+    ]);
+    let theirs_run = run_in(&theirs.0, &ml, &["doctor", "--fix", "--json"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    let mut our_json: serde_json::Value = serde_json::from_str(&ours_run.stdout).expect("json");
+    let mut their_json: serde_json::Value = serde_json::from_str(&theirs_run.stdout).expect("json");
+    // neutralize the upgrade check (network warn vs our native pass):
+    // drop it and recompute the summary from the remaining checks
+    for env in [&mut our_json, &mut their_json] {
+        if let Some(checks) = env.get_mut("checks").and_then(|c| c.as_array_mut()) {
+            checks.retain(|c| c.get("name").and_then(|n| n.as_str()) != Some("upgrade"));
+        }
+        let count = |status: &str| {
+            env.get("checks")
+                .and_then(|c| c.as_array())
+                .map_or(0, |checks| {
+                    checks
+                        .iter()
+                        .filter(|c| c.get("status") == Some(&serde_json::Value::from(status)))
+                        .count()
+                })
+        };
+        let (pass, warn, fail) = (count("pass"), count("warn"), count("fail"));
+        if let Some(summary) = env.get_mut("summary").and_then(|s| s.as_object_mut()) {
+            summary.insert("pass".into(), serde_json::Value::from(pass));
+            summary.insert("warn".into(), serde_json::Value::from(warn));
+            summary.insert("fail".into(), serde_json::Value::from(fail));
+        }
+    }
+    assert_eq!(our_json, their_json);
+    // the fixed field carries the four repair lines in check order
+    let fixed = our_json
+        .get("fixed")
+        .and_then(|f| f.as_array())
+        .expect("fixed field");
+    let lines: Vec<&str> = fixed.iter().map(|l| l.as_str().expect("line")).collect();
+    assert_eq!(lines, [
+        "Removed 1 invalid JSON line(s) from dev",
+        "Migrated 1 legacy \"outcome\" field(s) to \"outcomes[]\" in dev",
+        "Removed 1 invalid record(s) from dev",
+        "Pruned 1 stale record(s) from dev",
+    ]);
+    assert_eq!(
+        mask_timestamps(&read_store_file(&ours.0, "expertise/dev.jsonl")),
+        mask_timestamps(&read_store_file(&theirs.0, "expertise/dev.jsonl"))
+    );
+}
+
+/// DEVIATION PIN (README Deviations): the reference CRASHES on
+/// malformed lines — its checks abort with an unhandled error before
+/// any report renders — while we report jsonl-integrity findings and
+/// repair. Reference side: rc 1, no report; our side: full report +
+/// `--fix` removes the line.
+#[test]
+fn doctor_reports_and_repairs_malformed_lines_where_reference_crashes() {
+    let ours = TempDir::new("fix19m-ours");
+    let now = jiff::Timestamp::now();
+    let fresh_at = (now - jiff::Span::new().hours(24)).to_string();
+    let valid = format!(
+        r#"{{"type":"pattern","name":"p1","description":"d","classification":"tactical","recorded_at":"{fresh_at}"}}"#
+    );
+    std::fs::create_dir_all(ours.0.join(".mulch/expertise")).expect("expertise dir");
+    std::fs::write(
+        ours.0.join(".mulch/mulch.config.yaml"),
+        "version: '1'\ndomains:\n  dev: {}\n",
+    )
+    .expect("config");
+    std::fs::write(
+        ours.0.join(".mulch/expertise/dev.jsonl"),
+        format!("{{\"not json\",\n{valid}\n"),
+    )
+    .expect("dev store");
+
+    let report = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+    assert_eq!(report.code, 1);
+    assert!(report.stdout.contains("1 invalid JSON line(s) found"));
+    assert!(report.stdout.contains("dev:1 - Invalid JSON"));
+
+    let fixed = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+    assert!(
+        fixed
+            .stdout
+            .contains("Removed 1 invalid JSON line(s) from dev")
+    );
+    assert_eq!(
+        std::fs::read_to_string(ours.0.join(".mulch/expertise/dev.jsonl")).expect("file"),
+        format!("{valid}\n")
+    );
+}

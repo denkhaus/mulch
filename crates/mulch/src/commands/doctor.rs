@@ -1,5 +1,7 @@
 //! `mulch doctor` — the 17-check health report, plain and `--json`,
-//! with `--fix` for stale and schema-invalid records.
+//! with `--fix` as four sequential repair passes in check order
+//! (jsonl-integrity, legacy-outcome, schema-validation,
+//! stale-records).
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as HashMapEntry;
@@ -79,6 +81,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     let domains = read_domains(&store);
     let rule = StaleRule::from_config(store.config().shelf_life().ok().flatten().as_ref());
     let checks = run_checks(opts, &rule, &domains);
+    let gates = FixGates::from_checks(&checks);
 
     let pass = checks
         .iter()
@@ -93,6 +96,15 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
         .filter(|c| matches!(c.status, Status::Fail))
         .count();
 
+    // The reference repairs BEFORE any rendering — a crashing repair
+    // prints no report at all — and the same lines feed the plain
+    // Fixed block and the JSON envelope's `fixed` field.
+    let fixed = if fix {
+        apply_fixes(&store, &rule, &domains, &gates)?
+    } else {
+        Vec::new()
+    };
+
     if opts.json {
         let checks_json: Vec<Value> = checks.iter().map(check_json).collect();
         let mut summary = Map::new();
@@ -102,6 +114,15 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
         let mut fields = Map::new();
         fields.insert("checks".into(), Value::Array(checks_json));
         fields.insert("summary".into(), Value::Object(summary));
+        if fix {
+            // The reference's JSON envelope carries the fix lines
+            // whenever --fix ran — an empty array when nothing needed
+            // repairing.
+            fields.insert(
+                "fixed".into(),
+                Value::Array(fixed.iter().cloned().map(Value::String).collect()),
+            );
+        }
         let envelope = if fail == 0 {
             success_envelope("doctor", fields)
         } else {
@@ -112,11 +133,6 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
             Value::Object(body)
         };
         print_json(&envelope, false);
-        if fix {
-            // The reference mutates the store in --json mode too; the
-            // plain Fixed: block is a plain-mode rendering only.
-            drop(apply_fixes(&store, &rule, &domains)?);
-        }
     } else {
         let mut text = String::from("Mulch Doctor");
         for check in &checks {
@@ -133,17 +149,14 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
         // The reference's --quiet silences the whole plain report.
         print_line(opts.quiet, &text);
 
-        if fix {
-            let fixes_applied = apply_fixes(&store, &rule, &domains)?;
-            if !fixes_applied.is_empty() && !opts.quiet {
-                let mut fixed = String::from("\nFixed:");
-                for fix_line in fixes_applied {
-                    let _ = write!(fixed, "\n  ✓ {fix_line}");
-                }
-                #[allow(clippy::print_stdout, reason = "fix report prints to stdout")]
-                {
-                    println!("{fixed}");
-                }
+        if fix && !fixed.is_empty() && !opts.quiet {
+            let mut block = String::from("\nFixed:");
+            for fix_line in &fixed {
+                let _ = write!(block, "\n  ✓ {fix_line}");
+            }
+            #[allow(clippy::print_stdout, reason = "fix report prints to stdout")]
+            {
+                println!("{block}");
             }
         }
     }
@@ -264,7 +277,9 @@ fn jsonl_integrity(domains: &[DomainLines]) -> Check {
         .iter()
         .flat_map(|d| {
             d.lines.iter().filter_map(|line| match line {
-                mulch::LenientLine::Malformed { line } => Some(format!("{}:{}", d.domain, line)),
+                mulch::LenientLine::Malformed { line } => {
+                    Some(format!("{}:{line} - Invalid JSON", d.domain))
+                }
                 mulch::LenientLine::Record { .. } => None,
             })
         })
@@ -281,7 +296,7 @@ fn jsonl_integrity(domains: &[DomainLines]) -> Check {
         Check {
             name:    "jsonl-integrity",
             status:  Status::Fail,
-            message: format!("{} line(s) are not valid JSON", bad.len()),
+            message: format!("{} invalid JSON line(s) found", bad.len()),
             fixable: true,
             details: bad,
         }
@@ -295,8 +310,13 @@ fn legacy_outcome(domains: &[DomainLines]) -> Check {
             records_of(d).filter_map(|(line, record)| {
                 let has_legacy = record
                     .as_object()
-                    .is_some_and(|o| o.contains_key("outcome"));
-                has_legacy.then(|| format!("{}:{}", d.domain, line))
+                    .is_some_and(|o| o.contains_key("outcome") && !o.contains_key("outcomes"));
+                has_legacy.then(|| {
+                    format!(
+                        "{}:{line} - legacy \"outcome\" field (singular); should be \"outcomes[]\"",
+                        d.domain
+                    )
+                })
             })
         })
         .collect();
@@ -309,10 +329,15 @@ fn legacy_outcome(domains: &[DomainLines]) -> Check {
             details: Vec::new(),
         }
     } else {
+        // The reference reports legacy fields as a warning, never a
+        // failure.
         Check {
             name:    "legacy-outcome",
-            status:  Status::Fail,
-            message: format!("{} record(s) carry a legacy \"outcome\" field", bad.len()),
+            status:  Status::Warn,
+            message: format!(
+                "{} record(s) with legacy \"outcome\" field on disk",
+                bad.len()
+            ),
             fixable: true,
             details: bad,
         }
@@ -451,13 +476,16 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
                     .get("classification")
                     .and_then(Value::as_str)
                     .expect("verdict Stale implies a string classification");
-                let kind = record
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("record");
+                // The reference template-stringifies the type — a
+                // missing one renders as `undefined`, any other
+                // non-string through JS String coercion.
+                let kind = match record.get("type") {
+                    Some(value) => mulch::value_text(value),
+                    None => "undefined".into(),
+                };
                 details.push(format!(
-                    "{}: stale {} ({classification})",
-                    domain.domain, kind
+                    "{}: stale {kind} ({classification})",
+                    domain.domain
                 ));
             }
         }
@@ -589,77 +617,299 @@ fn apply_fixes(
     store: &mulch::StoreFiles,
     rule: &StaleRule,
     domains: &[DomainLines],
+    gates: &FixGates,
 ) -> Result<Vec<String>, Failure> {
     let now = Timestamp::now();
     let mut fixes = Vec::new();
-    let mut removed_lines: Vec<(&str, usize)> = Vec::new();
-    let mut pruned_lines: Vec<(&str, usize)> = Vec::new();
-    for domain in domains {
-        // The already-read lenient lines — no second read+parse pass.
-        let total = domain.lines.len();
-        let mut stale_pruned = 0usize;
-        let mut invalid_removed = 0usize;
-        let mut kept: Vec<Value> = Vec::new();
-        for finding in &domain.lines {
-            let parsed = match finding {
-                mulch::LenientLine::Record { record, .. } => Some(record),
-                mulch::LenientLine::Malformed { .. } => None,
-            };
-            let verdict = match parsed {
-                None => FixVerdict::Invalid,
-                Some(record) => {
-                    // The verdict owns the extraction; an unparsable or
-                    // missing recorded_at never prunes (schema errors
-                    // catch it instead), and a missing/unknown
-                    // classification never decays (mulch-f9b9).
-                    match rule.verdict(record, now) {
-                        StaleVerdict::Stale => FixVerdict::Stale,
-                        _ if doctor_detail(record).is_some() => FixVerdict::Invalid,
-                        _ => FixVerdict::Keep,
-                    }
-                }
-            };
-            match (verdict, parsed) {
-                (FixVerdict::Keep, Some(record)) => kept.push(record.clone()),
-                (FixVerdict::Stale, _) => stale_pruned += 1,
-                (FixVerdict::Invalid, _) | (FixVerdict::Keep, None) => invalid_removed += 1,
+    // The reference iterates its CHECK array, running one repair case
+    // per failed fixable check — jsonl-integrity, legacy-outcome,
+    // schema-validation, stale-records — each re-reading the files the
+    // earlier passes rewrote. The report lines follow that check order,
+    // in domain order within each pass.
+    if gates.jsonl {
+        for domain in domains {
+            if let Some(count) = remove_malformed_lines(store, &domain.domain)? {
+                fixes.push(format!(
+                    "Removed {count} invalid JSON line(s) from {}",
+                    domain.domain
+                ));
             }
         }
-
-        if kept.len() != total {
-            // The repair rewrites through the seam's compact writer (the
-            // reference model) with the kept parsed values.
-            let survivors = kept;
-            store
-                .rewrite_domain(&domain.domain, &survivors)
-                .map_err(|source| {
-                    Failure::handled("doctor", crate::output::chain_message(&source))
-                })?;
-        }
-        // The reference reports by CHECK order (schema-validation before
-        // stale-records), not per domain: all Removed lines first, then
-        // all Pruned lines, each in domain order.
-        if invalid_removed > 0 {
-            removed_lines.push((domain.domain.as_str(), invalid_removed));
-        }
-        if stale_pruned > 0 {
-            pruned_lines.push((domain.domain.as_str(), stale_pruned));
+    }
+    if gates.legacy {
+        for domain in domains {
+            if let Some(count) = migrate_legacy_outcomes(store, &domain.domain)? {
+                fixes.push(format!(
+                    "Migrated {count} legacy \"outcome\" field(s) to \"outcomes[]\" in {}",
+                    domain.domain
+                ));
+            }
         }
     }
-    for (domain, count) in removed_lines {
-        fixes.push(format!("Removed {count} invalid record(s) from {domain}"));
+    if gates.schema {
+        for domain in domains {
+            if let Some(count) = remove_invalid_records(store, &domain.domain)? {
+                fixes.push(format!(
+                    "Removed {count} invalid record(s) from {}",
+                    domain.domain
+                ));
+            }
+        }
     }
-    for (domain, count) in pruned_lines {
-        fixes.push(format!("Pruned {count} stale record(s) from {domain}"));
+    if gates.stale {
+        for domain in domains {
+            if let Some(count) = prune_stale_records(store, rule, &domain.domain, now)? {
+                fixes.push(format!(
+                    "Pruned {count} stale record(s) from {}",
+                    domain.domain
+                ));
+            }
+        }
     }
     Ok(fixes)
 }
 
-/// One line's keep/prune verdict during `--fix`.
-enum FixVerdict {
-    Keep,
-    Stale,
-    Invalid,
+/// Which failed checks open their repair pass — the reference gates
+/// every fix case on `status !== "pass" && fixable`, so a check that
+/// passes never repairs (its data is clean by construction).
+struct FixGates {
+    jsonl:  bool,
+    legacy: bool,
+    schema: bool,
+    stale:  bool,
+}
+
+impl FixGates {
+    fn from_checks(checks: &[Check]) -> Self {
+        fn open(checks: &[Check], name: &str) -> bool {
+            checks.iter().any(|check| {
+                check.name == name && check.fixable && !matches!(check.status, Status::Pass)
+            })
+        }
+        FixGates {
+            jsonl:  open(checks, "jsonl-integrity"),
+            legacy: open(checks, "legacy-outcome"),
+            schema: open(checks, "schema-validation"),
+            stale:  open(checks, "stale-records"),
+        }
+    }
+}
+
+/// The jsonl-integrity repair: malformed lines (comments included —
+/// they fail JSON parsing) drop; valid lines stay byte-identical.
+/// `None` = nothing to remove, no write.
+fn remove_malformed_lines(
+    store: &mulch::StoreFiles,
+    domain: &str,
+) -> Result<Option<usize>, Failure> {
+    let Some(text) = read_domain_text(store, domain)? else {
+        return Ok(None);
+    };
+    let mut kept = Vec::new();
+    let mut removed = 0usize;
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if serde_json::from_str::<Value>(trimmed).is_ok() {
+            kept.push(trimmed);
+        } else {
+            removed += 1;
+        }
+    }
+    if removed == 0 {
+        return Ok(None);
+    }
+    let mut body = kept.join("\n");
+    if !kept.is_empty() {
+        body.push('\n');
+    }
+    write_domain_text(store, domain, &body)?;
+    Ok(Some(removed))
+}
+
+/// The legacy-outcome repair: a singular non-null `outcome` without an
+/// `outcomes` array migrates; every other line stays verbatim.
+/// `None` = nothing to migrate, no write.
+fn migrate_legacy_outcomes(
+    store: &mulch::StoreFiles,
+    domain: &str,
+) -> Result<Option<usize>, Failure> {
+    let Some(text) = read_domain_text(store, domain)? else {
+        return Ok(None);
+    };
+    let mut lines = Vec::new();
+    let mut migrated = 0usize;
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<Value>(trimmed) {
+            // Unparsable survivors (only possible when the
+            // jsonl-integrity pass stayed closed) pass through
+            // byte-identical, like the reference's raw-line loop.
+            Err(_) => lines.push(trimmed.to_string()),
+            Ok(value) => match migrate_legacy_line(value) {
+                Some(line) => {
+                    lines.push(line);
+                    migrated += 1;
+                }
+                None => lines.push(trimmed.to_string()),
+            },
+        }
+    }
+    if migrated == 0 {
+        return Ok(None);
+    }
+    let mut body = lines.join("\n");
+    if !lines.is_empty() {
+        body.push('\n');
+    }
+    write_domain_text(store, domain, &body)?;
+    Ok(Some(migrated))
+}
+
+/// The reference's legacy migration on one parsed line: a singular
+/// `outcome` (non-null, `outcomes` absent) becomes a one-element
+/// `outcomes` array of its `status`/`duration`/`test_results`/`agent`
+/// fields — present keys only, in that order — the `outcome` key drops,
+/// and `outcomes` lands at the end of the object. Any other line is
+/// `None` (unchanged).
+fn migrate_legacy_line(value: Value) -> Option<String> {
+    let Value::Object(mut object) = value else {
+        return None;
+    };
+    let outcome = object.get("outcome")?;
+    if outcome.is_null() || object.contains_key("outcomes") {
+        return None;
+    }
+    // A primitive `outcome` migrates to an empty entry (the reference
+    // reads `.status` & co. as undefined on it, and JSON serialization
+    // drops undefined values).
+    let mut entry = Map::new();
+    if let Some(fields) = outcome.as_object() {
+        for key in ["status", "duration", "test_results", "agent"] {
+            if let Some(field) = fields.get(key) {
+                entry.insert(key.into(), field.clone());
+            }
+        }
+    }
+    object.remove("outcome");
+    object.insert("outcomes".into(), Value::Array(vec![Value::Object(entry)]));
+    serde_json::to_string(&Value::Object(object)).ok()
+}
+
+/// The schema-validation repair: known-type records that fail the
+/// schema drop; records of unregistered or missing types STAY — the
+/// reference flags them via checkUnknownTypes and never silently
+/// deletes them (mulch-d45c). `None` = nothing to remove, no write.
+fn remove_invalid_records(
+    store: &mulch::StoreFiles,
+    domain: &str,
+) -> Result<Option<usize>, Failure> {
+    let Some(text) = read_domain_text(store, domain)? else {
+        return Ok(None);
+    };
+    let mut kept = Vec::new();
+    let mut removed = 0usize;
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Unparsable lines cannot survive an open jsonl-integrity gate;
+        // skipping them only matters in states the reference never
+        // reaches (its checks crash on malformed lines first).
+        let Ok(record) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        if survives_schema_pass(&record) {
+            kept.push(record);
+        } else {
+            removed += 1;
+        }
+    }
+    if removed == 0 {
+        return Ok(None);
+    }
+    store
+        .rewrite_domain(domain, &kept)
+        .map_err(|source| Failure::handled("doctor", crate::output::chain_message(&source)))?;
+    Ok(Some(removed))
+}
+
+/// The schema pass keep rule: unregistered or missing types stay,
+/// known types stay iff schema-valid.
+fn survives_schema_pass(record: &Value) -> bool {
+    let Some(kind) = record.get("type").and_then(Value::as_str) else {
+        return true;
+    };
+    match mulch::type_spec(kind) {
+        None => true,
+        Some(_) => doctor_detail(record).is_none(),
+    }
+}
+
+/// The stale-records repair over the survivors of the earlier passes:
+/// stale records prune, the remainder rewrites canonically. `None` =
+/// nothing to prune, no write.
+fn prune_stale_records(
+    store: &mulch::StoreFiles,
+    rule: &StaleRule,
+    domain: &str,
+    now: Timestamp,
+) -> Result<Option<usize>, Failure> {
+    let Some(text) = read_domain_text(store, domain)? else {
+        return Ok(None);
+    };
+    let mut kept = Vec::new();
+    let mut pruned = 0usize;
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        // The verdict owns the extraction; an unparsable or missing
+        // recorded_at never prunes, and a missing/unknown
+        // classification never decays (mulch-f9b9).
+        if rule.verdict(&record, now) == StaleVerdict::Stale {
+            pruned += 1;
+        } else {
+            kept.push(record);
+        }
+    }
+    if pruned == 0 {
+        return Ok(None);
+    }
+    store
+        .rewrite_domain(domain, &kept)
+        .map_err(|source| Failure::handled("doctor", crate::output::chain_message(&source)))?;
+    Ok(Some(pruned))
+}
+
+/// The domain file's current bytes (`None` when the file is absent —
+/// the reference's repair passes skip silently).
+fn read_domain_text(store: &mulch::StoreFiles, domain: &str) -> Result<Option<String>, Failure> {
+    match std::fs::read_to_string(store.domain_path(domain)) {
+        Ok(text) => Ok(Some(text)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(Failure::handled(
+            "doctor",
+            format!("reading domain {domain}: {source}"),
+        )),
+    }
+}
+
+/// Writes raw bytes — the reference's direct file write for the two
+/// line-preserving passes (jsonl-integrity, legacy-outcome).
+fn write_domain_text(store: &mulch::StoreFiles, domain: &str, body: &str) -> Result<(), Failure> {
+    std::fs::write(store.domain_path(domain), body)
+        .map_err(|source| Failure::handled("doctor", format!("writing domain {domain}: {source}")))
 }
 
 /// The `--json` shape of one check.
@@ -726,5 +976,90 @@ fn no_store_report(opts: &GlobalOpts) -> Failure {
         failure.rendered = true;
         failure.code = 1;
         failure
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(line: &str) -> Value {
+        serde_json::from_str(line).expect("record")
+    }
+
+    #[test]
+    fn legacy_migration_keeps_key_order_and_appends_outcomes() {
+        let migrated =
+            migrate_legacy_line(record(r#"{"type":"pattern","name":"p","outcome":{"status":"success","duration":5,"agent":"a"},"extra":1}"#))
+                .expect("migrated");
+        // `outcome` drops, `outcomes` lands at the end, every other key
+        // keeps its position, and only the four known entry fields copy
+        assert_eq!(
+            migrated,
+            r#"{"type":"pattern","name":"p","extra":1,"outcomes":[{"status":"success","duration":5,"agent":"a"}]}"#
+        );
+    }
+
+    #[test]
+    fn legacy_migration_skips_null_and_coexisting_outcomes() {
+        assert_eq!(
+            migrate_legacy_line(record(r#"{"name":"p","outcome":null}"#)),
+            None
+        );
+        assert_eq!(
+            migrate_legacy_line(record(
+                r#"{"name":"p","outcome":{"status":"ok"},"outcomes":[]}"#
+            )),
+            None
+        );
+        assert_eq!(migrate_legacy_line(record(r#"{"name":"p"}"#)), None);
+    }
+
+    #[test]
+    fn legacy_migration_of_a_primitive_outcome_yields_an_empty_entry() {
+        // the reference reads `.status` & co. as undefined on
+        // primitives; JSON serialization drops undefined values
+        assert_eq!(
+            migrate_legacy_line(record(r#"{"name":"p","outcome":"oops"}"#)).expect("migrated"),
+            r#"{"name":"p","outcomes":[{}]}"#
+        );
+    }
+
+    #[test]
+    fn schema_pass_keeps_unknown_and_typeless_records() {
+        // mulch-d45c: unregistered types are flagged, never deleted
+        assert!(survives_schema_pass(&record(
+            r#"{"type":"wtf","name":"u"}"#
+        )));
+        assert!(survives_schema_pass(&record(r#"{"name":"typeless"}"#)));
+        // known types stay iff schema-valid (full required set)
+        assert!(survives_schema_pass(&record(
+            r#"{"type":"pattern","name":"p","description":"d","classification":"tactical","recorded_at":"2026-10-07T00:00:00.000Z"}"#
+        )));
+        assert!(!survives_schema_pass(&record(r#"{"type":"pattern"}"#)));
+    }
+
+    #[test]
+    fn fix_gates_open_only_for_failed_fixable_checks() {
+        fn check(name: &'static str, status: Status) -> Check {
+            Check {
+                name,
+                status,
+                message: String::new(),
+                fixable: true,
+                details: Vec::new(),
+            }
+        }
+        let checks = vec![
+            check("jsonl-integrity", Status::Pass),
+            check("legacy-outcome", Status::Warn),
+            check("schema-validation", Status::Fail),
+            check("stale-records", Status::Pass),
+        ];
+        let gates = FixGates::from_checks(&checks);
+        assert!(!gates.jsonl);
+        assert!(gates.legacy);
+        assert!(gates.schema);
+        assert!(!gates.stale);
     }
 }

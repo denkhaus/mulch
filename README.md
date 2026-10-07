@@ -45,8 +45,19 @@ expectation (the parity rule: never silently):
   `mulch.config.yaml`, (b) `validate` with no `.mulch/` at all, and
   (c) malformed JSONL lines in `doctor`. We render the reference's own
   message as a handled error envelope (status-channel) or report the
-  bad lines as `jsonl-integrity` findings. Expectation: same exit code
-  1, clean text instead of a stack trace.
+  bad lines as `jsonl-integrity` findings — and `doctor --fix` then
+  removes them (the reference never repairs: its checks crash on the
+  first malformed line before any report renders). Expectation: same
+  exit code 1, clean text instead of a stack trace.
+- **`doctor --fix` repairs stores the reference crashes on.** When a
+  repair rewrite (schema-validation or stale-records pass) reaches a
+  kept record with an unknown or missing type and no id, the
+  reference's `writeExpertiseFile` throws an unhandled
+  `Unknown record type` — no report at all, store untouched. We keep
+  the unknown-type record (it is flagged, never silently deleted —
+  mulch-d45c) and let the writer assign the deterministic id.
+  Expectation: same repair outcome for every record the reference
+  processes; our run completes where the reference aborts.
 - **`status` reads strictly and fails like the reference, with clean
   text instead of a stack trace.** (Amended 2026-10-04, mulch-00aa:
   probes showed the reference `status` — via `readExpertiseFile` —
