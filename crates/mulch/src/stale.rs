@@ -12,21 +12,20 @@ use serde_json::Value;
 use crate::config::ShelfLife;
 
 /// The staleness rule derived from a store's shelf-life config.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StaleRule {
     tactical_days:      i64,
     observational_days: i64,
 }
 
 impl StaleRule {
-    /// From config values, falling back to the reference defaults.
-    pub fn from_config(shelf_life: Option<&ShelfLife>) -> Self {
-        match shelf_life {
-            Some(shelf) => Self {
-                tactical_days:      i64::try_from(shelf.tactical).unwrap_or(14),
-                observational_days: i64::try_from(shelf.observational).unwrap_or(30),
-            },
-            None => Self::default(),
+    /// From the config's effective shelf life (the config module owns
+    /// the reference defaults — mulch-53cb; absurd day counts beyond
+    /// i64 saturate: a gigantic shelf is never stale).
+    pub fn from_shelf_life(shelf_life: &ShelfLife) -> Self {
+        Self {
+            tactical_days:      i64::try_from(shelf_life.tactical).unwrap_or(i64::MAX),
+            observational_days: i64::try_from(shelf_life.observational).unwrap_or(i64::MAX),
         }
     }
 
@@ -78,10 +77,7 @@ pub enum StaleVerdict {
 
 impl Default for StaleRule {
     fn default() -> Self {
-        Self {
-            tactical_days:      14,
-            observational_days: 30,
-        }
+        Self::from_shelf_life(&ShelfLife::reference_default())
     }
 }
 

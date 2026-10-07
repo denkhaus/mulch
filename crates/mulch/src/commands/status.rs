@@ -20,20 +20,21 @@ const CLASSIFICATIONS: [&str; 3] = ["foundational", "tactical", "observational"]
 pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let store = crate::commands::open_store("status", false)?;
 
-    let governance = store.config().governance().ok().flatten();
-    let shelf_life = store.config().shelf_life().ok().flatten();
+    let governance = store.config().effective_governance();
+    let shelf_life = store.config().effective_shelf_life();
     let now = Timestamp::now();
-    let rule = StaleRule::from_config(shelf_life.as_ref());
+    let rule = StaleRule::from_shelf_life(&shelf_life);
 
     let mut domain_lines = Vec::new();
     let mut domains_json = Vec::new();
     for domain in store.domains() {
         let (records, mtime) = read_domain(opts, &store, &domain)?;
-        let observational_days = shelf_life.as_ref().map_or(30, |life| life.observational);
-        let (max_entries, warn_entries, hard_limit) =
-            governance.as_ref().map_or((100, 150, 200), |gov| {
-                (gov.max_entries, gov.warn_entries, gov.hard_limit)
-            });
+        let observational_days = shelf_life.observational;
+        let (max_entries, warn_entries, hard_limit) = (
+            governance.max_entries,
+            governance.warn_entries,
+            governance.hard_limit,
+        );
         let status = DomainStatus::compute(
             &domain,
             &records,
@@ -53,8 +54,8 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     if opts.json {
         let mut fields = Map::new();
         fields.insert("domains".into(), Value::Array(domains_json));
-        fields.insert("governance".into(), governance_json(governance.as_ref()));
-        fields.insert("shelf_life".into(), shelf_life_json(shelf_life.as_ref()));
+        fields.insert("governance".into(), governance_json(&governance));
+        fields.insert("shelf_life".into(), shelf_life_json(&shelf_life));
         print_json(&success_envelope("status", fields), false);
     } else {
         let mut text = String::from("Mulch Status\n============\n\n");
@@ -385,26 +386,24 @@ fn timestamp_json(time: Option<Timestamp>) -> Value {
     }
 }
 
-/// Governance defaults block (absent config → reference defaults).
-fn governance_json(governance: Option<&mulch::Governance>) -> Value {
+/// Governance block (the effective thresholds).
+fn governance_json(governance: &mulch::Governance) -> Value {
     let mut map = Map::new();
-    let (max, warn, hard) = match governance {
-        Some(g) => (g.max_entries, g.warn_entries, g.hard_limit),
-        None => (100, 150, 200),
-    };
+    let (max, warn, hard) = (
+        governance.max_entries,
+        governance.warn_entries,
+        governance.hard_limit,
+    );
     map.insert("max_entries".into(), json_num(max));
     map.insert("warn_entries".into(), json_num(warn));
     map.insert("hard_limit".into(), json_num(hard));
     Value::Object(map)
 }
 
-/// Shelf-life defaults block (absent config → reference defaults).
-fn shelf_life_json(shelf: Option<&mulch::ShelfLife>) -> Value {
+/// Shelf-life block (the effective thresholds).
+fn shelf_life_json(shelf: &mulch::ShelfLife) -> Value {
     let mut map = Map::new();
-    let (tactical, observational) = match shelf {
-        Some(s) => (s.tactical, s.observational),
-        None => (14, 30),
-    };
+    let (tactical, observational) = (shelf.tactical, shelf.observational);
     map.insert("tactical".into(), json_num(tactical));
     map.insert("observational".into(), json_num(observational));
     Value::Object(map)

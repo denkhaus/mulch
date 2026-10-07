@@ -18,7 +18,7 @@ use crate::error::{Error, Result};
 pub const SUPPORTED_VERSION: &str = "1";
 
 /// Governance thresholds (`governance` block), typed.
-#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct Governance {
     /// Soft target of live records per domain.
     pub max_entries:  u64,
@@ -29,12 +29,37 @@ pub struct Governance {
 }
 
 /// `classification_defaults.shelf_life` block, typed.
-#[derive(Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct ShelfLife {
     /// Days a tactical record stays fresh.
     pub tactical:      u64,
     /// Days an observational record stays fresh.
     pub observational: u64,
+}
+
+impl Governance {
+    /// The reference governance defaults (100/150/200) — the format
+    /// contract, owned here (mulch-53cb).
+    #[must_use]
+    pub fn reference_default() -> Self {
+        Self {
+            max_entries:  100,
+            warn_entries: 150,
+            hard_limit:   200,
+        }
+    }
+}
+
+impl ShelfLife {
+    /// The reference shelf-life defaults (tactical 14, observational
+    /// 30 days) — the format contract, owned here (mulch-53cb).
+    #[must_use]
+    pub fn reference_default() -> Self {
+        Self {
+            tactical:      14,
+            observational: 30,
+        }
+    }
 }
 
 /// `prime.tier_weights` block, typed.
@@ -81,15 +106,8 @@ impl Default for Config {
     /// The config `ml init` writes, in the reference key order.
     fn default() -> Self {
         let mut config = Self::empty();
-        config.set_governance(Governance {
-            max_entries:  100,
-            warn_entries: 150,
-            hard_limit:   200,
-        });
-        config.set_shelf_life(ShelfLife {
-            tactical:      14,
-            observational: 30,
-        });
+        config.set_governance(Governance::reference_default());
+        config.set_shelf_life(ShelfLife::reference_default());
         config
     }
 }
@@ -162,10 +180,11 @@ impl Config {
             .and_then(serde_yaml::Value::as_mapping)
             .cloned()
             .unwrap_or_default();
+        let reference = Governance::reference_default();
         let defaults: [(&str, u64); 3] = [
-            ("max_entries", 100),
-            ("warn_entries", 150),
-            ("hard_limit", 200),
+            ("max_entries", reference.max_entries),
+            ("warn_entries", reference.warn_entries),
+            ("hard_limit", reference.hard_limit),
         ];
         let mut merged = Mapping::new();
         for (key, default) in defaults {
@@ -178,6 +197,26 @@ impl Config {
         serde_yaml::Value::Mapping(merged)
     }
 
+    /// The effective governance thresholds: the user block with the
+    /// reference defaults backfilled per field (partial blocks keep
+    /// their set values, like the reference's `withDefaults`).
+    #[must_use]
+    pub fn effective_governance(&self) -> Governance {
+        serde_yaml::from_value(self.governance_mapping())
+            .unwrap_or_else(|_| Governance::reference_default())
+    }
+
+    /// The effective shelf life: the user block with the reference
+    /// defaults backfilled per field.
+    #[must_use]
+    pub fn effective_shelf_life(&self) -> ShelfLife {
+        self.classification_defaults_mapping()
+            .get(yaml_str("shelf_life"))
+            .cloned()
+            .and_then(|value| serde_yaml::from_value(value).ok())
+            .unwrap_or_else(ShelfLife::reference_default)
+    }
+
     /// `classification_defaults.shelf_life` with defaults backfilled.
     fn classification_defaults_mapping(&self) -> serde_yaml::Value {
         let user = self
@@ -188,8 +227,12 @@ impl Config {
             .and_then(serde_yaml::Value::as_mapping)
             .cloned()
             .unwrap_or_default();
+        let reference = ShelfLife::reference_default();
         let mut shelf = Mapping::new();
-        for (key, default) in [("tactical", 14_u64), ("observational", 30)] {
+        for (key, default) in [
+            ("tactical", reference.tactical),
+            ("observational", reference.observational),
+        ] {
             let value = user
                 .get(yaml_str(key))
                 .cloned()
@@ -537,6 +580,62 @@ custom_types:
         assert!(
             err.to_string()
                 .contains("unsupported mulch config version 2")
+        );
+    }
+
+    #[test]
+    fn effective_accessors_backfill_reference_defaults_per_field() {
+        // empty config: pure reference defaults
+        let empty = Config::empty();
+        assert_eq!(
+            empty.effective_governance(),
+            Governance::reference_default()
+        );
+        assert_eq!(empty.effective_shelf_life(), ShelfLife::reference_default());
+        // partial blocks: set fields survive, missing fields backfill
+        // (the reference's withDefaults semantics)
+        let partial = Config::parse(
+            "version: '1'\ndomains: {}\ngovernance:\n  max_entries: 5\nclassification_defaults:\n  shelf_life:\n    tactical: 7\n",
+        )
+        .expect("partial config");
+        let governance = partial.effective_governance();
+        assert_eq!(governance.max_entries, 5);
+        assert_eq!(governance.warn_entries, 150);
+        assert_eq!(governance.hard_limit, 200);
+        let shelf = partial.effective_shelf_life();
+        assert_eq!(shelf.tactical, 7);
+        assert_eq!(shelf.observational, 30);
+        // full blocks: user values win
+        let full = Config::parse(
+            "version: '1'\ndomains: {}\ngovernance:\n  max_entries: 1\n  warn_entries: 2\n  hard_limit: 3\nclassification_defaults:\n  shelf_life:\n    tactical: 4\n    observational: 5\n",
+        )
+        .expect("full config");
+        assert_eq!(full.effective_governance(), Governance {
+            max_entries:  1,
+            warn_entries: 2,
+            hard_limit:   3,
+        });
+        assert_eq!(full.effective_shelf_life(), ShelfLife {
+            tactical:      4,
+            observational: 5,
+        });
+    }
+
+    #[test]
+    fn reference_defaults_are_the_format_contract() {
+        assert_eq!(Governance::reference_default(), Governance {
+            max_entries:  100,
+            warn_entries: 150,
+            hard_limit:   200,
+        });
+        assert_eq!(ShelfLife::reference_default(), ShelfLife {
+            tactical:      14,
+            observational: 30,
+        });
+        // StaleRule's default IS the reference shelf life
+        assert_eq!(
+            crate::stale::StaleRule::default(),
+            crate::stale::StaleRule::from_shelf_life(&ShelfLife::reference_default())
         );
     }
 }

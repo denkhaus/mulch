@@ -5095,3 +5095,67 @@ fn doctor_fix_survives_id_less_unknown_type_records() {
         .expect("unknown record survives");
     assert!(unknown_line.contains("\"id\":\"mx-"));
 }
+
+// ---- sprint 21 (mulch-53cb): config-owned reference defaults ----
+
+/// Partial config blocks keep their set values and backfill the rest
+/// per field (the reference's withDefaults semantics). The old typed
+/// readers dropped partial blocks wholesale — this pins the effective
+/// accessors against the reference on both surfaces that render them:
+/// the status blocks and the staleness computed from them.
+#[test]
+fn status_partial_config_blocks_backfill_per_field_like_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("cfg-ours");
+    let theirs = TempDir::new("cfg-theirs");
+    let now = jiff::Timestamp::now();
+    let days_ago = |days: i64| (now - jiff::Span::new().hours(days * 24)).to_string();
+    let config = "version: '1'\ndomains:\n  dev: {}\ngovernance:\n  max_entries: 5\nclassification_defaults:\n  shelf_life:\n    tactical: 1\n";
+    let store = [
+        // stale under tactical: 1, fresh in the reference default of 14
+        format!(
+            r#"{{"type":"pattern","name":"p1","description":"d","classification":"tactical","recorded_at":"{}"}}"#,
+            days_ago(3)
+        ),
+        // fresh under the backfilled observational default of 30
+        format!(
+            r#"{{"type":"pattern","name":"p2","description":"d","classification":"observational","recorded_at":"{}"}}"#,
+            days_ago(10)
+        ),
+    ]
+    .join("\n")
+        + "\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
+        std::fs::write(dir.join(".mulch/mulch.config.yaml"), config).expect("config");
+        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), &store).expect("dev store");
+    }
+
+    for args in [&["status", "--json"][..], &["status"][..], &["doctor"][..]] {
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, their.code, "rc differs for {args:?}");
+        let strip = |text: &str| -> String {
+            text.lines()
+                .filter(|line| {
+                    !line.contains("Update available")
+                        && !line.contains("Run `mulch upgrade`")
+                        && !line.contains("Native binary")
+                        && !line.contains("passed,")
+                        && !line.contains("lastUpdated")
+                        && !line.contains("oldest_recorded")
+                        && !line.contains("newest_recorded")
+                        && !line.contains("oldest_timestamp")
+                        && !line.contains("newest_timestamp")
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(strip(&our.stdout), strip(&their.stdout), "stdout {args:?}");
+        assert_eq!(strip(&our.stderr), strip(&their.stderr), "stderr {args:?}");
+    }
+    assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
+}

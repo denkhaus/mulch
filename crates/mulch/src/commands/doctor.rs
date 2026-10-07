@@ -79,7 +79,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     };
 
     let domains = read_domains(&store);
-    let rule = StaleRule::from_config(store.config().shelf_life().ok().flatten().as_ref());
+    let rule = StaleRule::from_shelf_life(&store.config().effective_shelf_life());
     let checks = run_checks(opts, &rule, &domains);
     let gates = FixGates::from_checks(&checks);
 
