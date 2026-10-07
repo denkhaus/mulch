@@ -136,6 +136,14 @@ architecture direction, milestone content, go/no-go):
   the workspace's back. Instead: `seeds sync` (report-only under
   `vcs_manager: gitbutler`) shows pending tracker paths, and `.mulch/`
   changes land as explicit `but commit`s in the same batch.
+- **Commit-integrity check (sprint 20 lesson)**: `but status` can
+  UNDER-REPORT the dirty worktree — a touched file (records.rs) was invisible
+  at commit time, so the intended change silently missed its commit while the
+  message claimed it. List the intended files first (`git diff --name-only`
+  plus `but status`), and after the commit verify the real file list with
+  `git show --stat <hash>`. Never write counts into a message ("7 sites
+  collapsed") without counting the COMMITTED diff — spec reviewers check
+  exactly that claim.
 - **Mulch is the domain brain**: `ml record <domain> --type
   <convention|pattern|failure|decision|reference|guide>` for every learning
   (API dead-ends, format quirks, gate outcomes). Evidence:
@@ -183,6 +191,12 @@ read — and SEND THE REPLY as soon as the verdict is formed: a reviewer that
 cannot complete SAYS so instead of hanging. Reviewer subagents are READ-ONLY
 (no `but`, no writes, no pushes): findings come back as the reply, the host
 commits.
+
+**Hand reviewers the GIT hash, not the but id**: `but commit` prints a
+workspace commit id (`orm`, `ovv`) that `git show` cannot resolve — both
+sprint-20/21 reviewers had to hunt the hash themselves. Give them
+`git log --grep="<seed>" --format=%h -1` or "the sprint's single doctor/…
+commit", so the review starts on the right diff.
 
 Aggregate both axes, fix findings, commit via `but`, then close the ticket
 with `seeds close --reason` referencing the commits. (AGENTS.md's "never
