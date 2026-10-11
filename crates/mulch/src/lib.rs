@@ -28,8 +28,9 @@ pub use ids::{
 };
 pub use records::{
     LenientLine, LineRecord, OutcomeEntry, ResolveError, UpsertPlan, assign_missing_id,
-    find_duplicate, merge_outcomes, parse_non_negative_number, read_lenient, read_strict,
-    record_summary, resolve_record_id, upsert_plan, value_text, write_records,
+    find_duplicate, legacy_entry, legacy_outcome, merge_outcomes, parse_non_negative_number,
+    read_lenient, read_strict, record_summary, resolve_record_id, upsert_plan, value_text,
+    write_records,
 };
 pub use store_files::{StoreFiles, StoreLocation};
 

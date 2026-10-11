@@ -104,33 +104,56 @@ pub fn read_strict(path: &Path, allow_unknown: bool) -> Result<Vec<LineRecord>> 
     Ok(records)
 }
 
-/// Reference legacy normalization: a singular `outcome` object becomes
-/// a one-element `outcomes` array (only when `outcomes` is absent).
+/// Reference legacy-outcome detection (validate.ts + doctor's
+/// `checkLegacyOutcome`): a singular `outcome` key on a record without
+/// an `outcomes` array. The value itself is never inspected — a `null`
+/// outcome detects too; only migration skips it.
+pub fn legacy_outcome(record: &Value) -> Option<&Value> {
+    let object = record.as_object()?;
+    if object.contains_key("outcomes") {
+        return None;
+    }
+    object.get("outcome")
+}
+
+/// The migrated entry for one legacy `outcome` value (reference
+/// `readExpertiseFile` + doctor's legacy fix): `status`, `duration`,
+/// `test_results`, `agent` — present keys only, in that order. A
+/// non-object value yields the empty entry: the reference reads
+/// `.status` & co. as `undefined` on it and JSON serialization drops
+/// undefined values, so `"outcome": 5` migrates to `outcomes: [{}]`
+/// and its read-only listing renders `undefined` (mulch-1609).
+pub fn legacy_entry(value: &Value) -> Map<String, Value> {
+    let mut entry = Map::new();
+    if let Some(fields) = value.as_object() {
+        for key in ["status", "duration", "test_results", "agent"] {
+            if let Some(field) = fields.get(key) {
+                entry.insert(key.into(), field.clone());
+            }
+        }
+    }
+    entry
+}
+
+/// Reference legacy normalization (the strict reader's tail): a
+/// singular non-null `outcome` (with `outcomes` absent) becomes a
+/// one-element `outcomes` array of its [`legacy_entry`]; a `null`
+/// outcome stays untouched — the reference's `raw.outcome !== null`
+/// guard leaves the key in place for writes to preserve.
 fn normalize_legacy_outcome(record: &mut Value) {
+    let Some(legacy) = legacy_outcome(record).filter(|value| !value.is_null()) else {
+        return;
+    };
+    let entry = legacy_entry(legacy);
     let Some(object) = record.as_object_mut() else {
         return;
     };
-    if object.contains_key("outcomes") {
-        return;
-    }
-    let Some(legacy) = object.get("outcome").and_then(Value::as_object).cloned() else {
-        object.remove("outcome");
-        return;
-    };
-    let mut normalized = serde_json::Map::new();
-    if let Some(status) = legacy.get("status") {
-        normalized.insert("status".into(), status.clone());
-    }
-    for key in ["duration", "test_results", "agent"] {
-        if let Some(value) = legacy.get(key) {
-            normalized.insert(key.into(), value.clone());
-        }
-    }
-    object.insert(
-        "outcomes".into(),
-        Value::Array(vec![Value::Object(normalized)]),
-    );
-    object.remove("outcome");
+    // shift_remove keeps the remaining keys in place (plain remove
+    // swaps the last entry into the freed slot) and the fresh key
+    // appends at the end — the reference's `{ ...raw, outcome:
+    // undefined, outcomes: [...] }` stringified shape.
+    object.shift_remove("outcome");
+    object.insert("outcomes".into(), Value::Array(vec![Value::Object(entry)]));
 }
 
 /// Renders a JSON value the way a JS template literal or property key
@@ -872,5 +895,103 @@ mod lenient_tests {
     fn read_lenient_missing_file_reads_empty() {
         let missing = std::path::Path::new("/nonexistent-mulch-probe/d.jsonl");
         assert!(read_lenient(missing).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    use serde_json::json;
+
+    use super::{Value, legacy_entry, legacy_outcome};
+
+    fn normalized(line: &str) -> Value {
+        let mut record: Value = serde_json::from_str(line).expect("json");
+        super::normalize_legacy_outcome(&mut record);
+        record
+    }
+
+    #[test]
+    fn detection_requires_a_singular_outcome_key() {
+        // null detects too — only migration skips it
+        assert_eq!(
+            legacy_outcome(&json!({"outcome": null})),
+            Some(&Value::Null)
+        );
+        assert_eq!(legacy_outcome(&json!({"outcome": 5})), Some(&json!(5)));
+        // a coexisting outcomes array wins, and no key means no legacy
+        assert_eq!(legacy_outcome(&json!({"outcome": 1, "outcomes": []})), None);
+        assert_eq!(legacy_outcome(&json!({"outcomes": []})), None);
+        // non-objects never detect (the reference's `in` needs one)
+        assert_eq!(legacy_outcome(&json!([1, 2])), None);
+        assert_eq!(legacy_outcome(&json!("scalar")), None);
+    }
+
+    #[test]
+    fn entry_extracts_present_keys_only_in_reference_order() {
+        let entry = legacy_entry(&json!({
+            "agent": "a", "junk": 9, "status": "s", "test_results": "t", "duration": 1
+        }));
+        assert_eq!(entry.keys().map(String::as_str).collect::<Vec<_>>(), [
+            "status",
+            "duration",
+            "test_results",
+            "agent"
+        ]);
+        assert_eq!(entry.get("junk"), None);
+    }
+
+    #[test]
+    fn entry_empties_non_object_values() {
+        // mulch-1609: the reference reads `.status` & co. as undefined
+        // on primitives; JSON serialization drops undefined values
+        for value in [json!(5), json!("x"), json!([1]), json!(true), json!({})] {
+            assert!(legacy_entry(&value).is_empty(), "value {value} empties");
+        }
+    }
+
+    #[test]
+    fn normalization_moves_object_outcomes_to_a_trailing_array() {
+        assert_eq!(
+            normalized(r#"{"name":"p","outcome":{"agent":"a","status":"success"},"extra":1}"#)
+                .to_string(),
+            r#"{"name":"p","extra":1,"outcomes":[{"status":"success","agent":"a"}]}"#
+        );
+        // a mid-object outcome: every remaining key keeps its position
+        // (plain remove would swap the last key into the freed slot)
+        assert_eq!(
+            normalized(
+                r#"{"type":"pattern","outcome":{"status":"success"},"name":"mid","id":"mx-7"}"#
+            )
+            .to_string(),
+            r#"{"type":"pattern","name":"mid","id":"mx-7","outcomes":[{"status":"success"}]}"#
+        );
+    }
+
+    #[test]
+    fn normalization_coerces_non_object_outcomes_to_an_empty_entry() {
+        for line in [
+            r#"{"name":"p","outcome":5}"#,
+            r#"{"name":"p","outcome":"x"}"#,
+            r#"{"name":"p","outcome":[1]}"#,
+            r#"{"name":"p","outcome":{}}"#,
+        ] {
+            assert_eq!(
+                normalized(line).to_string(),
+                r#"{"name":"p","outcomes":[{}]}"#,
+                "line {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalization_leaves_null_and_coexisting_outcomes_untouched() {
+        assert_eq!(
+            normalized(r#"{"name":"p","outcome":null}"#).to_string(),
+            r#"{"name":"p","outcome":null}"#
+        );
+        assert_eq!(
+            normalized(r#"{"name":"p","outcome":{"status":"s"},"outcomes":[]}"#).to_string(),
+            r#"{"name":"p","outcome":{"status":"s"},"outcomes":[]}"#
+        );
     }
 }

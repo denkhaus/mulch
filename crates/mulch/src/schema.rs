@@ -596,6 +596,22 @@ pub fn doctor_detail(record: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// The repair keep rule for the doctor schema pass (reference
+/// `applyFixes`'s schema-validation case, `!registry.get(r.type) ||
+/// validate(r)`): records of unregistered or missing types stay —
+/// `checkUnknownTypes` flags them, the repair never deletes them
+/// (mulch-d45c); registered types stay iff schema-valid. A record
+/// without a string `type` counts as typeless and stays.
+pub fn survives_repair(record: &serde_json::Value) -> bool {
+    let Some(kind) = record.get("type").and_then(serde_json::Value::as_str) else {
+        return true;
+    };
+    match crate::ids::type_spec(kind) {
+        None => true,
+        Some(_) => doctor_detail(record).is_none(),
+    }
+}
+
 /// The plain-mode stderr rendering of a validate finding.
 pub fn plain_detail_lines(message: &str) -> Vec<String> {
     if let Some(payload) = message.strip_prefix(VALIDATION_PREFIX) {
@@ -760,5 +776,23 @@ mod tests {
             }
             other => panic!("expected OneOf, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn repair_keeps_unknown_and_typeless_records() {
+        fn record(line: &str) -> serde_json::Value {
+            serde_json::from_str(line).expect("json")
+        }
+        // mulch-d45c: unregistered types are flagged, never deleted
+        assert!(survives_repair(&record(r#"{"type":"wtf","name":"u"}"#)));
+        assert!(survives_repair(&record(r#"{"name":"typeless"}"#)));
+        // a non-string type counts as typeless; non-objects stay too
+        assert!(survives_repair(&record(r#"{"type":5}"#)));
+        assert!(survives_repair(&record("[1,2]")));
+        // known types stay iff schema-valid (full required set)
+        assert!(survives_repair(&record(
+            r#"{"type":"pattern","name":"p","description":"d","classification":"tactical","recorded_at":"2026-10-07T00:00:00.000Z"}"#
+        )));
+        assert!(!survives_repair(&record(r#"{"type":"pattern"}"#)));
     }
 }
