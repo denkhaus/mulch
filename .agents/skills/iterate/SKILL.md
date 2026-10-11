@@ -285,7 +285,16 @@ lanes, battery folds, then `but move <commit> -b iterate` per commit
 OLDEST-FIRST (change-IDs survive moves), then ONE integration commit
 (collect ALL hunk IDs — see the commit-integrity check). Reviewers stay
 strictly read-only; lane children write only their owned files + /tmp
-deliverables.
+deliverables. Sprint-23 additions: (a) when seeds share ONE
+cross-lane constructor, the HOST pre-lands it on iterate before
+spawning (children consume the landed API — no lane-to-lane
+dependencies); (b) delivered battery fixtures must be clippy-clean BY
+CONSTRUCTION — `-D warnings` covers tests, children cannot run clippy,
+and hand-rolled string building in fixtures cost four gate iterations
+(push_str(&format!) -> format_collect -> write! -> writeln!): prefer
+`writeln!`/prebuilt strings, and have each lane run
+`cargo clippy -p mulch --all-targets -- -D warnings` on a SCRATCH
+battery copy before delivering.
 
 ## State file (sprint counter)
 
