@@ -13,7 +13,7 @@ use mulch::stale::{StaleRule, StaleVerdict};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::output::{Failure, print_json, print_line, success_envelope};
+use crate::output::{Failure, failure_envelope, print_json, print_line, success_envelope};
 
 /// One check result.
 struct Check {
@@ -126,11 +126,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
         let envelope = if fail == 0 {
             success_envelope("doctor", fields)
         } else {
-            let mut body = Map::new();
-            body.insert("success".into(), Value::Bool(false));
-            body.insert("command".into(), Value::String("doctor".into()));
-            body.extend(fields);
-            Value::Object(body)
+            failure_envelope("doctor", fields)
         };
         print_json(&envelope, false);
     } else {
@@ -872,16 +868,11 @@ fn no_store_report(opts: &GlobalOpts) -> Failure {
         summary.insert("pass".into(), Value::from(0));
         summary.insert("warn".into(), Value::from(0));
         summary.insert("fail".into(), Value::from(1));
-        let mut body = Map::new();
-        body.insert("success".into(), Value::Bool(false));
-        body.insert("command".into(), Value::String("doctor".into()));
-        body.insert("checks".into(), Value::Array(vec![Value::Object(check)]));
-        body.insert("summary".into(), Value::Object(summary));
+        let mut fields = Map::new();
+        fields.insert("checks".into(), Value::Array(vec![Value::Object(check)]));
+        fields.insert("summary".into(), Value::Object(summary));
         let mut failure = Failure::handled("doctor", "");
-        failure.envelope = Value::Object(body);
-        failure.envelope_to_stderr = false;
-        failure.rendered = false;
-        failure.code = 1;
+        failure.envelope = failure_envelope("doctor", fields);
         failure
     } else {
         #[allow(
@@ -1027,6 +1018,69 @@ mod tests {
         assert_eq!(untouched, None);
         assert_eq!(read_domain(&store, "d"), "{\"a\": 1}\n");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The no-store JSON envelope without a store on disk: the failure
+    /// shape (key order pinned: success, command, checks, summary) with
+    /// the one failed config check (mulch-3368: the envelope constructor
+    /// made this unit-testable without a store).
+    #[test]
+    fn no_store_json_envelope_is_the_failure_shape_without_a_store() {
+        let opts = GlobalOpts {
+            json:                  true,
+            quiet:                 false,
+            verbose:               false,
+            timing:                false,
+            allow_unknown_types:   false,
+            allow_domain_mismatch: false,
+        };
+        let failure = no_store_report(&opts);
+        assert_eq!(failure.code, 1);
+        // the envelope prints to stdout, and nothing renders after it
+        assert!(!failure.envelope_to_stderr);
+        assert!(!failure.rendered);
+        let Value::Object(body) = &failure.envelope else {
+            panic!("envelope is an object");
+        };
+        assert_eq!(body.keys().collect::<Vec<_>>(), [
+            "success", "command", "checks", "summary"
+        ]);
+        assert_eq!(body["success"], Value::Bool(false));
+        assert_eq!(body["command"], Value::String("doctor".into()));
+        let Value::Array(checks) = &body["checks"] else {
+            panic!("checks is an array");
+        };
+        let check = checks.first().expect("the one config check");
+        assert_eq!(check["name"], Value::String("config".into()));
+        assert_eq!(check["status"], Value::String("fail".into()));
+        assert_eq!(
+            check["message"],
+            Value::String("No .mulch/ directory found".into())
+        );
+        assert_eq!(check["fixable"], Value::Bool(false));
+        assert_eq!(check["details"], Value::Array(Vec::new()));
+        assert_eq!(body["summary"]["pass"], Value::from(0));
+        assert_eq!(body["summary"]["warn"], Value::from(0));
+        assert_eq!(body["summary"]["fail"], Value::from(1));
+    }
+
+    /// The plain no-store report prints itself (header + summary on
+    /// stdout, the failed check on stderr); the failure carries only
+    /// the exit contract.
+    #[test]
+    fn no_store_plain_report_carries_only_the_exit_code() {
+        let opts = GlobalOpts {
+            json:                  false,
+            quiet:                 false,
+            verbose:               false,
+            timing:                false,
+            allow_unknown_types:   false,
+            allow_domain_mismatch: false,
+        };
+        let failure = no_store_report(&opts);
+        assert_eq!(failure.code, 1);
+        assert!(failure.rendered);
+        assert_eq!(failure.message, "");
     }
 
     #[test]

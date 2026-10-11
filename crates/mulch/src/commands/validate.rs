@@ -4,7 +4,7 @@ use mulch::schema::{self, plain_detail_lines, validate_message};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::output::{Failure, print_json, print_line, success_envelope};
+use crate::output::{Failure, failure_envelope, print_json, print_line, success_envelope};
 
 /// The legacy-outcome warning text (reference validate.ts).
 const LEGACY_OUTCOME_WARNING: &str =
@@ -124,11 +124,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
         let envelope = if findings.is_empty() {
             success_envelope("validate", fields)
         } else {
-            let mut body = Map::new();
-            body.insert("success".into(), Value::Bool(false));
-            body.insert("command".into(), Value::String("validate".into()));
-            body.extend(fields);
-            Value::Object(body)
+            failure_envelope("validate", fields)
         };
         print_json(&envelope, false);
     } else {
