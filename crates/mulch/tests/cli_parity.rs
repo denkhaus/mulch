@@ -5160,10 +5160,9 @@ fn status_partial_config_blocks_backfill_per_field_like_reference() {
     assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
 }
 
-// mulch-15d3 battery additions — legacy singular `outcome` with odd
-// values (absorbs mulch-1609). Append this module's items to
-// crates/mulch/tests/cli_parity.rs (helpers used: reference_ml,
-// run_in, TempDir, read_store_file, mask_timestamps).
+// mulch-15d3 battery: the legacy singular `outcome` field with odd
+// values (absorbs mulch-1609) — listing, append, and doctor --fix
+// parity across number/string/null/array/empty-object shapes.
 
 /// A crafted store with one record per legacy `outcome` value shape:
 /// number, string, null, array, empty object, proper object (control)
