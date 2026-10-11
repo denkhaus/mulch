@@ -46,9 +46,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
                     // Legacy singular outcome: a warning, and it
                     // REPLACES the schema check for that record
                     // (reference else-if).
-                    let legacy = record.as_object().is_some_and(|object| {
-                        object.contains_key("outcome") && !object.contains_key("outcomes")
-                    });
+                    let legacy = mulch::legacy_outcome(&record).is_some();
                     if legacy {
                         stream.push((true, Finding {
                             domain: domain.clone(),
