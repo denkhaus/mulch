@@ -38,9 +38,9 @@ impl StaleRule {
         let Some(classification) = record.get("classification").and_then(Value::as_str) else {
             return StaleVerdict::Fresh;
         };
-        let days = match classification {
-            "tactical" => self.tactical_days,
-            "observational" => self.observational_days,
+        let (days, expired) = match classification {
+            "tactical" => (self.tactical_days, "tactical"),
+            "observational" => (self.observational_days, "observational"),
             // foundational and anything unknown never decay
             _ => return StaleVerdict::Fresh,
         };
@@ -62,7 +62,9 @@ impl StaleRule {
         let boundary_ms = days.saturating_add(1).saturating_mul(86_400_000);
         let age_ms = now.as_millisecond() - recorded.as_millisecond();
         if age_ms >= boundary_ms {
-            StaleVerdict::Stale
+            StaleVerdict::Stale {
+                classification: expired,
+            }
         } else {
             StaleVerdict::Fresh
         }
@@ -75,8 +77,14 @@ pub enum StaleVerdict {
     /// Never decays: foundational, unknown/missing/non-string
     /// classification, or within shelf life.
     Fresh,
-    /// Past its classification's shelf life.
-    Stale,
+    /// Past its classification's shelf life; carries the expired
+    /// classification. Only the decaying classifications go stale, so
+    /// the payload is always `"tactical"` or `"observational"` — a
+    /// stale verdict never has to re-extract the record's field.
+    Stale {
+        /// The expired classification.
+        classification: &'static str,
+    },
     /// recorded_at missing or unparsable — the age is unknown, so the
     /// record never decays (the reference's NaN comparisons are
     /// false); schema validation owns reporting it.
@@ -139,12 +147,18 @@ mod tests {
             json!({"type": "pattern", "classification": "tactical", "recorded_at": recorded.to_string()})
         };
         assert_eq!(rule.verdict(&mid, now), StaleVerdict::Fresh);
-        assert_eq!(rule.verdict(&at(15), now), StaleVerdict::Stale);
-        assert_eq!(rule.verdict(&at(40), now), StaleVerdict::Stale);
+        assert_eq!(rule.verdict(&at(15), now), StaleVerdict::Stale {
+            classification: "tactical",
+        });
+        assert_eq!(rule.verdict(&at(40), now), StaleVerdict::Stale {
+            classification: "tactical",
+        });
         // observational: fresh at 30, stale at 31
         let obs = |days: i64| json!({"type": "pattern", "classification": "observational", "recorded_at": ago(days)});
         assert_eq!(rule.verdict(&obs(30), now), StaleVerdict::Fresh);
-        assert_eq!(rule.verdict(&obs(31), now), StaleVerdict::Stale);
+        assert_eq!(rule.verdict(&obs(31), now), StaleVerdict::Stale {
+            classification: "observational",
+        });
     }
 
     #[test]

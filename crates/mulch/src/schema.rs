@@ -47,8 +47,11 @@ const BASE_PROPERTIES: [&str; 13] = [
     "status",
 ];
 
-/// The three classification values (reference enum).
-const CLASSIFICATIONS: [&str; 3] = ["foundational", "tactical", "observational"];
+/// The three classification values, in the reference enum's order —
+/// the one owner of the list (schema validation, the status
+/// classification-distribution seed, and other consumers seed from
+/// here).
+pub const CLASSIFICATIONS: [&str; 3] = ["foundational", "tactical", "observational"];
 
 /// The three record-status values (reference enum; `archived` is
 /// intentionally absent — soft-archived records bypass the schema).

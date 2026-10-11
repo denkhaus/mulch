@@ -466,14 +466,8 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
             // The verdict owns the extraction (mulch-f9b9: a missing or
             // unknown classification never decays — the reference
             // `isStale` falls through to `false`, it does NOT default
-            // to tactical).
-            if rule.verdict(record, now) == StaleVerdict::Stale {
-                // Stale implies a known string classification (the
-                // verdict never flags anything else).
-                let classification = record
-                    .get("classification")
-                    .and_then(Value::as_str)
-                    .expect("verdict Stale implies a string classification");
+            // to tactical) and carries the expired classification.
+            if let StaleVerdict::Stale { classification } = rule.verdict(record, now) {
                 // The reference template-stringifies the type — a
                 // missing one renders as `undefined`, any other
                 // non-string through JS String coercion.
@@ -662,7 +656,8 @@ fn apply_fixes(
         // The verdict owns the extraction; an unparsable or missing
         // recorded_at never prunes, and a missing/unknown
         // classification never decays (mulch-f9b9).
-        let keep = |record: &Value| rule.verdict(record, now) != StaleVerdict::Stale;
+        let keep =
+            |record: &Value| !matches!(rule.verdict(record, now), StaleVerdict::Stale { .. });
         for domain in domains {
             if let Some(count) = value_line_pass(store, &domain.domain, keep)? {
                 fixes.push(format!(

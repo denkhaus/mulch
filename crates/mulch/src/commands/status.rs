@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
+use mulch::schema::CLASSIFICATIONS;
 use mulch::stale::{StaleRule, StaleVerdict};
 use serde_json::{Map, Value};
 
@@ -12,9 +13,6 @@ use crate::output::{Failure, print_json, print_line, success_envelope};
 /// Record types in the reference's fixed distribution order (the
 /// registry's order; mulch-a3de).
 const TYPES: [&str; 6] = mulch::PAYLOAD_TYPES;
-
-/// Classifications in the reference's fixed distribution order.
-const CLASSIFICATIONS: [&str; 3] = ["foundational", "tactical", "observational"];
 
 /// Runs `status` against the store at the current directory.
 pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
@@ -29,22 +27,14 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let mut domains_json = Vec::new();
     for domain in store.domains() {
         let (records, mtime) = read_domain(opts, &store, &domain)?;
-        let observational_days = shelf_life.observational;
-        let (max_entries, warn_entries, hard_limit) = (
-            governance.max_entries,
-            governance.warn_entries,
-            governance.hard_limit,
-        );
         let status = DomainStatus::compute(
             &domain,
             &records,
             mtime,
             now,
             &rule,
-            max_entries,
-            warn_entries,
-            hard_limit,
-            observational_days,
+            &governance,
+            &shelf_life,
         );
 
         domain_lines.push(status.plain_line(now));
@@ -95,10 +85,8 @@ impl DomainStatus {
         mtime: Option<Timestamp>,
         now: Timestamp,
         rule: &StaleRule,
-        max_entries: u64,
-        warn_entries: u64,
-        hard_limit: u64,
-        observational_days: u64,
+        governance: &mulch::Governance,
+        shelf: &mulch::ShelfLife,
     ) -> Self {
         // Distributions count in ordered usize maps; the JSON shape
         // (seeded keys first, extras in first-seen order, the JS
@@ -127,7 +115,7 @@ impl DomainStatus {
             // The verdict owns the decay rule (reference isRecordStale:
             // unknown/missing -> never stale, and the (shelf+1)-day
             // boundary); it parses recorded_at itself.
-            if rule.verdict(record, now) == StaleVerdict::Stale {
+            if matches!(rule.verdict(record, now), StaleVerdict::Stale { .. }) {
                 stale_count += 1;
             }
         }
@@ -140,7 +128,7 @@ impl DomainStatus {
                 // age-in-days); the span is finite and non-negative
                 let age_days =
                     f64_to_u64(((now - newest).total(jiff::Unit::Hour)).unwrap_or(0.0) / 24.0);
-                if age_days > observational_days {
+                if age_days > shelf.observational {
                     (true, Some(age_days))
                 } else {
                     (false, None)
@@ -151,9 +139,9 @@ impl DomainStatus {
 
         Self {
             domain: domain.into(),
-            max_entries,
-            warn_entries,
-            hard_limit,
+            max_entries: governance.max_entries,
+            warn_entries: governance.warn_entries,
+            hard_limit: governance.hard_limit,
             count: records.len(),
             last_updated: mtime,
             oldest_recorded,
