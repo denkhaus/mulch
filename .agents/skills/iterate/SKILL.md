@@ -143,7 +143,10 @@ architecture direction, milestone content, go/no-go):
   plus `but status`), and after the commit verify the real file list with
   `git show --stat <hash>`. Never write counts into a message ("7 sites
   collapsed") without counting the COMMITTED diff — spec reviewers check
-  exactly that claim.
+  exactly that claim. (Sprint 22 addition: `but diff`
+  lists ONE id per HUNK — a multi-hunk file needs every hunk id in the
+  commit call, or the commit lands partially and the integrity check is
+  what catches it.)
 - **Mulch is the domain brain**: `ml record <domain> --type
   <convention|pattern|failure|decision|reference|guide>` for every learning
   (API dead-ends, format quirks, gate outcomes). Evidence:
@@ -257,17 +260,32 @@ This skill is a LOCAL loop asset owned by this loop (user directive
 `.fabro/**` develop-line rule (loop assets evolve through seeds, friction
 goes to the journal) is untouched — never edit `.fabro/` assets in-pass.
 
-## Delegation (user directive 2026-10-03)
+## Delegation (user directive 2026-10-03, extended 2026-10-11)
 
 Delegate worthwhile, self-contained work to SUBAGENTS instead of doing
 everything in the host session: both code-review axes (always parallel),
 the arch-gate explorer, mechanical workspace-wide sweeps (renames, doc
 consistency greps), research (reference `ml` behaviour probes), and
-independent implementation chunks. Subagents NEVER run git write commands,
-never push, never `but commit` — they produce findings/files/replies
-(reviewers are strictly read-only; explorer/sweep children may write
-files); the host owns every `but` mutation on the `iterate` lane. Spawn children in
-parallel, collect their replies, fold results in one pass.
+independent implementation chunks. Spawn children in parallel, collect
+their replies, fold results in one pass.
+
+**Parallel-lane sprints (user directive 2026-10-11, proven sprint 22):**
+a multi-seed sprint's chain links run as SIMULTANEOUS subagents on their
+own GitButler lanes stacked above `iterate` (`but branch new <lane>
+--above iterate`), in this same worktree. Binding protocol: DISJOINT
+file ownership per child — shared files (`tests/`, `README.md`,
+`.seeds/`, `.mulch/`) are host-folded from child deliveries under
+`/tmp/sprint22/<lane>/`; children commit their OWNED files via `but
+commit -b <lane>` with explicit IDs, never git/pull/push/`ml sync`;
+children run NO workspace fmt/clippy/qualitygate (host gates at
+integration) and wrap every long command in `timeout`; compile errors
+in files a child does not own are sibling WIP — wait 60-120s, retry
+(max 2), never fix foreign files. Host integration: fmt+clippy over the
+lanes, battery folds, then `but move <commit> -b iterate` per commit
+OLDEST-FIRST (change-IDs survive moves), then ONE integration commit
+(collect ALL hunk IDs — see the commit-integrity check). Reviewers stay
+strictly read-only; lane children write only their owned files + /tmp
+deliverables.
 
 ## State file (sprint counter)
 
