@@ -5875,9 +5875,11 @@ mod battery_s23_b {
 /// one domain per record count. Records are fresh foundational
 /// patterns with distinct names (no stale/duplicates noise).
 fn governance_fixture(dir: &Path, governance: &str, counts: &[(&str, usize)]) {
+    use std::fmt::Write as _;
+
     let mut config = String::from("version: '1'\ndomains:\n");
     for (domain, _) in counts {
-        let _ = std::fmt::Write::write_fmt(&mut config, format_args!("  {domain}: {{}}\n"));
+        let _ = writeln!(config, "  {domain}: {{}}");
     }
     config.push_str(governance);
     std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");

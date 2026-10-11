@@ -608,29 +608,24 @@ fn governance_limits(governance: &mulch::Governance, domains: &[DomainLines]) ->
     let mut worst = Status::Pass;
     for domain in domains {
         let count = u64::try_from(records_of(domain).count()).unwrap_or(0);
-        if count >= governance.hard_limit {
-            details.push(format!(
-                "{}: {count} records (over hard limit of {})",
-                domain.domain, governance.hard_limit
-            ));
-            worst = Status::Fail;
+        let (tier, threshold, wording) = if count >= governance.hard_limit {
+            (Status::Fail, governance.hard_limit, "over hard limit of")
         } else if count >= governance.warn_entries {
-            details.push(format!(
-                "{}: {count} records (over warn threshold of {})",
-                domain.domain, governance.warn_entries
-            ));
-            if !matches!(worst, Status::Fail) {
-                worst = Status::Warn;
-            }
+            (
+                Status::Warn,
+                governance.warn_entries,
+                "over warn threshold of",
+            )
         } else if count >= governance.max_entries {
-            details.push(format!(
-                "{}: {count} records (approaching limit of {})",
-                domain.domain, governance.max_entries
-            ));
-            if !matches!(worst, Status::Fail) {
-                worst = Status::Warn;
-            }
-        }
+            (Status::Warn, governance.max_entries, "approaching limit of")
+        } else {
+            continue;
+        };
+        details.push(format!(
+            "{}: {count} records ({wording} {threshold})",
+            domain.domain
+        ));
+        worst = worse(worst, tier);
     }
     if details.is_empty() {
         Check {
@@ -648,6 +643,15 @@ fn governance_limits(governance: &mulch::Governance, domains: &[DomainLines]) ->
             fixable: false,
             details,
         }
+    }
+}
+
+/// The worse of two check statuses (fail > warn > pass).
+fn worse(current: Status, candidate: Status) -> Status {
+    match (current, candidate) {
+        (Status::Fail, _) | (_, Status::Fail) => Status::Fail,
+        (Status::Warn, _) | (_, Status::Warn) => Status::Warn,
+        (Status::Pass, Status::Pass) => Status::Pass,
     }
 }
 

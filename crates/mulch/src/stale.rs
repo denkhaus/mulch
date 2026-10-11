@@ -38,7 +38,7 @@ impl StaleRule {
         let Some(classification) = record.get("classification").and_then(Value::as_str) else {
             return StaleVerdict::Fresh;
         };
-        let (days, expired) = match classification {
+        let (days, shelf_class) = match classification {
             "tactical" => (self.tactical_days, "tactical"),
             "observational" => (self.observational_days, "observational"),
             // foundational and anything unknown never decay
@@ -63,7 +63,7 @@ impl StaleRule {
         let age_ms = now.as_millisecond() - recorded.as_millisecond();
         if age_ms >= boundary_ms {
             StaleVerdict::Stale {
-                classification: expired,
+                classification: shelf_class,
             }
         } else {
             StaleVerdict::Fresh

@@ -3,7 +3,7 @@
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
-use mulch::schema::CLASSIFICATIONS;
+use mulch::CLASSIFICATIONS;
 use mulch::stale::{StaleRule, StaleVerdict};
 use serde_json::{Map, Value};
 

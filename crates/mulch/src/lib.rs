@@ -32,6 +32,7 @@ pub use records::{
     read_lenient, read_strict, record_summary, resolve_record_id, upsert_plan, value_text,
     write_records,
 };
+pub use schema::CLASSIFICATIONS;
 pub use store_files::{StoreFiles, StoreLocation};
 
 /// The reference implementation this crate is read+write compatible with
