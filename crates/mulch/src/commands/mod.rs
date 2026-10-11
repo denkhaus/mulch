@@ -341,7 +341,9 @@ impl<'a> PayloadFlags<'a> {
             .map(|value| format!("--{field} \"{value}\""))
     }
 
-    /// The table's field universe.
+    /// The table's field universe (the pin surface in
+    /// [`payload_flags_tests`]).
+    #[cfg(test)]
     pub(crate) fn fields(&self) -> impl Iterator<Item = &'static str> {
         self.table.iter().map(|(name, _)| *name)
     }

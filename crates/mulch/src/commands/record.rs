@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, RecordArgs};
 use crate::commands::{PayloadFlags, now_iso};
-use crate::output::{Failure, print_json, print_line, success_envelope};
+use crate::output::{Failure, failure_envelope, print_json, print_line, success_envelope};
 
 /// Builds the canonical JSONL object for the flag path (field order
 /// pinned from the reference: type, classification, recorded_at,
@@ -637,14 +637,12 @@ fn stdin_batch(
         .collect::<Vec<_>>()
         .join("; ");
     if failed && opts.json {
-        let mut body = serde_json::Map::new();
-        body.insert("success".into(), Value::Bool(false));
-        body.insert("command".into(), Value::String("record".into()));
-        body.insert(
+        let mut fields = serde_json::Map::new();
+        fields.insert(
             "error".into(),
             Value::String(format!("Validation errors: {summary}")),
         );
-        print_json(&Value::Object(body), true);
+        print_json(&failure_envelope("record", fields), true);
     }
     if failed && !opts.json {
         #[allow(
