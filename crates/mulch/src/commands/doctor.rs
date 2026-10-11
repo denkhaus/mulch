@@ -79,8 +79,10 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     };
 
     let domains = read_domains(&store);
-    let rule = StaleRule::from_shelf_life(&store.config().effective_shelf_life());
-    let checks = run_checks(opts, &rule, &domains);
+    let config = store.config();
+    let rule = StaleRule::from_shelf_life(&config.effective_shelf_life());
+    let governance = config.effective_governance();
+    let checks = run_checks(opts, &rule, &governance, &domains);
     let gates = FixGates::from_checks(&checks);
 
     let pass = checks
@@ -192,7 +194,12 @@ fn records_of(domain: &DomainLines) -> impl Iterator<Item = (usize, &Value)> {
 }
 
 /// Runs the 17 checks in the reference's fixed order.
-fn run_checks(opts: &GlobalOpts, rule: &StaleRule, domains: &[DomainLines]) -> Vec<Check> {
+fn run_checks(
+    opts: &GlobalOpts,
+    rule: &StaleRule,
+    governance: &mulch::Governance,
+    domains: &[DomainLines],
+) -> Vec<Check> {
     vec![
         Check {
             name:    "config",
@@ -237,13 +244,7 @@ fn run_checks(opts: &GlobalOpts, rule: &StaleRule, domains: &[DomainLines]) -> V
             fixable: true,
             details: Vec::new(),
         },
-        Check {
-            name:    "governance",
-            status:  Status::Pass,
-            message: "All domains within governance limits".into(),
-            fixable: false,
-            details: Vec::new(),
-        },
+        governance_limits(governance, domains),
         Check {
             name:    "decay-config",
             status:  Status::Pass,
@@ -594,6 +595,60 @@ fn divergent_ids(domain: &str, records: &[&Value]) -> Vec<String> {
         }
     }
     details
+}
+
+/// Governance: per-domain record counts vs the effective thresholds
+/// (reference `checkGovernance`): at `max_entries` a domain warns
+/// "approaching limit", at `warn_entries` "over warn threshold", at
+/// `hard_limit` the check FAILS; the worst status wins and the
+/// details follow domain order. Not fixable (`--fix` never touches
+/// counts).
+fn governance_limits(governance: &mulch::Governance, domains: &[DomainLines]) -> Check {
+    let mut details = Vec::new();
+    let mut worst = Status::Pass;
+    for domain in domains {
+        let count = u64::try_from(records_of(domain).count()).unwrap_or(0);
+        if count >= governance.hard_limit {
+            details.push(format!(
+                "{}: {count} records (over hard limit of {})",
+                domain.domain, governance.hard_limit
+            ));
+            worst = Status::Fail;
+        } else if count >= governance.warn_entries {
+            details.push(format!(
+                "{}: {count} records (over warn threshold of {})",
+                domain.domain, governance.warn_entries
+            ));
+            if !matches!(worst, Status::Fail) {
+                worst = Status::Warn;
+            }
+        } else if count >= governance.max_entries {
+            details.push(format!(
+                "{}: {count} records (approaching limit of {})",
+                domain.domain, governance.max_entries
+            ));
+            if !matches!(worst, Status::Fail) {
+                worst = Status::Warn;
+            }
+        }
+    }
+    if details.is_empty() {
+        Check {
+            name:    "governance",
+            status:  Status::Pass,
+            message: "All domains within governance limits".into(),
+            fixable: false,
+            details: Vec::new(),
+        }
+    } else {
+        Check {
+            name: "governance",
+            status: worst,
+            message: format!("{} domain(s) over governance thresholds", details.len()),
+            fixable: false,
+            details,
+        }
+    }
 }
 
 /// Applies the probed `--fix` semantics: stale records are pruned and
@@ -1018,6 +1073,48 @@ mod tests {
         assert_eq!(untouched, None);
         assert_eq!(read_domain(&store, "d"), "{\"a\": 1}\n");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn governance_limits_tier_wording_and_worst_status_win() {
+        let domain = |name: &str, records: usize| DomainLines {
+            domain: name.into(),
+            lines:  (1..=records)
+                .map(|line| mulch::LenientLine::Record {
+                    line,
+                    record: serde_json::json!({"type": "pattern"}),
+                })
+                .collect(),
+        };
+        let governance = mulch::Governance {
+            max_entries:  5,
+            warn_entries: 8,
+            hard_limit:   12,
+        };
+        // under every threshold: the clean-store pass
+        let pass = governance_limits(&governance, &[domain("alpha", 4)]);
+        assert!(matches!(pass.status, Status::Pass));
+        assert_eq!(pass.message, "All domains within governance limits");
+        assert_eq!(pass.details, Vec::<String>::new());
+        // the thresholds fire AT the boundary (>=), worst status wins,
+        // details follow domain order
+        let over = governance_limits(&governance, &[
+            domain("beta", 5),
+            domain("gamma", 8),
+            domain("delta", 12),
+        ]);
+        assert!(matches!(over.status, Status::Fail));
+        assert_eq!(over.message, "3 domain(s) over governance thresholds");
+        assert!(!over.fixable);
+        assert_eq!(over.details, [
+            "beta: 5 records (approaching limit of 5)",
+            "gamma: 8 records (over warn threshold of 8)",
+            "delta: 12 records (over hard limit of 12)",
+        ]);
+        // without a hard-limit overrun the check only warns
+        let warn = governance_limits(&governance, &[domain("beta", 5)]);
+        assert!(matches!(warn.status, Status::Warn));
+        assert_eq!(warn.details, ["beta: 5 records (approaching limit of 5)"]);
     }
 
     /// The no-store JSON envelope without a store on disk: the failure
