@@ -116,8 +116,13 @@ pub(super) fn run(
     // write); the single-id mode rides the locator seam's read half.
     let (lines, mut removal_indices): (Vec<_>, Vec<usize>) = match &mode {
         Mode::Single(id) => {
-            let (lines, position) =
-                crate::commands::read_and_resolve("delete", &store, domain, id, opts.allow_unknown_types)?;
+            let (lines, position) = crate::commands::read_and_resolve(
+                "delete",
+                &store,
+                domain,
+                id,
+                opts.allow_unknown_types,
+            )?;
             (lines, vec![position])
         }
         Mode::Records(ids) => {
@@ -257,11 +262,9 @@ fn read_lines(
     domain: &str,
     allow_unknown: bool,
 ) -> Result<Vec<mulch::LineRecord>, Failure> {
-    store
-        .read_records(domain, allow_unknown)
-        .map_err(|source| {
-            Failure::handled_on_stderr("delete", crate::commands::render_core_error(&source))
-        })
+    store.read_records(domain, allow_unknown).map_err(|source| {
+        Failure::handled_on_stderr("delete", crate::commands::render_core_error(&source))
+    })
 }
 
 /// A `serde_json::Value::Object` from a `json!` macro result.

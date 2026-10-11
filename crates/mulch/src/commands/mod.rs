@@ -220,6 +220,41 @@ pub(crate) fn read_and_resolve(
     Ok((records, position))
 }
 
+/// The full-record verdict of an UPDATED record for the write gates
+/// (`edit`, `move`): [`mulch::schema::full_verdict`] over the
+/// reference's in-memory shape. When the target's raw line carries a
+/// singular `outcome` key, the strict reader normalizes it away — but
+/// the reference's in-memory copy keeps the key (an undefined-valued
+/// property after its normalization, the raw value otherwise), and
+/// its ajv gate reports the record as having an additional property.
+/// `line` is the target's physical (1-based) line number.
+pub(crate) fn updated_record_verdict(
+    store: &mulch::StoreFiles,
+    domain: &str,
+    line: usize,
+    updated: &serde_json::Value,
+) -> mulch::schema::FullVerdict {
+    let raw_had_outcome = store.read_lenient(domain).into_iter().any(|finding| {
+        matches!(&finding,
+            mulch::LenientLine::Record { line: at, record }
+                if *at == line
+                    && record
+                        .as_object()
+                        .is_some_and(|object| object.contains_key("outcome")))
+    });
+    if !raw_had_outcome {
+        return mulch::schema::full_verdict(updated);
+    }
+    // Key presence alone decides the additional-property report; the
+    // reference's undefined value is unrepresentable in JSON, and
+    // null behaves identically there.
+    let mut augmented = updated.clone();
+    if let Some(object) = augmented.as_object_mut() {
+        object.insert("outcome".into(), serde_json::Value::Null);
+    }
+    mulch::schema::full_verdict(&augmented)
+}
+
 /// The single-id prologue every per-record command opens with: open
 /// the store, check the domain, strict-read the file, resolve the id
 /// (mulch-0fd8 — one seam beside [`open_store`],
