@@ -19,7 +19,7 @@ use std::path::Path;
 pub(crate) use mulch::StoreLocation;
 use mulch::{Error, ResolveError};
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, EditArgs, RecordArgs};
 use crate::output::Failure;
 
 /// The handled-error message for a missing store (status et al.).
@@ -281,6 +281,72 @@ pub(crate) fn locate_record(
     Ok((store, records, position))
 }
 
+/// The payload<->flag adapter (mulch-4ee2): the one owner of the six
+/// registry payload fields' CLI flag sources. `record` and `edit`
+/// read payload fields through [`PayloadFlags::get`], so the
+/// field->flag mapping (and record's `--content`-over-positional
+/// precedence) lives in one table instead of one hand-copy per
+/// command.
+pub(crate) struct PayloadFlags<'a> {
+    /// (payload field, provided flag value) rows, one per registry
+    /// payload field.
+    table: [(&'static str, Option<&'a str>); 6],
+}
+
+impl<'a> PayloadFlags<'a> {
+    /// `record`'s rows: `--content` wins over the positional content
+    /// shorthand.
+    pub(crate) fn from_record(args: &'a RecordArgs) -> Self {
+        Self {
+            table: [
+                (
+                    "content",
+                    args.content_flag.as_deref().or(args.content.as_deref()),
+                ),
+                ("name", args.name.as_deref()),
+                ("description", args.description.as_deref()),
+                ("resolution", args.resolution.as_deref()),
+                ("title", args.title.as_deref()),
+                ("rationale", args.rationale.as_deref()),
+            ],
+        }
+    }
+
+    /// `edit`'s rows: content is the `--content` flag alone.
+    pub(crate) fn from_edit(args: &'a EditArgs) -> Self {
+        Self {
+            table: [
+                ("content", args.content.as_deref()),
+                ("name", args.name.as_deref()),
+                ("description", args.description.as_deref()),
+                ("resolution", args.resolution.as_deref()),
+                ("title", args.title.as_deref()),
+                ("rationale", args.rationale.as_deref()),
+            ],
+        }
+    }
+
+    /// The provided flag value for a payload field, if any.
+    pub(crate) fn get(&self, field: &str) -> Option<&'a str> {
+        self.table
+            .iter()
+            .find(|(name, _)| *name == field)
+            .and_then(|(_, value)| *value)
+    }
+
+    /// The retry-echo pair `--{field} "{value}"` of a provided flag
+    /// (the missing-flags failure's `Retry:` line shape).
+    pub(crate) fn retry_pair(&self, field: &str) -> Option<String> {
+        self.get(field)
+            .map(|value| format!("--{field} \"{value}\""))
+    }
+
+    /// The table's field universe.
+    pub(crate) fn fields(&self) -> impl Iterator<Item = &'static str> {
+        self.table.iter().map(|(name, _)| *name)
+    }
+}
+
 /// Reads a one-line answer from stdin (the delete-domain prompt).
 pub(crate) fn read_confirmation() -> std::io::Result<String> {
     use std::io::BufRead as _;
@@ -356,5 +422,130 @@ mod tests {
         );
         let none = unknown_domain_failure("delete", "x", &[], false, DomainFailure::Standard);
         assert!(none.message.ends_with("Available domains: (none)"));
+    }
+}
+
+#[cfg(test)]
+mod payload_flags_tests {
+    use super::*;
+
+    fn record_args(args: &[&str]) -> RecordArgs {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::parse_from(std::iter::once("mulch").chain(args.iter().copied()));
+        let Some(crate::cli::Command::Record(args)) = cli.command else {
+            panic!("test args must parse as a record invocation");
+        };
+        *args
+    }
+
+    fn edit_args(args: &[&str]) -> EditArgs {
+        use clap::Parser as _;
+        let cli = crate::cli::Cli::parse_from(std::iter::once("mulch").chain(args.iter().copied()));
+        let Some(crate::cli::Command::Edit(args)) = cli.command else {
+            panic!("test args must parse as an edit invocation");
+        };
+        *args
+    }
+
+    fn record_args_all_set() -> RecordArgs {
+        record_args(&[
+            "record",
+            "d",
+            "--content",
+            "content",
+            "--name",
+            "name",
+            "--description",
+            "description",
+            "--resolution",
+            "resolution",
+            "--title",
+            "title",
+            "--rationale",
+            "rationale",
+        ])
+    }
+
+    /// The adapter is the one flag-table owner: its universe is the
+    /// registry's payload universe (the merged mulch-a3de pin; a
+    /// registry row gaining a field without adapter plumbing fails
+    /// here, and so does a table row the registry dropped).
+    #[test]
+    fn table_universe_is_the_registry_payload_universe() {
+        let mut universe: Vec<&str> = mulch::REGISTRY
+            .iter()
+            .flat_map(|spec| spec.payload.iter().copied())
+            .collect();
+        universe.sort_unstable();
+        universe.dedup();
+        let args = record_args_all_set();
+        let flags = PayloadFlags::from_record(&args);
+        let mut table: Vec<&str> = flags.fields().collect();
+        table.sort_unstable();
+        table.dedup();
+        assert_eq!(
+            table, universe,
+            "a registry payload field has no flag plumbing"
+        );
+    }
+
+    /// Every registry payload field resolves to its own flag value
+    /// through both constructors (the record and edit rows stay the
+    /// same table; unknown fields read as absent).
+    #[test]
+    fn registry_fields_reach_their_flag_values() {
+        let record_args = record_args_all_set();
+        let record_flags = PayloadFlags::from_record(&record_args);
+        let edit_args = edit_args(&[
+            "edit",
+            "d",
+            "mx-x",
+            "--content",
+            "content",
+            "--name",
+            "name",
+            "--description",
+            "description",
+            "--resolution",
+            "resolution",
+            "--title",
+            "title",
+            "--rationale",
+            "rationale",
+        ]);
+        let edit_flags = PayloadFlags::from_edit(&edit_args);
+        for spec in &mulch::REGISTRY {
+            for field in spec.payload {
+                assert_eq!(record_flags.get(field), Some(*field));
+                assert_eq!(edit_flags.get(field), Some(*field));
+            }
+        }
+        assert_eq!(record_flags.get("date"), None);
+    }
+
+    /// `record`'s content law: `--content` wins over the positional
+    /// shorthand (the one row the two constructors disagree on).
+    #[test]
+    fn record_content_flag_wins_over_the_positional() {
+        let both = record_args(&["record", "d", "positional", "--content", "flag"]);
+        assert_eq!(
+            PayloadFlags::from_record(&both).get("content"),
+            Some("flag")
+        );
+        let positional = record_args(&["record", "d", "positional"]);
+        assert_eq!(
+            PayloadFlags::from_record(&positional).get("content"),
+            Some("positional")
+        );
+    }
+
+    /// The retry-echo pair shape (the missing-flags failure's
+    /// `Retry:` line): `--{field} "{value}"`, absent without a value.
+    #[test]
+    fn retry_pairs_render_the_reference_echo_shape() {
+        let args = record_args(&["record", "d", "--name", "n v"]);
+        let flags = PayloadFlags::from_record(&args);
+        assert_eq!(flags.retry_pair("name"), Some("--name \"n v\"".to_string()));
+        assert_eq!(flags.retry_pair("description"), None);
     }
 }

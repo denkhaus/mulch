@@ -8,7 +8,7 @@ use mulch::{id_key_field, record_id, schema};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, RecordArgs};
-use crate::commands::now_iso;
+use crate::commands::{PayloadFlags, now_iso};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Builds the canonical JSONL object for the flag path (field order
@@ -22,26 +22,20 @@ fn build_record(
 ) -> Result<Map<String, Value>, Failure> {
     let record_type = mulch::effective_type(args.record_type.as_deref()).to_string();
     let payload: &[&str] = mulch::payload_fields(&record_type);
-
-    let provided = |field: &str| -> Option<String> {
-        match field {
-            "content" => args.content_flag.clone().or_else(|| args.content.clone()),
-            "name" => args.name.clone(),
-            "description" => args.description.clone(),
-            "resolution" => args.resolution.clone(),
-            "title" => args.title.clone(),
-            "rationale" => args.rationale.clone(),
-            _ => None,
-        }
-    };
+    let flags = PayloadFlags::from_record(args);
 
     let missing: Vec<&str> = payload
         .iter()
         .copied()
-        .filter(|field| provided(field).is_none())
+        .filter(|field| flags.get(field).is_none())
         .collect();
     if !missing.is_empty() {
-        return Err(missing_flags_failure(&record_type, &missing, args));
+        return Err(missing_flags_failure(
+            &record_type,
+            &missing,
+            &args.domain,
+            &flags,
+        ));
     }
 
     let mut record = Map::new();
@@ -97,7 +91,7 @@ fn build_record(
     for field in payload {
         record.insert(
             (*field).into(),
-            Value::String(provided(field).unwrap_or_default()),
+            Value::String(flags.get(field).unwrap_or_default().to_string()),
         );
     }
     // The reference collects fields from `def.required ∪ def.optional`
@@ -117,8 +111,8 @@ fn build_record(
         return Err(ref_validation_failure(&subs, &hint));
     }
 
-    let id_key_value = provided(id_key_field(&record_type)).unwrap_or_default();
-    let id = record_id(&record_type, &id_key_value);
+    let id_key_value = flags.get(id_key_field(&record_type)).unwrap_or_default();
+    let id = record_id(&record_type, id_key_value);
     record.insert("id".into(), Value::String(id));
     Ok(record)
 }
@@ -141,15 +135,20 @@ fn ref_validation_failure(subs: &[schema::SubError], hint: &str) -> Failure {
 }
 
 /// The missing-required-flag failure with the reference's Retry hint.
-fn missing_flags_failure(record_type: &str, missing: &[&str], args: &RecordArgs) -> Failure {
-    let flags: Vec<String> = missing.iter().map(|f| format!("--{f}")).collect();
-    let mut echo = format!("ml record {} --type {record_type}", args.domain);
+fn missing_flags_failure(
+    record_type: &str,
+    missing: &[&str],
+    domain: &str,
+    flags: &PayloadFlags<'_>,
+) -> Failure {
+    let missing_flags: Vec<String> = missing.iter().map(|f| format!("--{f}")).collect();
+    let mut echo = format!("ml record {domain} --type {record_type}");
     for field in ["name", "description", "resolution", "title", "rationale"] {
-        if let Some(value) = provided_flag(args, field) {
-            let _ = write!(echo, " --{field} \"{value}\"");
+        if let Some(pair) = flags.retry_pair(field) {
+            let _ = write!(echo, " {pair}");
         }
     }
-    for flag in &flags {
+    for flag in &missing_flags {
         let hint = flag.trim_start_matches("--");
         let _ = write!(echo, " {flag} \"<{hint}>\"");
     }
@@ -158,20 +157,9 @@ fn missing_flags_failure(record_type: &str, missing: &[&str], args: &RecordArgs)
         format!(
             "Error: {} records are missing required flag(s): {}.\n  Retry: {echo}",
             record_type,
-            flags.join(", ")
+            missing_flags.join(", ")
         ),
     )
-}
-
-fn provided_flag(args: &RecordArgs, field: &str) -> Option<String> {
-    match field {
-        "name" => args.name.clone(),
-        "description" => args.description.clone(),
-        "resolution" => args.resolution.clone(),
-        "title" => args.title.clone(),
-        "rationale" => args.rationale.clone(),
-        _ => None,
-    }
 }
 
 /// Comma list split.
@@ -755,35 +743,6 @@ fn validation_errors_block(errors: &[Value]) -> Vec<String> {
         }
     }
     lines
-}
-
-#[cfg(test)]
-mod flag_table_tests {
-    /// The flag tables (record's `provided`, edit's `updates`) hardcode
-    /// the six payload field names; this pin fails when a registry row
-    /// gains a field the plumbing does not know (mulch-a3de's
-    /// probe-diff step for the CLI-side tables).
-    #[test]
-    fn flag_tables_cover_the_registry_payload_universe() {
-        let mut universe: Vec<&str> = mulch::REGISTRY
-            .iter()
-            .flat_map(|spec| spec.payload.iter().copied())
-            .collect();
-        universe.sort_unstable();
-        universe.dedup();
-        assert_eq!(
-            universe,
-            vec![
-                "content",
-                "description",
-                "name",
-                "rationale",
-                "resolution",
-                "title"
-            ],
-            "a registry payload field has no flag plumbing"
-        );
-    }
 }
 
 #[cfg(test)]

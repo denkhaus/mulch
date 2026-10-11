@@ -3,7 +3,7 @@
 use serde_json::{Map, Value};
 
 use crate::cli::{EditArgs, GlobalOpts};
-use crate::commands::{DomainFailure, locate_record};
+use crate::commands::{DomainFailure, PayloadFlags, locate_record};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `edit`: updates fields in place (key positions preserved),
@@ -56,24 +56,16 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
         append_outcome_without_time(&mut record, status, &args.outcome, &args.id)?;
     }
 
-    // The type's field table: payload scalars replace in place, and
-    // `files` applies only where the type declares it (pattern and
-    // reference — the reference's def loop drops the flag for every
-    // other type, so no unknown extra field is ever written).
+    // The type's payload fields through the shared flag table: scalars
+    // replace in place, and `files` applies only where the type
+    // declares it (pattern and reference — the reference's def loop
+    // drops the flag for every other type, so no unknown extra field
+    // is ever written).
     let payload: &[&str] = mulch::payload_fields(&record_type);
-    let updates: [(&str, &Option<String>); 6] = [
-        ("content", &args.content),
-        ("name", &args.name),
-        ("description", &args.description),
-        ("resolution", &args.resolution),
-        ("title", &args.title),
-        ("rationale", &args.rationale),
-    ];
-    for (field, value) in updates {
-        if let Some(value) = value
-            && payload.contains(&field)
-        {
-            record.insert(field.into(), Value::String(value.clone()));
+    let flags = PayloadFlags::from_edit(args);
+    for &field in payload {
+        if let Some(value) = flags.get(field) {
+            record.insert(field.into(), Value::String(value.to_string()));
         }
     }
     if mulch::type_spec(&record_type).is_some_and(|spec| spec.optional.contains(&"files")) {
@@ -226,31 +218,5 @@ mod gate_tests {
             failure.envelope["error"],
             "Updated record failed schema validation:  must have required property 'content'"
         );
-    }
-}
-
-#[cfg(test)]
-mod flag_table_tests {
-    /// edit's `updates` table pins to the same registry payload
-    /// universe as record's (mulch-a3de probe-diff).
-    #[test]
-    fn updates_table_covers_the_registry_payload_universe() {
-        let mut universe: Vec<&str> = mulch::REGISTRY
-            .iter()
-            .flat_map(|spec| spec.payload.iter().copied())
-            .collect();
-        universe.sort_unstable();
-        universe.dedup();
-        let mut table = vec![
-            "content",
-            "name",
-            "description",
-            "resolution",
-            "title",
-            "rationale",
-        ];
-        table.sort_unstable();
-        table.dedup();
-        assert_eq!(universe, table);
     }
 }
