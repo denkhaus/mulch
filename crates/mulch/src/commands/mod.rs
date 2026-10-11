@@ -89,15 +89,14 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
             records,
             all_except,
             dry_run,
-        } => {
-            let mode = delete::Mode::from_args(
-                cli.opts.json,
-                id.as_deref(),
-                records.as_deref(),
-                all_except.as_deref(),
-            )?;
-            delete::run(&cli.opts, &mode, domain, *dry_run)
-        }
+        } => delete::run(
+            &cli.opts,
+            id.as_deref(),
+            records.as_deref(),
+            all_except.as_deref(),
+            domain,
+            *dry_run,
+        ),
         Command::DeleteDomain {
             domain,
             yes,
@@ -198,6 +197,51 @@ pub(crate) fn resolve_failure(command: &str, error: ResolveError) -> Failure {
             ),
         ),
     }
+}
+
+/// The read half of the record-locator seam: strict-reads the domain
+/// and resolves the identifier (exact id, bare hash, or unique prefix).
+/// `move` and `delete` reach this half directly — their prologues pin
+/// a different order around it (`move` checks source==target and both
+/// domains first, `delete` checks the domain before its mode
+/// validation, mulch-e645).
+pub(crate) fn read_and_resolve(
+    command: &str,
+    store: &mulch::StoreFiles,
+    domain: &str,
+    id: &str,
+    allow_unknown: bool,
+) -> Result<(Vec<mulch::LineRecord>, usize), Failure> {
+    let records = store
+        .read_records(domain, allow_unknown)
+        .map_err(|source| Failure::handled_on_stderr(command, render_core_error(&source)))?;
+    let position = mulch::resolve_record_id(&records, id)
+        .map_err(|error| resolve_failure(command, error))?;
+    Ok((records, position))
+}
+
+/// The single-id prologue every per-record command opens with: open
+/// the store, check the domain, strict-read the file, resolve the id
+/// (mulch-0fd8 — one seam beside [`open_store`],
+/// [`unknown_domain_failure`] and [`resolve_failure`]). `shape` and
+/// `config_message` select the unknown-domain and no-store wordings;
+/// the future per-record commands (query family) start here.
+pub(crate) fn locate_record(
+    opts: &crate::cli::GlobalOpts,
+    command: &'static str,
+    domain: &str,
+    id: &str,
+    shape: DomainFailure,
+    config_message: bool,
+) -> Result<(mulch::StoreFiles, Vec<mulch::LineRecord>, usize), Failure> {
+    let store = open_store(command, config_message)?;
+    let domains = store.domains();
+    if !domains.iter().any(|d| d == domain) {
+        return Err(unknown_domain_failure(command, domain, &domains, opts.json, shape));
+    }
+    let (records, position) =
+        read_and_resolve(command, &store, domain, id, opts.allow_unknown_types)?;
+    Ok((store, records, position))
 }
 
 /// Reads a one-line answer from stdin (the delete-domain prompt).

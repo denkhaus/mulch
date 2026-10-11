@@ -5,7 +5,7 @@ use mulch::value_text;
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, OutcomeFlags};
-use crate::commands::now_iso;
+use crate::commands::{DomainFailure, locate_record, now_iso};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `outcome`: with `--status` it appends
@@ -19,43 +19,13 @@ pub(super) fn run(
     id: &str,
     flags: &OutcomeFlags,
 ) -> Result<(), Failure> {
-    let store = crate::commands::open_store("outcome", false)?;
-
-    let domains = store.domains();
-    if !domains.iter().any(|d| d == domain) {
-        return Err(crate::commands::unknown_domain_failure(
-            "outcome",
-            domain,
-            &domains,
-            opts.json,
-            crate::commands::DomainFailure::Standard,
-        ));
-    }
+    let (store, records, position) =
+        locate_record(opts, "outcome", domain, id, DomainFailure::Standard, false)?;
 
     match flags.status.as_deref() {
-        Some(status) => append(opts, &store, domain, id, status, flags),
-        None => list(opts, &store, domain, id),
+        Some(status) => append(opts, &store, records, position, domain, id, status, flags),
+        None => list(opts, &records, position, domain),
     }
-}
-
-/// Reads the domain strictly and resolves `id` like delete/move
-/// (exact id, bare hash, or a unique prefix — reference
-/// `resolveRecordId`).
-fn read_and_locate(
-    store: &mulch::StoreFiles,
-    domain: &str,
-    id: &str,
-    allow_unknown_types: bool,
-) -> Result<(Vec<mulch::LineRecord>, usize), Failure> {
-    let records = store
-        .read_records(domain, allow_unknown_types)
-        .map_err(|source| {
-            Failure::handled_on_stderr("outcome", crate::commands::render_core_error(&source))
-        })?;
-    // Identifier resolution like delete/move (mulch-351d).
-    let position = mulch::resolve_record_id(&records, id)
-        .map_err(|error| crate::commands::resolve_failure("outcome", error))?;
-    Ok((records, position))
 }
 
 /// The read-only branch (no `--status`): prints the record's outcomes
@@ -64,11 +34,10 @@ fn read_and_locate(
 /// schema-invalid outcome instead).
 fn list(
     opts: &GlobalOpts,
-    store: &mulch::StoreFiles,
+    records: &[mulch::LineRecord],
+    position: usize,
     domain: &str,
-    id: &str,
 ) -> Result<(), Failure> {
-    let (records, position) = read_and_locate(store, domain, id, opts.allow_unknown_types)?;
     // The header carries the record's own id: resolution only ever
     // matches records that have one (the reference's `record.id ?? id`
     // fallback is equally dead there).
@@ -180,12 +149,13 @@ fn listing_lines(id: &str, outcomes: &[Value]) -> Vec<String> {
 fn append(
     opts: &GlobalOpts,
     store: &mulch::StoreFiles,
+    mut records: Vec<mulch::LineRecord>,
+    position: usize,
     domain: &str,
     id: &str,
     status: &str,
     flags: &OutcomeFlags,
 ) -> Result<(), Failure> {
-    let (mut records, position) = read_and_locate(store, domain, id, opts.allow_unknown_types)?;
     // Output surfaces carry the resolved record's own id (the
     // reference's `record.id ?? id` fallback is dead: resolution
     // matches only identified records).

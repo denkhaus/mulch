@@ -86,10 +86,14 @@ impl Mode {
     }
 }
 
-/// Runs `delete`.
+/// Runs `delete`. The domain check precedes the mode validation
+/// (reference `delete.ts` arg order — the mulch-e645 pin: `delete x`
+/// with no id reports the unknown domain, not the missing mode).
 pub(super) fn run(
     opts: &GlobalOpts,
-    mode: &Mode,
+    id: Option<&str>,
+    records: Option<&str>,
+    all_except: Option<&str>,
     domain: &str,
     dry_run: bool,
 ) -> Result<(), Failure> {
@@ -106,33 +110,39 @@ pub(super) fn run(
         ));
     }
 
-    let lines = store
-        .read_records(domain, opts.allow_unknown_types)
-        .map_err(|source| {
-            Failure::handled_on_stderr("delete", crate::commands::render_core_error(&source))
-        })?;
+    let mode = Mode::from_args(opts.json, id, records, all_except)?;
 
-    // Resolve every target (missing/ambiguous ids abort before any write).
-    let mut removal_indices: Vec<usize> = Vec::new();
-    match mode {
-        Mode::Single(id) => removal_indices.push(resolve(&lines, id)?),
+    // Resolve every target (missing/ambiguous ids abort before any
+    // write); the single-id mode rides the locator seam's read half.
+    let (lines, mut removal_indices): (Vec<_>, Vec<usize>) = match &mode {
+        Mode::Single(id) => {
+            let (lines, position) =
+                crate::commands::read_and_resolve("delete", &store, domain, id, opts.allow_unknown_types)?;
+            (lines, vec![position])
+        }
         Mode::Records(ids) => {
+            let lines = read_lines(&store, domain, opts.allow_unknown_types)?;
+            let mut removal_indices = Vec::new();
             for id in ids {
                 removal_indices.push(resolve(&lines, id)?);
             }
+            (lines, removal_indices)
         }
         Mode::AllExcept(keep) => {
+            let lines = read_lines(&store, domain, opts.allow_unknown_types)?;
             let mut keep_indices: Vec<usize> = Vec::new();
             for id in keep {
                 keep_indices.push(resolve(&lines, id)?);
             }
+            let mut removal_indices = Vec::new();
             for index in 0..lines.len() {
                 if !keep_indices.contains(&index) {
                     removal_indices.push(index);
                 }
             }
+            (lines, removal_indices)
         }
-    }
+    };
     // A Set of indices: duplicate ids never double-delete (reference).
     removal_indices.sort_unstable();
     removal_indices.dedup();
@@ -238,6 +248,20 @@ pub(super) fn run(
 /// Resolves one identifier against the domain's records.
 fn resolve(lines: &[mulch::LineRecord], id: &str) -> Result<usize, Failure> {
     resolve_record_id(lines, id).map_err(|error| crate::commands::resolve_failure("delete", error))
+}
+
+/// The strict read of the bulk modes (the seam's read half resolves a
+/// single id).
+fn read_lines(
+    store: &mulch::StoreFiles,
+    domain: &str,
+    allow_unknown: bool,
+) -> Result<Vec<mulch::LineRecord>, Failure> {
+    store
+        .read_records(domain, allow_unknown)
+        .map_err(|source| {
+            Failure::handled_on_stderr("delete", crate::commands::render_core_error(&source))
+        })
 }
 
 /// A `serde_json::Value::Object` from a `json!` macro result.

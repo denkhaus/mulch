@@ -3,36 +3,23 @@
 use serde_json::{Map, Value};
 
 use crate::cli::{EditArgs, GlobalOpts};
+use crate::commands::{DomainFailure, locate_record};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `edit`: updates fields in place (key positions preserved),
 /// appends files/relates_to/supersedes at line end, never recomputes
 /// the id, and succeeds as a no-op when no flags are given.
 pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
-    let store = crate::commands::open_store("edit", false)?;
-
-    let domains = store.domains();
-    if !domains.iter().any(|d| d == &args.domain) {
-        return Err(crate::commands::unknown_domain_failure(
-            "edit",
-            &args.domain,
-            &domains,
-            opts.json,
-            crate::commands::DomainFailure::Standard,
-        ));
-    }
-
-    // Strict read (reference `readExpertiseFile`): malformed lines and
-    // unregistered types abort before the rewrite.
-    let mut records = store
-        .read_records(&args.domain, opts.allow_unknown_types)
-        .map_err(|source| {
-            Failure::handled_on_stderr("edit", crate::commands::render_core_error(&source))
-        })?;
-    // Identifier resolution like delete/move: exact id, bare hash, or
-    // a unique prefix (reference `resolveRecordId`; mulch-351d).
-    let position = mulch::resolve_record_id(&records, &args.id)
-        .map_err(|error| crate::commands::resolve_failure("edit", error))?;
+    // The record-locator seam: open store, check domain, strict read
+    // (reference `readExpertiseFile`), resolve the id.
+    let (store, mut records, position) = locate_record(
+        opts,
+        "edit",
+        &args.domain,
+        &args.id,
+        DomainFailure::Standard,
+        false,
+    )?;
     // Output surfaces carry the resolved record's own id (reference
     // `record.id`; its `?? id` fallback is dead — resolution matches
     // only identified records).

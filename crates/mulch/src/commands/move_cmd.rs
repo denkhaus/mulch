@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use mulch::{record_summary, resolve_record_id, schema};
+use mulch::{record_summary, schema};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -48,13 +48,8 @@ pub(super) fn run(
 
     let source_file = store.domain_path(source);
     let target_file = store.domain_path(target);
-    let lines = store
-        .read_records(source, opts.allow_unknown_types)
-        .map_err(|source_err| {
-            Failure::handled_on_stderr("move", crate::commands::render_core_error(&source_err))
-        })?;
-    let index = resolve_record_id(&lines, id)
-        .map_err(|error| crate::commands::resolve_failure("move", error))?;
+    let (lines, index) =
+        crate::commands::read_and_resolve("move", &store, source, id, opts.allow_unknown_types)?;
     let record = lines[index].record.clone();
     let kind = lines[index].record_type();
     let record_id = lines[index].id().map(str::to_string);
