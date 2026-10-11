@@ -5159,3 +5159,514 @@ fn status_partial_config_blocks_backfill_per_field_like_reference() {
     }
     assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
 }
+
+// mulch-15d3 battery additions — legacy singular `outcome` with odd
+// values (absorbs mulch-1609). Append this module's items to
+// crates/mulch/tests/cli_parity.rs (helpers used: reference_ml,
+// run_in, TempDir, read_store_file, mask_timestamps).
+
+/// A crafted store with one record per legacy `outcome` value shape:
+/// number, string, null, array, empty object, proper object (control)
+/// — plus one mid-object `outcome` key to pin the trailing position
+/// of the migrated `outcomes` array through the strict-read rewrite.
+fn odd_legacy_fixture(dir: &Path, ml: &Path) {
+    let _ = run_in(dir, ml, &["init"]);
+    let _ = run_in(dir, ml, &["add", "probe"]);
+    let base = r#"{"type":"pattern","name":"{name}","description":"d","classification":"tactical","recorded_at":"2026-10-01T00:00:00.000Z","id":"{id}","outcome":{outcome}}"#;
+    let rows = [
+        ("num", "mx-111111", "5"),
+        ("str", "mx-222222", "\"x\""),
+        ("nul", "mx-333333", "null"),
+        ("arr", "mx-444444", "[1]"),
+        ("emp", "mx-555555", "{}"),
+        (
+            "obj",
+            "mx-666666",
+            "{\"status\":\"success\",\"agent\":\"a\"}",
+        ),
+    ];
+    let mut store = rows
+        .iter()
+        .map(|(name, id, outcome)| {
+            base.replace("{name}", name)
+                .replace("{id}", id)
+                .replace("{outcome}", outcome)
+        })
+        .collect::<Vec<_>>();
+    // mid-object outcome: the rewrite must append outcomes at the END
+    store.push(
+        r#"{"type":"pattern","outcome":{"status":"success"},"name":"mid","description":"d","classification":"tactical","recorded_at":"2026-10-01T00:00:00.000Z","id":"mx-777777"}"#
+            .to_string(),
+    );
+    std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
+    std::fs::write(
+        dir.join(".mulch/expertise/probe.jsonl"),
+        store.join("\n") + "\n",
+    )
+    .expect("probe store");
+}
+
+#[test]
+fn legacy_outcome_odd_values_listing_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("odd1609-list-ours");
+    let theirs = TempDir::new("odd1609-list-theirs");
+    odd_legacy_fixture(&ours.0, &ml);
+    odd_legacy_fixture(&theirs.0, &ml);
+
+    for (id, expected) in [
+        // non-object values coerce to a one-element entry whose status
+        // renders as `undefined` (mulch-1609)
+        ("mx-111111", "Outcomes for mx-111111 (1):\n  1. undefined\n"),
+        ("mx-222222", "Outcomes for mx-222222 (1):\n  1. undefined\n"),
+        ("mx-444444", "Outcomes for mx-444444 (1):\n  1. undefined\n"),
+        ("mx-555555", "Outcomes for mx-555555 (1):\n  1. undefined\n"),
+        // a null outcome never normalizes: no outcomes array at all
+        ("mx-333333", "No outcomes recorded for this record.\n"),
+        // the proper-object control keeps its extracted entry
+        (
+            "mx-666666",
+            "Outcomes for mx-666666 (1):\n  1. success (a)\n",
+        ),
+    ] {
+        let listing = ["outcome", "probe", id];
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+        let theirs_run = run_in(&theirs.0, &ml, &listing);
+        assert_eq!(ours_run.code, theirs_run.code, "exit codes differ for {id}");
+        assert_eq!(
+            ours_run.stdout, theirs_run.stdout,
+            "stdout differs for {id}"
+        );
+        assert_eq!(ours_run.stdout, expected, "listing drifted for {id}");
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "stderr differs for {id}"
+        );
+    }
+    // json listing: the coerced entry serializes as [{}]
+    let json = ["--json", "outcome", "probe", "mx-111111"];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &json);
+    let theirs_run = run_in(&theirs.0, &ml, &json);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    assert!(ours_run.stdout.contains("\"outcomes\": [\n    {}\n  ]"));
+    // read-only: the crafted bytes survive untouched
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/probe.jsonl"),
+        read_store_file(&theirs.0, "expertise/probe.jsonl"),
+        "listing must not write"
+    );
+}
+
+#[test]
+fn legacy_outcome_odd_values_append_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("odd1609-app-ours");
+    let theirs = TempDir::new("odd1609-app-theirs");
+    odd_legacy_fixture(&ours.0, &ml);
+    odd_legacy_fixture(&theirs.0, &ml);
+
+    // one append per odd shape: number, null, array, mid-object
+    for id in ["mx-111111", "mx-333333", "mx-444444", "mx-777777"] {
+        let append = [
+            "outcome",
+            "probe",
+            id,
+            "--status",
+            "failure",
+            "--agent",
+            "ag",
+            "--duration",
+            "7",
+        ];
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &append);
+        let theirs_run = run_in(&theirs.0, &ml, &append);
+        assert_eq!(ours_run.code, theirs_run.code, "exit codes differ for {id}");
+        assert_eq!(
+            ours_run.stdout, theirs_run.stdout,
+            "stdout differs for {id}"
+        );
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "stderr differs for {id}"
+        );
+        assert_eq!(
+            mask_timestamps(&read_store_file(&ours.0, "expertise/probe.jsonl")),
+            mask_timestamps(&read_store_file(&theirs.0, "expertise/probe.jsonl")),
+            "store bytes differ after appending to {id}"
+        );
+    }
+    // the number record keeps its coerced empty entry first...
+    let store = read_store_file(&ours.0, "expertise/probe.jsonl");
+    let num_line = store.lines().next().expect("num record");
+    assert!(
+        num_line.contains("\"outcomes\":[{},"),
+        "coerced entry must precede the appended one: {num_line}"
+    );
+    // ...the null record keeps its null key AND gains outcomes...
+    let nul_line = store.lines().nth(2).expect("nul record");
+    assert!(
+        nul_line.contains("\"outcome\":null,\"outcomes\":"),
+        "null outcome key must survive the rewrite: {nul_line}"
+    );
+    // ...and the mid-object record gets outcomes appended at the END
+    // (directly after id, the last original key)
+    let mid_line = store.lines().nth(6).expect("mid record");
+    assert!(
+        mid_line.contains("\"id\":\"mx-777777\",\"outcomes\":["),
+        "migrated outcomes must land at line end: {mid_line}"
+    );
+}
+
+#[test]
+fn doctor_fix_on_odd_legacy_outcomes_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("odd1609-fix-ours");
+    let theirs = TempDir::new("odd1609-fix-theirs");
+    odd_legacy_fixture(&ours.0, &ml);
+    odd_legacy_fixture(&theirs.0, &ml);
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["doctor", "--fix"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    let strip = |text: &str| -> String {
+        text.lines()
+            .filter(|line| {
+                !line.contains("Update available")
+                    && !line.contains("Run `mulch upgrade`")
+                    && !line.contains("Native binary")
+                    && !line.contains("passed,")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(strip(&ours_run.stdout), strip(&theirs_run.stdout));
+    assert_eq!(strip(&ours_run.stderr), strip(&theirs_run.stderr));
+    // seven legacy fields detected, six migrate (null never does); of
+    // the migrated lines only the two with a schema-valid entry
+    // survive the schema pass (the odd empty entries and the untouched
+    // null line drop), each with outcomes appended at line end
+    let fixed = &ours_run.stdout[ours_run.stdout.find("Fixed:").expect("fixed block")..];
+    let lines: Vec<&str> = fixed.lines().collect();
+    assert_eq!(lines[1..], [
+        "  \u{2713} Migrated 6 legacy \"outcome\" field(s) to \"outcomes[]\" in probe",
+        "  \u{2713} Removed 5 invalid record(s) from probe",
+    ]);
+    assert_eq!(
+        mask_timestamps(&read_store_file(&ours.0, "expertise/probe.jsonl")),
+        mask_timestamps(&read_store_file(&theirs.0, "expertise/probe.jsonl"))
+    );
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/probe.jsonl"),
+        "{\"type\":\"pattern\",\"name\":\"obj\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-01T00:00:00.000Z\",\"id\":\"mx-666666\",\"outcomes\":[{\"status\":\"success\",\"agent\":\"a\"}]}\n{\"type\":\"pattern\",\"name\":\"mid\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-01T00:00:00.000Z\",\"id\":\"mx-777777\",\"outcomes\":[{\"status\":\"success\"}]}\n"
+    );
+}
+
+// Sprint 22, mulch-0fd8 + absorbed mulch-e645 (lane iterate-s22-c2).
+// Pins: (1) the record-locator seam is byte-neutral on the four
+// surfaces' existing prologue paths (covered by the existing
+// per-command tests); (2) delete checks the domain BEFORE the
+// id/mode exclusivity, in plain and json.
+
+/// `delete <unknown-domain>` with no id reports the unknown domain,
+/// not the missing mode (reference delete.ts order; mulch-e645).
+#[test]
+fn delete_unknown_domain_precedes_mode_validation() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("e645-ours");
+    let theirs = TempDir::new("e645-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "d"]);
+    }
+    for args in [
+        vec!["delete", "x"],
+        vec!["delete", "x", "--json"],
+        // mode-shaped invocations take the same domain-first order
+        vec!["delete", "x", "--records", "mx-aaaa01"],
+        vec!["delete", "x", "--all-except", "mx-aaaa01"],
+    ] {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let theirs_run = run_in(&theirs.0, &ml, &args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?}");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "{args:?}");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "{args:?}");
+    }
+}
+
+/// The reverse pin: a KNOWN domain with no id still fails the mode
+/// validation (both orders agree there — the seam must not swallow
+/// the mode error).
+#[test]
+fn delete_known_domain_without_id_still_fails_mode_validation() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("e645r-ours");
+    let theirs = TempDir::new("e645r-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        let _ = run_in(dir, &ml, &["add", "d"]);
+    }
+    for args in [vec!["delete", "d"], vec!["delete", "d", "--json"]] {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let theirs_run = run_in(&theirs.0, &ml, &args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?}");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "{args:?}");
+    }
+}
+
+// Sprint 22, mulch-7896 (lane iterate-s22-c2).
+// Pins: edit validates the UPDATED record against the schema before
+// writing — missing required payload, unknown extra fields,
+// wrong-typed payloads, and the legacy singular `outcome` key all
+// abort (exit 1, reference bytes, store untouched), in plain and
+// json; a fixing edit still writes; --files is dropped for types
+// that do not declare it; new keys append in the reference's
+// application order; move aborts on legacy-outcome records.
+
+/// One crafted store shared by the gate probes: five convention
+/// records (one valid, one content-less, one with an extra field,
+/// one with a wrong-typed payload, one with a legacy singular
+/// outcome) plus a pattern. Returns marker → id (ids are content
+/// hashes, identical in both stores) captured BEFORE the markers
+/// are rewritten away.
+fn craft_gate_store(dir: &Path, ml: &Path) -> std::collections::HashMap<String, String> {
+    let _ = run_in(dir, ml, &["init"]);
+    let _ = run_in(dir, ml, &["add", "d"]);
+    let _ = run_in(dir, ml, &["add", "d2"]);
+    let _ = run_in(dir, ml, &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "ok body",
+    ]);
+    let _ = run_in(dir, ml, &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "contentless body",
+    ]);
+    let _ = run_in(dir, ml, &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "extra body",
+    ]);
+    let _ = run_in(dir, ml, &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "wrongtyped body",
+    ]);
+    let _ = run_in(dir, ml, &[
+        "record",
+        "d",
+        "--type",
+        "convention",
+        "--content",
+        "legacy body",
+    ]);
+    let _ = run_in(dir, ml, &[
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "pd",
+    ]);
+    // Capture the ids by content marker first (the markers are
+    // rewritten away next); ids are content hashes, so both stores
+    // agree.
+    let path = dir.join(".mulch/expertise/d.jsonl");
+    let text = std::fs::read_to_string(&path).expect("store file");
+    let mut ids = std::collections::HashMap::new();
+    for line in text.lines() {
+        let record: serde_json::Value = serde_json::from_str(line).expect("json");
+        if let Some(marker) = record["content"].as_str() {
+            ids.insert(
+                marker.to_string(),
+                record["id"].as_str().expect("id").to_string(),
+            );
+        }
+    }
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let mut record: serde_json::Value = serde_json::from_str(line).expect("json");
+        match record["content"].as_str() {
+            Some("contentless body") => {
+                record.as_object_mut().expect("obj").remove("content");
+            }
+            Some("extra body") => {
+                record["bogus"] = serde_json::json!(1);
+            }
+            Some("wrongtyped body") => {
+                record["content"] = serde_json::json!(5);
+            }
+            Some("legacy body") => {
+                record["outcome"] = serde_json::json!({"status": "success"});
+            }
+            _ => {}
+        }
+        lines.push(serde_json::to_string(&record).expect("ser"));
+    }
+    std::fs::write(&path, lines.join("\n") + "\n").expect("write");
+    ids
+}
+
+#[test]
+fn edit_write_gate_aborts_on_schema_invalid_updates() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("egate-ours");
+    let theirs = TempDir::new("egate-theirs");
+    let ours_ids = craft_gate_store(&ours.0, &ml);
+    let theirs_ids = craft_gate_store(&theirs.0, &ml);
+
+    let missing = theirs_ids["contentless body"].clone();
+    let extra = theirs_ids["extra body"].clone();
+    let wrong = theirs_ids["wrongtyped body"].clone();
+    let legacy = theirs_ids["legacy body"].clone();
+    let ok = ours_ids["ok body"].clone();
+
+    for args in [
+        // missing required payload — plain and json
+        vec!["edit", "d", &missing, "--classification", "tactical"],
+        vec![
+            "edit",
+            "d",
+            &missing,
+            "--classification",
+            "tactical",
+            "--json",
+        ],
+        // unknown extra field
+        vec!["edit", "d", &extra, "--classification", "tactical"],
+        // wrong-typed payload (no-op edit still aborts)
+        vec!["edit", "d", &wrong],
+        // legacy singular outcome key (the reference keeps the key
+        // in memory and its ajv gate reports it as additional)
+        vec!["edit", "d", &legacy, "--classification", "tactical"],
+        vec!["edit", "d", &legacy, "--json"],
+    ] {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let theirs_run = run_in(&theirs.0, &ml, &args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?}");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "{args:?}");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "{args:?}");
+    }
+    // Nothing was written: both stores byte-equal to the crafted
+    // state (recorded_at ids aside, the files are deterministic).
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+    );
+    // A fixing edit still writes: --content repairs the wrong-typed
+    // payload and the edit succeeds.
+    let fix = ["edit", "d", &wrong, "--content", "fixed body"];
+    let ours_fix = run_in(&ours.0, Path::new(mulch_bin()), &fix);
+    let theirs_fix = run_in(&theirs.0, &ml, &fix);
+    assert_eq!(ours_fix.code, theirs_fix.code);
+    assert_eq!(ours_fix.stdout, theirs_fix.stdout);
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+    );
+    let _ = ok; // silence unused when the matrix above changes
+}
+
+#[test]
+fn edit_files_flag_drops_for_undeclaring_types_and_orders_new_keys() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("efile-ours");
+    let theirs = TempDir::new("efile-theirs");
+    let ours_ids = craft_gate_store(&ours.0, &ml);
+    let _ = craft_gate_store(&theirs.0, &ml);
+    let ok = ours_ids["ok body"].clone();
+    let missing = ours_ids["contentless body"].clone();
+
+    // --files on a convention (which does not declare it) is DROPPED
+    // by the reference's def-gated field loop — the edit succeeds and
+    // no files key is written.
+    let drop = ["edit", "d", &ok, "--files", "x.rs"];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &drop);
+    let theirs_run = run_in(&theirs.0, &ml, &drop);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+    );
+
+    // New keys append in the reference's application order:
+    // relates_to before the outcome entry.
+    let mixed = [
+        "edit",
+        "d",
+        &ours_ids["legacy body"],
+        "--relates-to",
+        &missing,
+        "--outcome-status",
+        "partial",
+    ];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &mixed);
+    let theirs_run = run_in(&theirs.0, &ml, &mixed);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+    );
+}
+
+#[test]
+fn move_aborts_on_legacy_outcome_records_like_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("mleg-ours");
+    let theirs = TempDir::new("mleg-theirs");
+    let ours_ids = craft_gate_store(&ours.0, &ml);
+    let _ = craft_gate_store(&theirs.0, &ml);
+    let legacy = ours_ids["legacy body"].clone();
+
+    let args = ["move", "d", &legacy, "d2"];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let theirs_run = run_in(&theirs.0, &ml, &args);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stderr, theirs_run.stderr);
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+    );
+    // d2 untouched on both sides.
+    assert_eq!(read_store_file(&ours.0, "expertise/d2.jsonl"), "");
+}

@@ -308,14 +308,14 @@ fn legacy_outcome(domains: &[DomainLines]) -> Check {
     let bad: Vec<String> = domains
         .iter()
         .flat_map(|d| {
-            records_of(d).filter_map(|(line, record)| {
-                mulch::legacy_outcome(record).is_some().then(|| {
+            records_of(d)
+                .filter(|&(_, record)| mulch::legacy_outcome(record).is_some())
+                .map(|(line, _)| {
                     format!(
                         "{}:{line} - legacy \"outcome\" field (singular); should be \"outcomes[]\"",
                         d.domain
                     )
                 })
-            })
         })
         .collect();
     if bad.is_empty() {
@@ -626,7 +626,7 @@ fn apply_fixes(
     // in domain order within each pass.
     if gates.jsonl {
         for domain in domains {
-            if let Some(count) = raw_line_pass(store, &domain.domain, LineAction::Drop, |_| {
+            if let Some(count) = raw_line_pass(store, &domain.domain, &LineAction::Drop, |_| {
                 LineAction::Keep
             })? {
                 fixes.push(format!(
@@ -638,7 +638,7 @@ fn apply_fixes(
     }
     if gates.legacy {
         for domain in domains {
-            if let Some(count) = raw_line_pass(store, &domain.domain, LineAction::Keep, |value| {
+            if let Some(count) = raw_line_pass(store, &domain.domain, &LineAction::Keep, |value| {
                 migrate_legacy_line(value).map_or(LineAction::Keep, LineAction::Replace)
             })? {
                 fixes.push(format!(
@@ -725,7 +725,7 @@ enum LineAction {
 fn raw_line_pass(
     store: &mulch::StoreFiles,
     domain: &str,
-    unparsable: LineAction,
+    unparsable: &LineAction,
     action: impl Fn(&Value) -> LineAction,
 ) -> Result<Option<usize>, Failure> {
     let Some(text) = read_domain_text(store, domain)? else {
@@ -739,8 +739,7 @@ fn raw_line_pass(
             continue;
         }
         let outcome = serde_json::from_str::<Value>(trimmed)
-            .map(|value| action(&value))
-            .unwrap_or_else(|_| unparsable.clone());
+            .map_or_else(|_| unparsable.clone(), |value| action(&value));
         match outcome {
             LineAction::Keep => lines.push(trimmed.to_string()),
             LineAction::Replace(replacement) => {
@@ -986,17 +985,17 @@ mod tests {
         )
         .expect("writable");
         let removed =
-            raw_line_pass(&store, "d", LineAction::Drop, |_| LineAction::Keep).expect("pass runs");
+            raw_line_pass(&store, "d", &LineAction::Drop, |_| LineAction::Keep).expect("pass runs");
         assert_eq!(removed, Some(2));
         assert_eq!(read_domain(&store, "d"), "{\"a\":1}\n{\"b\":2}\n");
         // keeping policy: nothing changes -> None, no write at all
         std::fs::write(store.domain_path("d"), "not json\n{\"a\":1}\n").expect("writable");
         let untouched =
-            raw_line_pass(&store, "d", LineAction::Keep, |_| LineAction::Keep).expect("pass runs");
+            raw_line_pass(&store, "d", &LineAction::Keep, |_| LineAction::Keep).expect("pass runs");
         assert_eq!(untouched, None);
         assert_eq!(read_domain(&store, "d"), "not json\n{\"a\":1}\n");
         // replacement: only replaced lines count, unparsable survivors stay
-        let migrated = raw_line_pass(&store, "d", LineAction::Keep, |value| {
+        let migrated = raw_line_pass(&store, "d", &LineAction::Keep, |value| {
             value.get("a").map_or(LineAction::Keep, |_| {
                 LineAction::Replace("{\"a\":2}".into())
             })

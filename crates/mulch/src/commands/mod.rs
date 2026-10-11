@@ -215,8 +215,8 @@ pub(crate) fn read_and_resolve(
     let records = store
         .read_records(domain, allow_unknown)
         .map_err(|source| Failure::handled_on_stderr(command, render_core_error(&source)))?;
-    let position = mulch::resolve_record_id(&records, id)
-        .map_err(|error| resolve_failure(command, error))?;
+    let position =
+        mulch::resolve_record_id(&records, id).map_err(|error| resolve_failure(command, error))?;
     Ok((records, position))
 }
 
@@ -272,7 +272,9 @@ pub(crate) fn locate_record(
     let store = open_store(command, config_message)?;
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {
-        return Err(unknown_domain_failure(command, domain, &domains, opts.json, shape));
+        return Err(unknown_domain_failure(
+            command, domain, &domains, opts.json, shape,
+        ));
     }
     let (records, position) =
         read_and_resolve(command, &store, domain, id, opts.allow_unknown_types)?;

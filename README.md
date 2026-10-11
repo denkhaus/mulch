@@ -83,9 +83,13 @@ expectation (the parity rule: never silently):
   sorted list is not guaranteed).
 - **The mutating commands read records strictly** (reference
   `readExpertiseFile`): malformed lines and unregistered types abort
-  with the reference's messages, the legacy singular `outcome` field is
-  normalized to `outcomes`, and rewrites re-serialize records compactly
-  (ids are generated for id-less survivors).
+  with the reference's messages, and rewrites re-serialize records
+  compactly (ids are generated for id-less survivors). The legacy
+  singular `outcome` field normalizes exactly like the reference
+  (non-object values coerce to a one-element empty entry, `null` stays
+  untouched) — and `edit`/`move` abort on such records through the
+  updated-record schema gate, like the reference (mulch-15d3,
+  mulch-7896).
 - **Argument-parse errors use clap wording** (choice rejections,
   missing-argument hints): same channels and exit code 1, different
   text than commander's. The no-store paths of `add`, `record`,

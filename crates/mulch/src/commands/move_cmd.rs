@@ -66,12 +66,9 @@ pub(super) fn run(
 
     // move validates what delete does not — against the reference's
     // in-memory shape (the legacy `outcome` key included, mulch-7896).
-    if let schema::FullVerdict::Invalid { subs, .. } = crate::commands::updated_record_verdict(
-        &store,
-        source,
-        lines[index].line,
-        &record,
-    ) {
+    if let schema::FullVerdict::Invalid { subs, .. } =
+        crate::commands::updated_record_verdict(&store, source, lines[index].line, &record)
+    {
         return Err(Failure::handled_on_stderr(
             "move",
             format!(

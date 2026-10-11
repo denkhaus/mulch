@@ -83,12 +83,14 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     // The write gate (mulch-7896): the UPDATED record must pass the
     // schema or nothing is written (reference edit.ts).
     let updated = Value::Object(record.clone());
-    if let mulch::schema::FullVerdict::Invalid { subs, .. } = crate::commands::updated_record_verdict(
-        &store,
-        &args.domain,
-        records[position].line,
-        &updated,
-    ) {
+    if let mulch::schema::FullVerdict::Invalid { subs, .. } =
+        crate::commands::updated_record_verdict(
+            &store,
+            &args.domain,
+            records[position].line,
+            &updated,
+        )
+    {
         return Err(updated_record_failed(&subs, opts.json));
     }
 
@@ -192,15 +194,20 @@ fn set_end_list(record: &mut Map<String, Value>, key: &str, raw: Option<&str>) {
 
 #[cfg(test)]
 mod gate_tests {
-    use super::updated_record_failed;
     use mulch::schema::SubError;
+
+    use super::updated_record_failed;
 
     /// The plain surface: header line, then one `  `-prefixed ajv
     /// line per sub-error (probe-pinned 2026-10-11, ml 0.10.7).
     #[test]
     fn plain_gate_renders_header_and_indented_subs() {
         let failure = updated_record_failed(
-            &[SubError::Missing("content"), SubError::TypeConst, SubError::OneOfTail],
+            &[
+                SubError::Missing("content"),
+                SubError::TypeConst,
+                SubError::OneOfTail,
+            ],
             false,
         );
         assert_eq!(
