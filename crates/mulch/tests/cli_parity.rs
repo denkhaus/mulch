@@ -5669,3 +5669,367 @@ fn move_aborts_on_legacy_outcome_records_like_reference() {
     // d2 untouched on both sides.
     assert_eq!(read_store_file(&ours.0, "expertise/d2.jsonl"), "");
 }
+
+// ---------------------------------------------------------------------------
+// Sprint 23 lane B proposals (mulch-4ee2 / mulch-3368-B): three
+// differential pins for the payload<->flag adapter surfaces. The
+// flag-table coverage itself lives as unit pins on PayloadFlags
+// (commands/mod.rs payload_flags_tests) — these pin the OBSERVABLE
+// differential behavior the tables feed: the plain missing-flags
+// echo, record's content precedence, and edit's payload append order.
+// ---------------------------------------------------------------------------
+
+mod battery_s23_b {
+    use super::*;
+
+    /// Plain-mode missing-flags failure: the Retry echo mixes
+    /// provided flag values with `<placeholder>` pairs for the
+    /// missing ones (the json variant is pinned by
+    /// record_missing_flags_json_error_text; this pins the plain
+    /// channel, values and placeholders side by side).
+    #[test]
+    fn record_missing_flags_plain_echo_matches_reference() {
+        let Some(ml) = reference_ml() else {
+            eprintln!("skipped: no ml on PATH");
+            return;
+        };
+        for (tag, args) in [
+            ("placeholders only", vec![
+                "record", "d", "--type", "pattern",
+            ]),
+            ("values and placeholders", vec![
+                "record", "d", "--type", "decision", "--title", "T v", "--name", "n",
+            ]),
+        ] {
+            let ours = TempDir::new("b1-ours");
+            let theirs = TempDir::new("b1-theirs");
+            for dir in [&ours.0, &theirs.0] {
+                let _ = run_in(dir, &ml, &["init"]);
+                let _ = run_in(dir, &ml, &["add", "d"]);
+            }
+            let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+            let theirs_run = run_in(&theirs.0, &ml, &args);
+            assert_eq!(ours_run.code, theirs_run.code, "{tag} exit");
+            assert_eq!(ours_run.stdout, theirs_run.stdout, "{tag} stdout");
+            assert_eq!(ours_run.stderr, theirs_run.stderr, "{tag} stderr");
+            assert_eq!(
+                read_store_file(&ours.0, "expertise/d.jsonl"),
+                read_store_file(&theirs.0, "expertise/d.jsonl"),
+                "{tag} store"
+            );
+        }
+    }
+
+    /// record's content law: `--content` wins over the positional
+    /// shorthand (the adapter's one divergent row, pinned end to end:
+    /// store bytes and ids keyed on the winning value).
+    #[test]
+    fn record_content_flag_wins_over_positional_matches_reference() {
+        let Some(ml) = reference_ml() else {
+            eprintln!("skipped: no ml on PATH");
+            return;
+        };
+        let ours = TempDir::new("b2-ours");
+        let theirs = TempDir::new("b2-theirs");
+        for dir in [&ours.0, &theirs.0] {
+            let _ = run_in(dir, &ml, &["init"]);
+            let _ = run_in(dir, &ml, &["add", "d"]);
+        }
+        let args: [&str; 6] = [
+            "record",
+            "d",
+            "--type",
+            "convention",
+            "positional-value",
+            "--content",
+        ];
+        // (append the value separately so both sides share args)
+        let both = {
+            let mut v = args.to_vec();
+            v.push("flag-value");
+            v
+        };
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &both);
+        let theirs_run = run_in(&theirs.0, &ml, &both);
+        assert_eq!(ours_run.code, theirs_run.code);
+        assert_eq!(ours_run.stdout, theirs_run.stdout);
+        assert_eq!(ours_run.stderr, theirs_run.stderr);
+        assert_eq!(
+            normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+            normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+        );
+        assert!(read_store_file(&ours.0, "expertise/d.jsonl").contains("flag-value"));
+
+        let positional = ["record", "d", "--type", "convention", "only-positional"];
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &positional);
+        let theirs_run = run_in(&theirs.0, &ml, &positional);
+        assert_eq!(ours_run.code, theirs_run.code);
+        assert!(read_store_file(&theirs.0, "expertise/d.jsonl").contains("only-positional"));
+        assert_eq!(
+            normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+            normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+        );
+    }
+
+    /// edit appends a record's MISSING payload keys in the type's
+    /// payload order (the adapter iterates the registry row, not a
+    /// flag-table order) and drops payload flags the type does not
+    /// declare; the id is never recomputed.
+    #[test]
+    fn edit_payload_appends_missing_keys_in_payload_order_matches_reference() {
+        let Some(ml) = reference_ml() else {
+            eprintln!("skipped: no ml on PATH");
+            return;
+        };
+        // The id both sides resolve (ids are content hashes, equal in
+        // both stores) — captured from ours, then the payload keys are
+        // stripped surgically in both.
+        let strip = |dir: &Path| -> String {
+            let path = dir.join(".mulch/expertise/d.jsonl");
+            let text = std::fs::read_to_string(&path).expect("store file");
+            let mut id = String::new();
+            let mut lines = Vec::new();
+            for line in text.lines() {
+                let mut record: serde_json::Value = serde_json::from_str(line).expect("json line");
+                id = record["id"].as_str().expect("id").to_string();
+                let object = record.as_object_mut().expect("object");
+                object.remove("description");
+                object.remove("resolution");
+                lines.push(record.to_string());
+            }
+            std::fs::write(&path, format!("{}\n", lines.join("\n"))).expect("rewrite");
+            id
+        };
+        let ours = TempDir::new("b3-ours");
+        let theirs = TempDir::new("b3-theirs");
+        for dir in [&ours.0, &theirs.0] {
+            let _ = run_in(dir, &ml, &["init"]);
+            let _ = run_in(dir, &ml, &["add", "d"]);
+            let _ = run_in(dir, &ml, &[
+                "record",
+                "d",
+                "--type",
+                "failure",
+                "--description",
+                "D",
+                "--resolution",
+                "R",
+            ]);
+        }
+        let id = strip(&ours.0);
+        let _ = strip(&theirs.0);
+
+        let append = [
+            "edit",
+            "d",
+            &id,
+            "--description",
+            "ND",
+            "--resolution",
+            "NR",
+        ];
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &append);
+        let theirs_run = run_in(&theirs.0, &ml, &append);
+        assert_eq!(ours_run.code, theirs_run.code);
+        assert_eq!(ours_run.stdout, theirs_run.stdout);
+        assert_eq!(
+            normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+            normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+        );
+        // Appended in payload order (description before resolution),
+        // after the id, which edit never recomputes.
+        assert!(
+            read_store_file(&ours.0, "expertise/d.jsonl").contains(&format!(
+                "\"id\":\"{id}\",\"description\":\"ND\",\"resolution\":\"NR\""
+            ))
+        );
+
+        // Payload flags failure does not declare stay dropped.
+        let stray = [
+            "edit",
+            "d",
+            &id,
+            "--content",
+            "C",
+            "--name",
+            "N",
+            "--title",
+            "T",
+        ];
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &stray);
+        let theirs_run = run_in(&theirs.0, &ml, &stray);
+        assert_eq!(ours_run.code, theirs_run.code);
+        assert_eq!(
+            normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+            normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+        );
+        assert!(!read_store_file(&ours.0, "expertise/d.jsonl").contains("\"content\""));
+    }
+}
+
+// mulch-dd36 battery: doctor's governance check computes over the
+// effective thresholds — overruns (fail at hard_limit), warn-only
+// stores keep exit 0, partial governance blocks backfill per field.
+
+/// Writes a store whose config carries a custom governance block and
+/// one domain per record count. Records are fresh foundational
+/// patterns with distinct names (no stale/duplicates noise).
+fn governance_fixture(dir: &Path, governance: &str, counts: &[(&str, usize)]) {
+    let mut config = String::from("version: '1'\ndomains:\n");
+    for (domain, _) in counts {
+        let _ = std::fmt::Write::write_fmt(&mut config, format_args!("  {domain}: {{}}\n"));
+    }
+    config.push_str(governance);
+    std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
+    std::fs::write(dir.join(".mulch/mulch.config.yaml"), &config).expect("config");
+    let now = jiff::Timestamp::now().to_string();
+    for (domain, count) in counts {
+        let lines: Vec<String> = (0..*count)
+            .map(|i| {
+                format!(
+                    r#"{{"type":"pattern","name":"{domain}-p{i}","description":"d","classification":"foundational","recorded_at":"{now}"}}"#
+                )
+            })
+            .collect();
+        std::fs::write(
+            dir.join(format!(".mulch/expertise/{domain}.jsonl")),
+            lines.join("\n") + "\n",
+        )
+        .expect("domain store");
+    }
+}
+
+/// Plain doctor output modulo the documented upgrade-check deviation
+/// (its lines drop; the summary counts neutralize — the reference
+/// warns "Update available", we pass "Native binary").
+fn strip_upgrade_and_summary(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            !line.contains("Update available")
+                && !line.contains("Run `mulch upgrade`")
+                && !line.contains("Native binary")
+        })
+        .map(|line| {
+            if line.contains("passed") {
+                "<SUMMARY>"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn doctor_governance_overruns_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("gov-ours");
+    let theirs = TempDir::new("gov-theirs");
+    let governance = "governance:\n  max_entries: 5\n  warn_entries: 8\n  hard_limit: 12\n";
+    let counts = [("alpha", 4), ("beta", 6), ("gamma", 9), ("delta", 12)];
+    governance_fixture(&ours.0, governance, &counts);
+    governance_fixture(&theirs.0, governance, &counts);
+
+    let ours_before = read_store_file(&ours.0, "expertise/delta.jsonl");
+    for args in [
+        &["doctor"][..],
+        &["doctor", "--json"][..],
+        &["doctor", "--fix"][..],
+        &["doctor", "--fix", "--json"][..],
+    ] {
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, their.code, "rc differs for {args:?}");
+        assert_eq!(our.stderr, their.stderr, "stderr {args:?}");
+        if args.contains(&"--json") {
+            assert_eq!(
+                normalize_doctor_json(&our.stdout),
+                normalize_doctor_json(&their.stdout),
+                "json {args:?}"
+            );
+        } else {
+            assert_eq!(
+                strip_upgrade_and_summary(&our.stdout),
+                strip_upgrade_and_summary(&their.stdout),
+                "plain {args:?}"
+            );
+        }
+    }
+    // --fix never touches counts (fixable: false): the store bytes
+    // stay (the twins' fixture timestamps differ, so each store is
+    // compared against its own pre-run snapshot)
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/delta.jsonl"),
+        ours_before
+    );
+    assert_eq!(
+        read_store_file(&theirs.0, "expertise/delta.jsonl")
+            .lines()
+            .count(),
+        12
+    );
+    assert_eq!(ours_before.lines().count(), 12);
+}
+
+#[test]
+fn doctor_governance_warn_only_keeps_exit_zero() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("govwarn-ours");
+    let theirs = TempDir::new("govwarn-theirs");
+    let governance = "governance:\n  max_entries: 5\n  warn_entries: 8\n  hard_limit: 12\n";
+    let counts = [("beta", 6), ("gamma", 9)];
+    governance_fixture(&ours.0, governance, &counts);
+    governance_fixture(&theirs.0, governance, &counts);
+
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+    let their = run_in(&theirs.0, &ml, &["doctor"]);
+    // warn tiers never fail the run
+    assert_eq!(our.code, 0);
+    assert_eq!(our.code, their.code);
+    assert_eq!(
+        strip_upgrade_and_summary(&our.stdout),
+        strip_upgrade_and_summary(&their.stdout)
+    );
+    assert!(
+        our.stdout
+            .contains("beta: 6 records (approaching limit of 5)")
+    );
+    assert!(
+        our.stdout
+            .contains("gamma: 9 records (over warn threshold of 8)")
+    );
+}
+
+#[test]
+fn doctor_governance_partial_block_backfills_thresholds() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("govpart-ours");
+    let theirs = TempDir::new("govpart-theirs");
+    // only max_entries set: warn/hard backfill to the 150/200 defaults,
+    // so 3 records warn "approaching limit of 2"
+    let governance = "governance:\n  max_entries: 2\n";
+    let counts = [("beta", 3)];
+    governance_fixture(&ours.0, governance, &counts);
+    governance_fixture(&theirs.0, governance, &counts);
+
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--json"]);
+    let their = run_in(&theirs.0, &ml, &["doctor", "--json"]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(
+        normalize_doctor_json(&our.stdout),
+        normalize_doctor_json(&their.stdout)
+    );
+    assert!(
+        our.stdout
+            .contains("beta: 3 records (approaching limit of 2)")
+    );
+}
