@@ -119,3 +119,37 @@ pub(crate) fn success_envelope(command: &str, fields: Map<String, Value>) -> Val
     body.extend(fields);
     Value::Object(body)
 }
+
+/// Builds a failure envelope: `{"success":false,"command":…}` plus
+/// fields — the failure mirror of [`success_envelope`] (mulch-3368:
+/// the shape was hand-assembled at four sites).
+pub(crate) fn failure_envelope(command: &str, fields: Map<String, Value>) -> Value {
+    let mut body = Map::new();
+    body.insert("success".into(), Value::Bool(false));
+    body.insert("command".into(), Value::String(command.into()));
+    body.extend(fields);
+    Value::Object(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The envelope's key order is pinned: `success`, `command`, then
+    /// the caller's fields in insertion order (serde preserve_order).
+    #[test]
+    fn failure_envelope_puts_success_command_before_fields() {
+        let mut fields = Map::new();
+        fields.insert("error".into(), Value::String("boom".into()));
+        fields.insert("fixed".into(), Value::Array(Vec::new()));
+        let envelope = failure_envelope("doctor", fields);
+        let Value::Object(body) = &envelope else {
+            panic!("envelope is an object");
+        };
+        assert_eq!(body.keys().collect::<Vec<_>>(), [
+            "success", "command", "error", "fixed"
+        ]);
+        assert_eq!(body["success"], Value::Bool(false));
+        assert_eq!(body["command"], Value::String("doctor".into()));
+    }
+}
