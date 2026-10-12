@@ -113,16 +113,21 @@ expectation (the parity rule: never silently):
   also differs (clap renderer; the reference reuses its root template
   with the command name swapped in) — help text lists only
   implemented commands either way.
-- **Five doctor checks evaluate as unconditional pass** on clean
-  stores only: `orphaned-domains`, `file-anchors`,
-  `domain-violations`, `domain-rules-compatibility`, `decay-config`.
-  Their warn/fail semantics (orphaned files) land with the later
+- **Three doctor checks evaluate as unconditional pass** on clean
+  stores only: `domain-violations`, `domain-rules-compatibility`,
+  `decay-config`. Their warn/fail semantics land with the later
   CLI-parity slices; until then they hold the reference's clean-store
   output shape. The `duplicates` check left this list (mulch-7ac9):
-  it now computes the reference's per-record duplicate report — and so
-  did `governance` (mulch-dd36): it now computes the reference's
-  per-domain threshold report (warn at max_entries/warn_entries, FAIL
-  at hard_limit, over the effective governance block; never fixable).
+  it now computes the reference's per-record duplicate report. The
+  `orphaned-domains` and `file-anchors` checks left it (mulch-42f2):
+  both directions warn with the reference's detail lines, and
+  `--fix` adopts orphan files unvalidated, creates missing domain
+  files, and strips broken `files[]`/`dir_anchors[]`/`evidence.file`
+  anchors in pass order. The
+  `governance` check left it earlier (mulch-dd36): it computes the
+  reference's per-domain threshold report (warn at
+  max_entries/warn_entries, FAIL at hard_limit, over the effective
+  governance block; never fixable).
 - **`doctor` duplicates reports a class the reference misses.** The
   check matches the reference on duplicate records — registry dedup
   field per type, warn with per-record details

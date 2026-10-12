@@ -129,6 +129,31 @@ impl StoreFiles {
         Ok(())
     }
 
+    /// Adopts an on-disk domain into the config WITHOUT name
+    /// validation and WITHOUT writing (the doctor orphan repair
+    /// registers whatever `.jsonl` files exist — the reference's
+    /// orphan fix adds them unvalidated; its `add` path is the one
+    /// that validates). Callers batch their config rewrite.
+    pub fn adopt_domain(&mut self, domain: &str) {
+        self.config.add_domain(domain);
+    }
+
+    /// Creates a domain's missing expertise file (empty), reporting
+    /// whether it had to (the doctor orphan repair's second half).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Write`] on I/O.
+    pub fn ensure_domain_file(&self, domain: &str) -> Result<bool> {
+        let path = self.domain_path(domain);
+        if path.is_file() {
+            return Ok(false);
+        }
+        std::fs::write(&path, "")
+            .map(|()| true)
+            .map_err(|source| Error::Write { path, source })
+    }
+
     /// Removes a domain from the config (order preserved).
     ///
     /// # Errors

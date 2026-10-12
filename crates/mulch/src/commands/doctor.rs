@@ -1,7 +1,7 @@
 //! `mulch doctor` — the 17-check health report, plain and `--json`,
-//! with `--fix` as four sequential repair passes in check order
+//! with `--fix` as six sequential repair passes in check order
 //! (jsonl-integrity, legacy-outcome, schema-validation,
-//! stale-records).
+//! stale-records, orphaned-domains, file-anchors).
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry as HashMapEntry;
@@ -82,7 +82,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     let config = store.config();
     let rule = StaleRule::from_shelf_life(&config.effective_shelf_life());
     let governance = config.effective_governance();
-    let checks = run_checks(opts, &rule, &governance, &domains);
+    let checks = run_checks(opts, &rule, &governance, &domains, &store, &cwd);
     let gates = FixGates::from_checks(&checks);
 
     let pass = checks
@@ -101,8 +101,9 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     // The reference repairs BEFORE any rendering — a crashing repair
     // prints no report at all — and the same lines feed the plain
     // Fixed block and the JSON envelope's `fixed` field.
+    let mut store = store;
     let fixed = if fix {
-        apply_fixes(&store, &rule, &domains, &gates)?
+        apply_fixes(&mut store, &rule, &domains, &gates, &cwd)?
     } else {
         Vec::new()
     };
@@ -199,6 +200,8 @@ fn run_checks(
     rule: &StaleRule,
     governance: &mulch::Governance,
     domains: &[DomainLines],
+    store: &mulch::StoreFiles,
+    project_root: &std::path::Path,
 ) -> Vec<Check> {
     vec![
         Check {
@@ -229,21 +232,9 @@ fn run_checks(
             details: Vec::new(),
         },
         stale_records(rule, domains),
-        Check {
-            name:    "orphaned-domains",
-            status:  Status::Pass,
-            message: "No orphaned domains".into(),
-            fixable: true,
-            details: Vec::new(),
-        },
+        orphaned_domains(store),
         duplicates(domains),
-        Check {
-            name:    "file-anchors",
-            status:  Status::Pass,
-            message: "All file anchors resolve to existing paths".into(),
-            fixable: true,
-            details: Vec::new(),
-        },
+        file_anchors(domains, project_root),
         governance_limits(governance, domains),
         Check {
             name:    "decay-config",
@@ -597,6 +588,200 @@ fn divergent_ids(domain: &str, records: &[&Value]) -> Vec<String> {
     details
 }
 
+/// Orphaned domains (reference `checkOrphanedDomains`): both
+/// directions — expertise files whose domain is missing from the
+/// config, and config domains without an expertise file. Warns with
+/// one detail per issue (file findings first, then config order);
+/// `--fix` adopts the files into the config and creates missing
+/// files.
+fn orphaned_domains(store: &mulch::StoreFiles) -> Check {
+    let config_domains = store.domains();
+    let mut details = Vec::new();
+    for domain in orphan_domains_on_disk(store) {
+        if !config_domains.iter().any(|d| d == &domain) {
+            details.push(format!(
+                "File \"{domain}.jsonl\" exists but domain \"{domain}\" is not in config"
+            ));
+        }
+    }
+    for domain in &config_domains {
+        if !store.domain_path(domain).is_file() {
+            details.push(format!(
+                "Domain \"{domain}\" in config but no JSONL file exists"
+            ));
+        }
+    }
+    if details.is_empty() {
+        Check {
+            name:    "orphaned-domains",
+            status:  Status::Pass,
+            message: "No orphaned domains".into(),
+            fixable: true,
+            details: Vec::new(),
+        }
+    } else {
+        Check {
+            name: "orphaned-domains",
+            status: Status::Warn,
+            message: format!("{} orphaned domain issue(s)", details.len()),
+            fixable: true,
+            details,
+        }
+    }
+}
+
+/// The domain names of the expertise `.jsonl` files on disk, sorted
+/// (the reference's `readdir` order is unspecified — sorted keeps the
+/// report deterministic; a README DEVIATION only when several orphan
+/// files exist at once).
+fn orphan_domains_on_disk(store: &mulch::StoreFiles) -> Vec<String> {
+    let mut domains: Vec<String> = std::fs::read_dir(store.root().join("expertise"))
+        .into_iter()
+        .flatten()
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            name.strip_suffix(".jsonl").map(String::from)
+        })
+        .collect();
+    domains.sort_unstable();
+    domains
+}
+
+/// File anchors (reference `checkFileAnchors`): every record's
+/// `files[]`, `dir_anchors[]`, and `evidence.file` entries must
+/// resolve to existing paths under the project root. Warns with one
+/// detail per broken anchor in record order; `--fix` strips the
+/// broken entries.
+fn file_anchors(domains: &[DomainLines], project_root: &std::path::Path) -> Check {
+    let mut details = Vec::new();
+    for domain in domains {
+        for (_, record) in records_of(domain) {
+            let id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map_or_else(String::new, |id| format!("[{id}]"));
+            for broken in broken_anchors(record, project_root) {
+                details.push(format!("{}{id}: {broken}", domain.domain));
+            }
+        }
+    }
+    if details.is_empty() {
+        Check {
+            name:    "file-anchors",
+            status:  Status::Pass,
+            message: "All file anchors resolve to existing paths".into(),
+            fixable: true,
+            details: Vec::new(),
+        }
+    } else {
+        Check {
+            name: "file-anchors",
+            status: Status::Warn,
+            message: format!("{} broken file anchor(s) found", details.len()),
+            fixable: true,
+            details,
+        }
+    }
+}
+
+/// A record's broken anchor detail bodies in the reference's report
+/// order: `files[]` entries, `dir_anchors[]` entries, then
+/// `evidence.file`. Non-string entries never participate — the
+/// reference crashes on them (README DEVIATIONS: doctor reports
+/// instead).
+fn broken_anchors(record: &Value, project_root: &std::path::Path) -> Vec<String> {
+    let mut broken = Vec::new();
+    for (field, label) in [("files", "files[]"), ("dir_anchors", "dir_anchors[]")] {
+        for path in anchor_strings(record.get(field)) {
+            if !resolve_anchor(project_root, path).exists() {
+                broken.push(format!("{label} path not found: {path}"));
+            }
+        }
+    }
+    if let Some(file) = evidence_file(record)
+        && !resolve_anchor(project_root, file).exists()
+    {
+        broken.push(format!("evidence.file not found: {file}"));
+    }
+    broken
+}
+
+/// The string entries of an anchor array, in entry order.
+fn anchor_strings(field: Option<&Value>) -> impl Iterator<Item = &str> {
+    field
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+}
+
+/// A record's `evidence.file` when truthy (the reference's `?.`
+/// skips null/missing and JS truthiness skips the empty string).
+fn evidence_file(record: &Value) -> Option<&str> {
+    record
+        .get("evidence")
+        .and_then(Value::as_object)
+        .and_then(|evidence| evidence.get("file"))
+        .and_then(Value::as_str)
+        .filter(|file| !file.is_empty())
+}
+
+/// An anchor path resolved like the reference's
+/// `resolve(projectRoot, p)`: absolute anchors stay absolute,
+/// everything else joins the project root (doctor has no `--dir`;
+/// the store lives under the process cwd).
+fn resolve_anchor(project_root: &std::path::Path, anchor: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(anchor);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    }
+}
+
+/// Strips a record's broken anchors in place (the `file-anchors`
+/// repair): missing `files[]`/`dir_anchors[]` entries drop — the key
+/// itself drops when nothing survives — and a missing `evidence.file`
+/// key drops from its evidence object. Returns how many anchors were
+/// removed.
+fn strip_broken_anchors(record: &mut Value, project_root: &std::path::Path) -> usize {
+    let Some(object) = record.as_object_mut() else {
+        return 0;
+    };
+    let mut removed = 0;
+    for field in ["files", "dir_anchors"] {
+        let Some(Value::Array(entries)) = object.get_mut(field) else {
+            continue;
+        };
+        let before = entries.len();
+        entries.retain(|entry| {
+            entry
+                .as_str()
+                .is_none_or(|path| resolve_anchor(project_root, path).exists())
+        });
+        let dropped = before - entries.len();
+        if dropped > 0 {
+            removed += dropped;
+            if entries.is_empty() {
+                // shift_remove keeps the remaining keys in place (the
+                // reference's spread-assign drops the key only)
+                object.shift_remove(field);
+            }
+        }
+    }
+    if let Some(file) = evidence_file(record)
+        && !resolve_anchor(project_root, file).exists()
+    {
+        if let Some(evidence) = record.get_mut("evidence").and_then(Value::as_object_mut) {
+            evidence.shift_remove("file");
+        }
+        removed += 1;
+    }
+    removed
+}
+
 /// Governance: per-domain record counts vs the effective thresholds
 /// (reference `checkGovernance`): at `max_entries` a domain warns
 /// "approaching limit", at `warn_entries` "over warn threshold", at
@@ -661,10 +846,11 @@ fn worse(current: Status, candidate: Status) -> Status {
 /// failed repair write aborts with a failure instead of reporting a
 /// successful repair.
 fn apply_fixes(
-    store: &mulch::StoreFiles,
+    store: &mut mulch::StoreFiles,
     rule: &StaleRule,
     domains: &[DomainLines],
     gates: &FixGates,
+    project_root: &std::path::Path,
 ) -> Result<Vec<String>, Failure> {
     let now = Timestamp::now();
     let mut fixes = Vec::new();
@@ -722,17 +908,63 @@ fn apply_fixes(
             }
         }
     }
+    if gates.orphaned {
+        // Adopts orphan files into the config (unvalidated — whatever
+        // `.jsonl` names exist), creates missing domain files, and
+        // rewrites the config once when anything was fixed (the
+        // reference checks its whole `fixed` array, so an earlier
+        // pass's lines also trigger the rewrite — byte-identical
+        // either way).
+        let config_domains = store.domains();
+        for domain in orphan_domains_on_disk(store) {
+            if !config_domains.iter().any(|d| d == &domain) {
+                store.adopt_domain(&domain);
+                fixes.push(format!("Added orphaned domain \"{domain}\" to config"));
+            }
+        }
+        for domain in store.domains() {
+            if store
+                .ensure_domain_file(&domain)
+                .map_err(|source| io_failure(&source))?
+            {
+                fixes.push(format!(
+                    "Created missing JSONL file for domain \"{domain}\""
+                ));
+            }
+        }
+        if !fixes.is_empty() {
+            store.write_config().map_err(|source| io_failure(&source))?;
+        }
+    }
+    if gates.anchors {
+        // Fresh config order: the orphan pass above may have adopted
+        // domains whose records carry broken anchors too.
+        for domain in store.domains() {
+            if let Some(count) = anchors_pass(store, &domain, project_root)? {
+                fixes.push(format!(
+                    "Removed {count} broken file anchor(s) from {domain}"
+                ));
+            }
+        }
+    }
     Ok(fixes)
+}
+
+/// Maps a lib store error onto the doctor failure shape.
+fn io_failure(source: &mulch::Error) -> Failure {
+    Failure::handled("doctor", crate::output::chain_message(source))
 }
 
 /// Which failed checks open their repair pass — the reference gates
 /// every fix case on `status !== "pass" && fixable`, so a check that
 /// passes never repairs (its data is clean by construction).
 struct FixGates {
-    jsonl:  bool,
-    legacy: bool,
-    schema: bool,
-    stale:  bool,
+    jsonl:    bool,
+    legacy:   bool,
+    schema:   bool,
+    stale:    bool,
+    orphaned: bool,
+    anchors:  bool,
 }
 
 impl FixGates {
@@ -743,10 +975,12 @@ impl FixGates {
             })
         }
         FixGates {
-            jsonl:  open(checks, "jsonl-integrity"),
-            legacy: open(checks, "legacy-outcome"),
-            schema: open(checks, "schema-validation"),
-            stale:  open(checks, "stale-records"),
+            jsonl:    open(checks, "jsonl-integrity"),
+            legacy:   open(checks, "legacy-outcome"),
+            schema:   open(checks, "schema-validation"),
+            stale:    open(checks, "stale-records"),
+            orphaned: open(checks, "orphaned-domains"),
+            anchors:  open(checks, "file-anchors"),
         }
     }
 }
@@ -848,7 +1082,42 @@ fn value_line_pass(
     }
     store
         .rewrite_domain(domain, &kept)
-        .map_err(|source| Failure::handled("doctor", crate::output::chain_message(&source)))?;
+        .map_err(|source| io_failure(&source))?;
+    Ok(Some(removed))
+}
+
+/// The file-anchors repair on one domain: every line parses, each
+/// record sheds its broken anchors ([`strip_broken_anchors`]), and
+/// the domain rewrites through `rewrite_domain` (canonical) when
+/// anything was removed. Returns the number of removed anchors,
+/// `None` when the file is absent or nothing changed (no write).
+fn anchors_pass(
+    store: &mulch::StoreFiles,
+    domain: &str,
+    project_root: &std::path::Path,
+) -> Result<Option<usize>, Failure> {
+    let Some(text) = read_domain_text(store, domain)? else {
+        return Ok(None);
+    };
+    let mut records = Vec::new();
+    let mut removed = 0usize;
+    for line in text.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(mut record) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        removed += strip_broken_anchors(&mut record, project_root);
+        records.push(record);
+    }
+    if removed == 0 {
+        return Ok(None);
+    }
+    store
+        .rewrite_domain(domain, &records)
+        .map_err(|source| io_failure(&source))?;
     Ok(Some(removed))
 }
 
@@ -1209,5 +1478,178 @@ mod tests {
         assert!(gates.schema);
         // failed but not fixable: the pass stays closed
         assert!(!gates.stale);
+        // the sprint-24 checks gate like the rest
+        assert!(!gates.orphaned);
+        assert!(!gates.anchors);
+        let gates = FixGates::from_checks(&[check("orphaned-domains", Status::Warn)]);
+        assert!(gates.orphaned);
+        assert!(!gates.anchors);
+    }
+
+    /// A file-anchors detail fixture: two broken files, a broken dir
+    /// anchor, and a broken evidence file on an id-carrying record,
+    /// plus the id-less and empty-string edges.
+    fn anchors_store(tag: &str) -> std::path::PathBuf {
+        let (dir, store) = temp_store(tag);
+        std::fs::write(dir.join("present.txt"), "x").expect("anchor target");
+        std::fs::write(
+            store.domain_path("d"),
+            concat!(
+                r#"{"type":"pattern","name":"a","description":"d","id":"mx-abc123","files":["present.txt","gone.txt"],"#,
+                r#""dir_anchors":["gone-dir"],"evidence":{"commit":"c","file":"gone.md"}}"#,
+                '\n',
+                r#"{"type":"pattern","name":"b","description":"d","files":["","/abs/gone"]}"#,
+                '\n',
+            ),
+        )
+        .expect("domain file");
+        dir
+    }
+
+    #[test]
+    fn file_anchors_details_follow_reference_order_and_id_rendering() {
+        let dir = anchors_store("anchors-check");
+        let store = match mulch::StoreFiles::locate(&dir).expect("store opens") {
+            mulch::StoreLocation::Open(store) => store,
+            other => panic!("store must open, got {other:?}"),
+        };
+        let domains = read_domains(&store);
+        let check = file_anchors(&domains, &dir);
+        assert_eq!(check.name, "file-anchors");
+        assert_eq!(check.status.as_str(), "warn");
+        assert_eq!(check.message, "4 broken file anchor(s) found");
+        assert!(check.fixable);
+        assert_eq!(check.details, [
+            "d[mx-abc123]: files[] path not found: gone.txt",
+            "d[mx-abc123]: dir_anchors[] path not found: gone-dir",
+            "d[mx-abc123]: evidence.file not found: gone.md",
+            // id-less records carry no brackets; the empty string
+            // resolves to the project root (exists, unbroken);
+            // absolute anchors stay absolute
+            "d: files[] path not found: /abs/gone",
+        ]);
+        // removing an anchor target breaks it retroactively
+        std::fs::remove_file(dir.join("present.txt")).expect("cleanup");
+        let domains = read_domains(&store);
+        let check = file_anchors(&domains, &dir);
+        assert_eq!(
+            check.details[0],
+            "d[mx-abc123]: files[] path not found: present.txt"
+        );
+    }
+
+    #[test]
+    fn strip_broken_anchors_filters_drops_keys_and_keeps_order() {
+        let (dir, _store) = temp_store("anchors-strip");
+        std::fs::write(dir.join("present.txt"), "x").expect("anchor target");
+        let mut carried = record(
+            r#"{"type":"pattern","name":"a","description":"d","files":["gone.txt","present.txt"],"dir_anchors":["gone"],"evidence":{"file":"gone.md","commit":"c"}}"#,
+        );
+        assert_eq!(strip_broken_anchors(&mut carried, &dir), 3);
+        assert_eq!(
+            serde_json::to_string(&carried).expect("serializes"),
+            r#"{"type":"pattern","name":"a","description":"d","files":["present.txt"],"evidence":{"commit":"c"}}"#
+        );
+        // an all-broken array drops its key entirely; an empty array
+        // stays untouched (nothing was removed)
+        let mut emptied = record(
+            r#"{"type":"pattern","name":"a","description":"d","files":["gone.txt"],"dir_anchors":[]}"#,
+        );
+        assert_eq!(strip_broken_anchors(&mut emptied, &dir), 1);
+        assert_eq!(
+            serde_json::to_string(&emptied).expect("serializes"),
+            r#"{"type":"pattern","name":"a","description":"d","dir_anchors":[]}"#
+        );
+    }
+
+    #[test]
+    fn anchors_pass_rewrites_and_reports_the_count() {
+        let (dir, store) = temp_store("anchors-pass");
+        std::fs::write(dir.join("present.txt"), "x").expect("anchor target");
+        std::fs::write(
+            store.domain_path("d"),
+            concat!(
+                r#"{"type":"pattern","name":"a","description":"d","id":"mx-1","files":["gone.txt","present.txt"],"#,
+                r#""evidence":{"file":"gone.md","commit":"c"}}"#,
+                '\n',
+                r#"{"type":"pattern","name":"b","description":"d"}"#,
+                '\n',
+            ),
+        )
+        .expect("domain file");
+        assert_eq!(
+            anchors_pass(&store, "d", &dir).expect("pass runs"),
+            Some(2),
+            "one files entry plus the evidence file"
+        );
+        // keys keep their positions (only broken anchors move); the
+        // id-less survivor gets write_records' deterministic id
+        // appended (byte-pinned differentially in the battery)
+        let rewritten = read_domain(&store, "d");
+        let lines: Vec<&str> = rewritten
+            .split('\n')
+            .filter(|line| !line.is_empty())
+            .collect();
+        assert_eq!(lines.len(), 2, "both records survive");
+        assert_eq!(
+            lines[0],
+            r#"{"type":"pattern","name":"a","description":"d","id":"mx-1","files":["present.txt"],"evidence":{"commit":"c"}}"#
+        );
+        assert!(
+            lines[1].starts_with(r#"{"type":"pattern","name":"b","description":"d","id":"mx-"#),
+            "id backfilled: {}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn orphaned_domains_flags_both_directions_in_reference_order() {
+        let (dir, store) = temp_store("orphaned-check");
+        std::fs::write(store.domain_path("d"), "").expect("live file");
+        let clean = orphaned_domains(&store);
+        assert_eq!(clean.status.as_str(), "pass");
+        assert_eq!(clean.message, "No orphaned domains");
+        assert!(clean.fixable);
+        std::fs::write(dir.join(".mulch/expertise/orphan.jsonl"), "").expect("orphan file");
+        std::fs::remove_file(store.domain_path("d")).expect("live file gone");
+        let check = orphaned_domains(&store);
+        assert_eq!(check.status.as_str(), "warn");
+        assert_eq!(check.message, "2 orphaned domain issue(s)");
+        assert_eq!(check.details, [
+            "File \"orphan.jsonl\" exists but domain \"orphan\" is not in config",
+            "Domain \"d\" in config but no JSONL file exists",
+        ]);
+    }
+
+    #[test]
+    fn orphaned_fix_adopts_unvalidated_creates_files_and_rewrites_once() {
+        let (dir, mut store) = temp_store("orphaned-fix");
+        // d is in the config but has no file; "we ird" is an orphan
+        // file whose name register_domain would reject
+        std::fs::write(dir.join(".mulch/expertise/we ird.jsonl"), "").expect("orphan file");
+        let rule = StaleRule::from_shelf_life(&store.config().effective_shelf_life());
+        let gates = FixGates {
+            jsonl:    false,
+            legacy:   false,
+            schema:   false,
+            stale:    false,
+            orphaned: true,
+            anchors:  false,
+        };
+        let fixes = apply_fixes(&mut store, &rule, &[], &gates, &dir).expect("fix pass runs");
+        assert_eq!(fixes, [
+            "Added orphaned domain \"we ird\" to config",
+            "Created missing JSONL file for domain \"d\"",
+        ]);
+        assert_eq!(
+            std::fs::read_to_string(dir.join(".mulch/mulch.config.yaml")).expect("config"),
+            "version: '1'\ndomains:\n  d: {}\n  we ird: {}\n\
+governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\n\
+classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30\n",
+            "adopted domains append in config order, unvalidated; the \
+canonical rewrite backfills the default blocks (pinned parity)"
+        );
+        assert!(store.domain_path("d").is_file());
+        assert!(store.domain_path("we ird").is_file());
     }
 }

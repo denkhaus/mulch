@@ -6035,3 +6035,170 @@ fn doctor_governance_partial_block_backfills_thresholds() {
             .contains("beta: 3 records (approaching limit of 2)")
     );
 }
+
+// mulch-42f2 battery: doctor's orphaned-domains and file-anchors
+// checks (both directions, detail order, id rendering) and their
+// --fix cases (unvalidated adoption, file creation, anchor stripping,
+// pass order after the schema repair).
+
+mod battery_s24 {
+    use super::*;
+
+    /// The sprint-24 store: domain `d` live with an id-carrying
+    /// anchor record and an id-less one, config domain `ghost`
+    /// without a file, orphan file `orphan.jsonl` with its own
+    /// anchor record, and one existing anchor target.
+    fn orphan_anchor_fixture(dir: &Path) {
+        std::fs::write(dir.join("present.txt"), "x").expect("anchor target");
+        write_seed_with_config(dir, "version: '1'\ndomains:\n  d: {}\n  ghost: {}\n", &[(
+            "d",
+            concat!(
+                r#"{"type":"pattern","name":"a","description":"d","id":"mx-abc123","files":["present.txt","gone.txt"],"#,
+                r#""dir_anchors":["gone-dir"],"evidence":{"commit":"c","file":"gone.md"},"#,
+                r#""classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+                "\n",
+                r#"{"type":"pattern","name":"b","description":"d","files":["/abs/gone"],"#,
+                r#""classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+                "\n",
+            ),
+        )]);
+        write_orphan(
+            dir,
+            "orphan.jsonl",
+            concat!(
+                r#"{"type":"pattern","name":"c","description":"d","id":"mx-777","files":["also-gone.txt"],"#,
+                r#""classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+                "\n",
+            ),
+        );
+    }
+
+    #[test]
+    fn doctor_orphan_and_anchor_checks_match_reference() {
+        let Some(ml) = reference_ml() else {
+            eprintln!("skipped: no ml on PATH");
+            return;
+        };
+        let ours = TempDir::new("s24-check-o");
+        let theirs = TempDir::new("s24-check-t");
+        for dir in [&ours.0, &theirs.0] {
+            orphan_anchor_fixture(dir);
+        }
+
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+        let theirs_run = run_in(&theirs.0, &ml, &["doctor"]);
+        assert_eq!(
+            strip_upgrade_and_summary(&ours_run.stdout),
+            strip_upgrade_and_summary(&theirs_run.stdout),
+            "doctor plain diverges"
+        );
+        assert_eq!(ours_run.code, theirs_run.code);
+
+        let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--json"]);
+        let theirs_json = run_in(&theirs.0, &ml, &["doctor", "--json"]);
+        assert_eq!(
+            normalize_doctor_json(&ours_json.stdout),
+            normalize_doctor_json(&theirs_json.stdout),
+            "doctor json diverges"
+        );
+        assert_eq!(ours_json.code, theirs_json.code);
+    }
+
+    #[test]
+    fn doctor_fix_adopts_orphans_and_strips_anchors_like_reference() {
+        let Some(ml) = reference_ml() else {
+            eprintln!("skipped: no ml on PATH");
+            return;
+        };
+        let ours = TempDir::new("s24-fix-o");
+        let theirs = TempDir::new("s24-fix-t");
+        for dir in [&ours.0, &theirs.0] {
+            orphan_anchor_fixture(dir);
+        }
+
+        for args in [&["doctor", "--fix"][..], &["doctor", "--fix", "--json"][..]] {
+            let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+            let theirs_run = run_in(&theirs.0, &ml, args);
+            match args.last() {
+                Some(&"--json") => assert_eq!(
+                    normalize_doctor_json(&ours_run.stdout),
+                    normalize_doctor_json(&theirs_run.stdout),
+                    "doctor --fix --json diverges ({args:?})"
+                ),
+                _ => assert_eq!(
+                    strip_upgrade_and_summary(&ours_run.stdout),
+                    strip_upgrade_and_summary(&theirs_run.stdout),
+                    "doctor --fix plain diverges ({args:?})"
+                ),
+            }
+            assert_eq!(ours_run.code, theirs_run.code, "exit codes ({args:?})");
+            // the second run repairs nothing: fixed is empty and the
+            // store files stay byte-identical (idempotence)
+        }
+        for relative in [
+            "mulch.config.yaml",
+            "expertise/d.jsonl",
+            "expertise/orphan.jsonl",
+            "expertise/ghost.jsonl",
+        ] {
+            assert_same_file(&ours, &theirs, relative);
+        }
+        // ghost's file exists and is empty on both sides
+        assert_eq!(
+            read_store_file(&ours.0, "expertise/ghost.jsonl"),
+            read_store_file(&theirs.0, "expertise/ghost.jsonl")
+        );
+    }
+
+    /// The anchor repair runs AFTER the schema pass: anchors on
+    /// schema-invalid records never reach the fix count (the check
+    /// still reports them), and the rewrite carries only survivors.
+    #[test]
+    fn doctor_fix_schema_removal_precedes_anchor_stripping() {
+        let Some(ml) = reference_ml() else {
+            eprintln!("skipped: no ml on PATH");
+            return;
+        };
+        let ours = TempDir::new("s24-order-o");
+        let theirs = TempDir::new("s24-order-t");
+        for dir in [&ours.0, &theirs.0] {
+            write_seed(dir, &[(
+                "d",
+                concat!(
+                    // schema-invalid: pattern without description
+                    r#"{"type":"pattern","name":"bad","files":["a-gone.txt","b-gone.txt"],"#,
+                    r#""classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+                    "\n",
+                    r#"{"type":"pattern","name":"ok","description":"d","files":["c-gone.txt"],"#,
+                    r#""evidence":{"file":"d-gone.md","commit":"c"},"#,
+                    r#""classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+                    "\n",
+                ),
+            )]);
+        }
+
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+        let theirs_run = run_in(&theirs.0, &ml, &["doctor"]);
+        assert_eq!(
+            strip_upgrade_and_summary(&ours_run.stdout),
+            strip_upgrade_and_summary(&theirs_run.stdout),
+            "check pass diverges (anchors of invalid records count)"
+        );
+
+        let ours_fix = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+        let theirs_fix = run_in(&theirs.0, &ml, &["doctor", "--fix"]);
+        assert_eq!(
+            strip_upgrade_and_summary(&ours_fix.stdout),
+            strip_upgrade_and_summary(&theirs_fix.stdout),
+            "fix pass diverges (schema removal precedes anchor strip)"
+        );
+        assert_eq!(ours_fix.code, theirs_fix.code);
+        assert_same_file(&ours, &theirs, "expertise/d.jsonl");
+        let body = read_store_file(&ours.0, "expertise/d.jsonl");
+        assert!(!body.contains("a-gone.txt"), "survivors only: {body}");
+        assert!(
+            body.contains(r#""name":"ok""#),
+            "valid record survives: {body}"
+        );
+    }
+}
