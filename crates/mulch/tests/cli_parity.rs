@@ -6150,6 +6150,34 @@ mod battery_s24 {
         );
     }
 
+    /// Several orphan files adopt in the directory's own iteration
+    /// order (the reference's `readdir` — both binaries walk the same
+    /// unsorted stream, so twin stores list identically).
+    #[test]
+    fn doctor_fix_multi_orphan_adoption_order_matches_reference() {
+        let Some(ml) = reference_ml() else {
+            eprintln!("skipped: no ml on PATH");
+            return;
+        };
+        let ours = TempDir::new("s24-multi-o");
+        let theirs = TempDir::new("s24-multi-t");
+        for dir in [&ours.0, &theirs.0] {
+            write_seed(dir, &[("d", "")]);
+            for name in ["zeta", "alpha", "mid"] {
+                write_orphan(dir, &format!("{name}.jsonl"), "");
+            }
+        }
+
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+        let theirs_run = run_in(&theirs.0, &ml, &["doctor", "--fix"]);
+        assert_eq!(
+            strip_upgrade_and_summary(&ours_run.stdout),
+            strip_upgrade_and_summary(&theirs_run.stdout),
+            "adoption and creation lines diverge"
+        );
+        assert_same_file(&ours, &theirs, "mulch.config.yaml");
+    }
+
     /// The anchor repair runs AFTER the schema pass: anchors on
     /// schema-invalid records never reach the fix count (the check
     /// still reports them), and the rewrite carries only survivors.

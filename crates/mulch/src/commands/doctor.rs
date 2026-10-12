@@ -597,8 +597,8 @@ fn divergent_ids(domain: &str, records: &[&Value]) -> Vec<String> {
 fn orphaned_domains(store: &mulch::StoreFiles) -> Check {
     let config_domains = store.domains();
     let mut details = Vec::new();
-    for domain in orphan_domains_on_disk(store) {
-        if !config_domains.iter().any(|d| d == &domain) {
+    for domain in domains_on_disk(store) {
+        if !config_domains.contains(&domain) {
             details.push(format!(
                 "File \"{domain}.jsonl\" exists but domain \"{domain}\" is not in config"
             ));
@@ -630,12 +630,15 @@ fn orphaned_domains(store: &mulch::StoreFiles) -> Check {
     }
 }
 
-/// The domain names of the expertise `.jsonl` files on disk, sorted
-/// (the reference's `readdir` order is unspecified — sorted keeps the
-/// report deterministic; a README DEVIATION only when several orphan
-/// files exist at once).
-fn orphan_domains_on_disk(store: &mulch::StoreFiles) -> Vec<String> {
-    let mut domains: Vec<String> = std::fs::read_dir(store.root().join("expertise"))
+/// The domain names of the expertise `.jsonl` files on disk, in the
+/// directory's own iteration order (the reference's `readdir` — both
+/// sides walk the same unsorted stream, so twin stores list
+/// identically). Read errors read as an empty listing: the
+/// reference's `readdir` try/catch is total — a missing expertise dir
+/// on a fresh store and an unreadable one both mean "no orphans from
+/// disk".
+fn domains_on_disk(store: &mulch::StoreFiles) -> Vec<String> {
+    std::fs::read_dir(store.root().join("expertise"))
         .into_iter()
         .flatten()
         .filter_map(std::result::Result::ok)
@@ -643,9 +646,7 @@ fn orphan_domains_on_disk(store: &mulch::StoreFiles) -> Vec<String> {
             let name = entry.file_name().into_string().ok()?;
             name.strip_suffix(".jsonl").map(String::from)
         })
-        .collect();
-    domains.sort_unstable();
-    domains
+        .collect()
 }
 
 /// File anchors (reference `checkFileAnchors`): every record's
@@ -657,11 +658,7 @@ fn file_anchors(domains: &[DomainLines], project_root: &std::path::Path) -> Chec
     let mut details = Vec::new();
     for domain in domains {
         for (_, record) in records_of(domain) {
-            let id = record
-                .get("id")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map_or_else(String::new, |id| format!("[{id}]"));
+            let id = id_bracket(record.get("id"));
             for broken in broken_anchors(record, project_root) {
                 details.push(format!("{}{id}: {broken}", domain.domain));
             }
@@ -683,6 +680,25 @@ fn file_anchors(domains: &[DomainLines], project_root: &std::path::Path) -> Chec
             fixable: true,
             details,
         }
+    }
+}
+
+/// The reference's id bracket (`record.id ? `[${record.id}]` : ""`):
+/// JS-truthy ids interpolate through the template-literal coercion
+/// ([`mulch::value_text`]). Bounded to the shapes a store can reach —
+/// the schema pins ids to the `mx-` pattern, so only strings and
+/// hand-crafted numbers ever render (objects and arrays are truthy in
+/// JS but unreachable as ids).
+fn id_bracket(id: Option<&Value>) -> String {
+    let truthy = match id {
+        Some(Value::Bool(on)) => *on,
+        Some(Value::Number(number)) => number.as_f64().is_some_and(|n| n != 0.0),
+        Some(Value::String(text)) => !text.is_empty(),
+        None | Some(Value::Null | Value::Array(_) | Value::Object(_)) => false,
+    };
+    match id.filter(|_| truthy) {
+        Some(value) => format!("[{}]", mulch::value_text(value)),
+        None => String::new(),
     }
 }
 
@@ -916,8 +932,8 @@ fn apply_fixes(
         // pass's lines also trigger the rewrite — byte-identical
         // either way).
         let config_domains = store.domains();
-        for domain in orphan_domains_on_disk(store) {
-            if !config_domains.iter().any(|d| d == &domain) {
+        for domain in domains_on_disk(store) {
+            if !config_domains.contains(&domain) {
                 store.adopt_domain(&domain);
                 fixes.push(format!("Added orphaned domain \"{domain}\" to config"));
             }
@@ -925,7 +941,7 @@ fn apply_fixes(
         for domain in store.domains() {
             if store
                 .ensure_domain_file(&domain)
-                .map_err(|source| io_failure(&source))?
+                .map_err(|source| store_failure(&source))?
             {
                 fixes.push(format!(
                     "Created missing JSONL file for domain \"{domain}\""
@@ -933,7 +949,9 @@ fn apply_fixes(
             }
         }
         if !fixes.is_empty() {
-            store.write_config().map_err(|source| io_failure(&source))?;
+            store
+                .write_config()
+                .map_err(|source| store_failure(&source))?;
         }
     }
     if gates.anchors {
@@ -951,7 +969,7 @@ fn apply_fixes(
 }
 
 /// Maps a lib store error onto the doctor failure shape.
-fn io_failure(source: &mulch::Error) -> Failure {
+fn store_failure(source: &mulch::Error) -> Failure {
     Failure::handled("doctor", crate::output::chain_message(source))
 }
 
@@ -1057,33 +1075,34 @@ fn value_line_pass(
     let Some(text) = read_domain_text(store, domain)? else {
         return Ok(None);
     };
-    let mut kept = Vec::new();
-    let mut removed = 0usize;
-    for line in text.split('\n') {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // Unparsable lines drop uncounted (unreachable in practice: the
-        // reference's strict checks crash on truly malformed lines
-        // before any repair; comment lines were removed by the
-        // jsonl-integrity pass above).
-        let Ok(record) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-        if keep(&record) {
-            kept.push(record);
-        } else {
-            removed += 1;
-        }
-    }
+    let records = parsed_records(&text);
+    let kept: Vec<Value> = records
+        .iter()
+        .filter(|record| keep(record))
+        .cloned()
+        .collect();
+    let removed = records.len() - kept.len();
     if removed == 0 {
         return Ok(None);
     }
     store
         .rewrite_domain(domain, &kept)
-        .map_err(|source| io_failure(&source))?;
+        .map_err(|source| store_failure(&source))?;
     Ok(Some(removed))
+}
+
+/// The parseable records of a domain file's bytes, in line order —
+/// the shared read half of the record-rewriting repair passes
+/// (`value_line_pass`, `anchors_pass`). Unparsable lines drop
+/// uncounted (unreachable in practice: the reference's strict checks
+/// crash on truly malformed lines before any repair; comment lines
+/// were removed by the jsonl-integrity pass above), blank lines skip.
+fn parsed_records(text: &str) -> Vec<Value> {
+    text.split('\n')
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
 }
 
 /// The file-anchors repair on one domain: every line parses, each
@@ -1099,25 +1118,17 @@ fn anchors_pass(
     let Some(text) = read_domain_text(store, domain)? else {
         return Ok(None);
     };
-    let mut records = Vec::new();
+    let mut records = parsed_records(&text);
     let mut removed = 0usize;
-    for line in text.split('\n') {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(mut record) = serde_json::from_str::<Value>(trimmed) else {
-            continue;
-        };
-        removed += strip_broken_anchors(&mut record, project_root);
-        records.push(record);
+    for record in &mut records {
+        removed += strip_broken_anchors(record, project_root);
     }
     if removed == 0 {
         return Ok(None);
     }
     store
         .rewrite_domain(domain, &records)
-        .map_err(|source| io_failure(&source))?;
+        .map_err(|source| store_failure(&source))?;
     Ok(Some(removed))
 }
 
@@ -1599,6 +1610,23 @@ mod tests {
             lines[1].starts_with(r#"{"type":"pattern","name":"b","description":"d","id":"mx-"#),
             "id backfilled: {}",
             lines[1]
+        );
+    }
+
+    #[test]
+    fn id_bracket_follows_js_truthiness_and_coercion() {
+        assert_eq!(id_bracket(None), "");
+        assert_eq!(id_bracket(record(r#"{"v":null}"#).get("v")), "");
+        assert_eq!(id_bracket(record(r#"{"v":""}"#).get("v")), "");
+        assert_eq!(id_bracket(record(r#"{"v":0}"#).get("v")), "");
+        assert_eq!(id_bracket(record(r#"{"v":false}"#).get("v")), "");
+        assert_eq!(id_bracket(record(r#"{"v":5}"#).get("v")), "[5]");
+        assert_eq!(id_bracket(record(r#"{"v":1.5}"#).get("v")), "[1.5]");
+        assert_eq!(id_bracket(record(r#"{"v":true}"#).get("v")), "[true]");
+        assert_eq!(
+            id_bracket(record(r#"{"v":"mx-1"}"#).get("v")),
+            "[mx-1]",
+            "the schema's id shape renders as-is"
         );
     }
 

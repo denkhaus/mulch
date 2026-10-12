@@ -122,11 +122,7 @@ impl StoreFiles {
         }
         self.config.add_domain(domain);
         self.write_config()?;
-        let path = self.domain_path(domain);
-        if !path.is_file() {
-            std::fs::write(&path, "").map_err(|source| Error::Write { path, source })?;
-        }
-        Ok(())
+        self.ensure_domain_file(domain).map(|_| ())
     }
 
     /// Adopts an on-disk domain into the config WITHOUT name
