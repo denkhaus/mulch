@@ -132,6 +132,9 @@ architecture direction, milestone content, go/no-go):
 - **Commit regularly** — after each coherent unit, never large WIP. All
   writes via `but` (`but commit -b iterate -m "<msg>" <file-ids>` with
   explicit file IDs from `but diff`); NEVER `git add/commit/push/...`.
+  LONG messages go through a file: `but commit -m "$(cat /tmp/msg.txt)"`
+  — inline `-m` strings with quotes/backticks get shell-mangled (sprint
+  25: the message lost its quoted parts and needed a reword).
   **NEVER `ml sync`** under GitButler — it issues a plain git commit behind
   the workspace's back. Instead: `seeds sync` (report-only under
   `vcs_manager: gitbutler`) shows pending tracker paths, and `.mulch/`
