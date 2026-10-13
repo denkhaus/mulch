@@ -131,7 +131,7 @@ pub fn parse_non_negative_number(raw: &str) -> Option<Value> {
     // diverges from that above the i64 range: absurd territory for a
     // millisecond duration, documented in README DEVIATIONS).
     if number.fract() == 0.0 && number <= i64::MAX as f64 {
-        #[allow(
+        #[expect(
             clippy::cast_possible_truncation,
             reason = "guarded by the fract()==0 and <= i64::MAX bounds"
         )]
@@ -166,26 +166,29 @@ pub fn js_round_u64(value: f64) -> u64 {
 /// every hand-ordered JSON boundary follow it (probe: `{"type": 5}`
 /// counts under `"5"` before the seeded names).
 pub fn js_key_sorted<T>(entries: &[(String, T)]) -> Vec<&(String, T)> {
-    let is_integer_key = |key: &str| {
+    // one partition pass, one parse per entry: the JS array-index
+    // check IS the u64 parse (plus the canonical-numeral shape)
+    let mut integer_keys: Vec<(u64, &(String, T))> = Vec::new();
+    let mut string_keys: Vec<&(String, T)> = Vec::new();
+    for entry in entries {
         // JS array-index keys are CANONICAL numerals: digits only, no
         // leading zero (unless "0" itself) — "01" and "-1" are string
         // keys. The u64 bound rejects everything larger than JS
-        // indexes itself would order.
-        let canonical = !key.is_empty()
-            && key.bytes().all(|byte| byte.is_ascii_digit())
-            && (key == "0" || !key.starts_with('0'));
-        canonical && key.parse::<u64>().is_ok()
-    };
-    let mut integer_keys: Vec<&(String, T)> = entries
-        .iter()
-        .filter(|(key, _)| is_integer_key(key))
-        .collect();
-    integer_keys.sort_by_key(|(key, _)| {
-        // checked above; the closure stays trivial
-        key.parse::<u64>().unwrap_or(0)
-    });
-    let string_keys = entries.iter().filter(|(key, _)| !is_integer_key(key));
-    integer_keys.into_iter().chain(string_keys).collect()
+        // indexes themselves would order.
+        let shape = !entry.0.is_empty()
+            && entry.0.bytes().all(|byte| byte.is_ascii_digit())
+            && (entry.0 == "0" || !entry.0.starts_with('0'));
+        match entry.0.parse::<u64>() {
+            Ok(index) if shape => integer_keys.push((index, entry)),
+            _ => string_keys.push(entry),
+        }
+    }
+    integer_keys.sort_by_key(|(index, _)| *index);
+    integer_keys
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .chain(string_keys)
+        .collect()
 }
 
 #[cfg(test)]

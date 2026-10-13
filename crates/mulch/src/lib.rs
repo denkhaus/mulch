@@ -30,6 +30,7 @@ pub use ids::{
 // the JS-quirk facade: the command-consumed jsval items re-export at
 // the root like the records/schema constants (one convention;
 // `mulch::jsval` stays the deep path for the rest, e.g. `js_dedup_eq`)
+#[doc(inline)]
 pub use jsval::{
     js_key_sorted, js_length, js_round_u64, js_string, parse_non_negative_number, truthy,
     truthy_str, value_text,

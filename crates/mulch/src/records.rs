@@ -643,9 +643,6 @@ mod outcome_entry_tests {
 
     use super::OutcomeEntry;
 
-    // the numeric-flag parse pins moved to jsval's table test
-    // (mulch-ec71): one quirk surface.
-
     fn key_order(map: &Map<String, serde_json::Value>) -> Vec<&str> {
         map.keys().map(String::as_str).collect()
     }
