@@ -1,0 +1,57 @@
+//! `mulch init` (and re-init) parity probes.
+//!
+//! Moved verbatim from the one-file battery (mulch-3e7c); sprint
+//! banners stay with their probes.
+
+use std::path::Path;
+
+use super::support::*;
+
+#[test]
+fn init_matches_reference_on_disk_and_output() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("init-ours");
+    let theirs = TempDir::new("init-theirs");
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["init"]);
+
+    assert_eq!(ours_run.code, theirs_run.code, "exit codes differ");
+    assert_eq!(
+        ours_run.stdout,
+        theirs_run.stdout.replace(
+            &theirs.0.display().to_string(),
+            &ours.0.display().to_string()
+        ),
+        "init stdout differs"
+    );
+    assert_eq!(
+        read_store_file(&ours.0, "README.md"),
+        read_store_file(&theirs.0, "README.md")
+    );
+    assert_eq!(
+        read_store_file(&ours.0, "mulch.config.yaml"),
+        read_store_file(&theirs.0, "mulch.config.yaml")
+    );
+    assert!(ours.0.join(".mulch/expertise").is_dir());
+}
+
+#[test]
+fn init_reinit_message_matches() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("reinit-ours");
+    let theirs = TempDir::new("reinit-theirs");
+    run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    run_in(&theirs.0, &ml, &["init"]);
+
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["init"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert_eq!(ours_run.stdout, theirs_run.stdout);
+}
