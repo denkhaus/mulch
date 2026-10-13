@@ -1,7 +1,7 @@
 {
   "sprints_completed": 27,
   "sprints_reflected": 27,
-  "last_arch_review_at_sprint": 24,
+  "last_arch_review_at_sprint": 27,
   "last_reflection": "2026-10-13",
   "notes": [
     "sprint system established 2026-10-03 (user directive): ported from nu-agent's iterate skill, adapted to this GitButler workspace (but instead of git, local-only, strictly separate from the fabro develop line)",
@@ -38,6 +38,7 @@
     "SESSION CLOSE 2026-10-12 (sprint 24 + arch gate @ 24, full reflection): no loop changes needed - the three friction candidates were one-offs or already covered (text.index span-edit mishap violates the existing anchor-from-file guard, not a new rule; 429 reviewer storm was a transient quota burst, frugal-prompt respawn worked; fixture schema-validity went to mulch-compat as battery-fixtures-need-full-required-sets). New records this session: rust/serde-json-preserve-order-map-remove-swaps, mulch-compat/twin-store-fs-order-determinism, mulch-compat/battery-fixtures-need-full-required-sets, mulch-compat/ml-record-type-specific-required-flags. Style-guide drift-check: local copy is AHEAD of the .fabro original by the sprint-15 match-order bullet (intentional; fabro delivered nothing new - no refresh, and syncing back would cross the loop boundary). rust-style-guide pages loaded this session: house-style, error-propagation, control-flow, testing. Next session: sprint 25 = mulch-ec71 (jsval seam, arch top pick), then 3e7c before the 16da wave.",
     "sprint 25 (2026-10-13, this machine's boot session): record flag-path residuals — cbe2/e2cf/1209/2153/8ca8/5fd8 closed (commits pup + tmk); e2cf was probe-found mid-sprint; new needs-triage seeds 943b (stdin parse-error text/channel) + 72d1 (unreadable batch path); user directive landed as README DEVIATIONS: the Retry/Example echo says 'mulch record', never 'ml record' (prime follows at 16da, decision record mx-155459); machine boot: gitbutler workspace setup + but branch update iterate (global memory), mise cargo:seeds 0.8.0 pinned; next: sprint 26 = mulch-ec71 (jsval seam) per roadmap on 0e39",
     "sprint 26 (2026-10-13): jsval seam landed (ec71, commits lon+ztk fold ztm) — one lib module for all JS emulation quirks, byte-neutral 174/174, both reviews PASS; two latent-edge fixes (id_bracket array/object ids, canonical leading-zero key order — both reference-verified live); next: sprint 27 = mulch-3e7c (battery split) + ARCH GATE @ 27 falls due",
-    "sprint 27 (2026-10-13): battery split (3e7c, commits ksx+vtq) — ONE binary, 10 modules, 98 test names unchanged, 174/174 both-sides-verified; next: ARCH GATE @ 27 (improve-codebase-architecture) falls due NOW, then sprint 28 = mulch-16da (read/render wave)"
+    "sprint 27 (2026-10-13): battery split (3e7c, commits ksx+vtq) — ONE binary, 10 modules, 98 test names unchanged, 174/174 both-sides-verified; next: ARCH GATE @ 27 (improve-codebase-architecture) falls due NOW, then sprint 28 = mulch-16da (read/render wave)",
+    "arch gate @ 27 (2026-10-13): 7 candidates — C1 render/format seam (Strong, NEW mulch-8ba4, 16da prep), C2 b4bd timing upgrade (prep the merged registry view first), C3 scoring lib (NEW mulch-228c, folds into 16da rank/search), C4 b6d5 re-affirmed (first 7c55 sprint), C5 4088 re-affirmed (Check::stub anytime, passes at 7c55), C6 failure-envelope mutation points (Speculative rider on 8ba4), C7 b0f7 stays Speculative; healthy: locate_record/PayloadFlags/jsval/upsert_plan/OutcomeEntry/StaleRule; report on localhost; chain pick pending user"
   ]
 }
