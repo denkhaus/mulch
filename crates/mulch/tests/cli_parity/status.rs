@@ -219,8 +219,6 @@ fn status_reader_surfaces_match_reference() {
     assert_eq!(ours_flag.stdout, theirs_flag.stdout);
 }
 
-// ---- sprint 6 (mulch-ccf6): record upsert semantics ----
-
 /// Partial config blocks keep their set values and backfill the rest
 /// per field (the reference's withDefaults semantics). The old typed
 /// readers dropped partial blocks wholesale — this pins the effective

@@ -1,7 +1,9 @@
 //! The battery's shared harness (mulch-3e7c): temp dirs, twin-store
-//! runs, reference discovery, and the cross-surface assertion and
-//! normalization helpers — every helper lived in one flat file before;
-//! they moved here once, verbatim, with `pub(crate)` visibility.
+//! runs, reference discovery, the cross-surface assertion and
+//! normalization helpers, the shared twin-store fixtures, and the
+//! record-line constants the fixtures reference (ALPHA_ONE & friends)
+//! — every helper lived in one flat file before; they moved here
+//! once, verbatim, with `pub(crate)` visibility.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};

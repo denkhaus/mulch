@@ -131,6 +131,8 @@ fn edit_unknown_id_json_envelope_on_stderr() {
     assert_eq!(ours_run.stderr, theirs_run.stderr);
 }
 
+// ---- sprint 9 (mulch-351d): edit/outcome identifier resolution ----
+
 #[test]
 fn edit_outcome_identifier_resolution_matches_reference() {
     let Some(ml) = reference_ml() else {

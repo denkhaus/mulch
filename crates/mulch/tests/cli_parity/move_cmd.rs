@@ -421,12 +421,3 @@ fn move_aborts_on_legacy_outcome_records_like_reference() {
     // d2 untouched on both sides.
     assert_eq!(read_store_file(&ours.0, "expertise/d2.jsonl"), "");
 }
-
-// ---------------------------------------------------------------------------
-// Sprint 23 lane B proposals (mulch-4ee2 / mulch-3368-B): three
-// differential pins for the payload<->flag adapter surfaces. The
-// flag-table coverage itself lives as unit pins on PayloadFlags
-// (commands/mod.rs payload_flags_tests) — these pin the OBSERVABLE
-// differential behavior the tables feed: the plain missing-flags
-// echo, record's content precedence, and edit's payload append order.
-// ---------------------------------------------------------------------------

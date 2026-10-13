@@ -889,8 +889,6 @@ fn delete_duplicate_records_delete_once_like_reference() {
     assert_same_file(&ours, &theirs, "expertise/alpha.jsonl");
 }
 
-// ---- sprint 19 (mulch-d45c): doctor --fix repair alignment ----
-
 /// `delete <unknown-domain>` with no id reports the unknown domain,
 /// not the missing mode (reference delete.ts order; mulch-e645).
 #[test]

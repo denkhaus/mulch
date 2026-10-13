@@ -1,7 +1,9 @@
 //! `mulch record`/`add` flag path, stdin, batch, and echo parity probes.
 //!
 //! Moved verbatim from the one-file battery (mulch-3e7c); sprint
-//! banners stay with their probes.
+//! banners stay with their probes. The nested `battery_s23_b` group
+//! keeps its sprint-23 trio together — one of its pins is an EDIT
+//! surface (payload append order); it stayed with its lane group.
 
 use std::path::Path;
 
@@ -444,6 +446,8 @@ fn record_stdin_matches_reference() {
     let line = read_store_file(&ours.0, "expertise/d.jsonl");
     assert!(line.starts_with(r#"{"type":"convention","content":"stdin-conv-1","recorded_at""#));
 }
+
+// ---- sprint 6 (mulch-ccf6): record upsert semantics ----
 
 #[test]
 fn record_upsert_matches_reference() {
@@ -1113,7 +1117,14 @@ fn batch_summary_surfaces_match_reference() {
     );
 }
 
-// ---- sprint 9 (mulch-351d): edit/outcome identifier resolution ----
+// ---------------------------------------------------------------------------
+// Sprint 23 lane B proposals (mulch-4ee2 / mulch-3368-B): three
+// differential pins for the payload<->flag adapter surfaces. The
+// flag-table coverage itself lives as unit pins on PayloadFlags
+// (commands/mod.rs payload_flags_tests) — these pin the OBSERVABLE
+// differential behavior the tables feed: the plain missing-flags
+// echo, record's content precedence, and edit's payload append order.
+// ---------------------------------------------------------------------------
 
 mod battery_s23_b {
     use super::*;

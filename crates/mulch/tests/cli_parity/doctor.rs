@@ -489,6 +489,8 @@ fn doctor_fix_json_mutates_store_like_reference() {
     assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), "");
 }
 
+// ---- sprint 19 (mulch-d45c): doctor --fix repair alignment ----
+
 #[test]
 fn doctor_fix_repair_order_matches_reference() {
     let Some(ml) = reference_ml() else {
