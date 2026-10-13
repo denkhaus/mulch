@@ -133,7 +133,9 @@ fn evidence_suffix(record: &Value) -> String {
     };
     let mut parts = Vec::new();
     for key in ["commit", "date", "issue", "file"] {
-        if let Some(value) = evidence.get(key).and_then(Value::as_str) {
+        // JS truthiness gates each member (an empty value renders
+        // nothing — `if (evidence.commit)`)
+        if let Some(value) = mulch::truthy_str(evidence.get(key).and_then(Value::as_str)) {
             parts.push(format!("{key}: {value}"));
         }
     }
@@ -177,15 +179,17 @@ fn outcome_suffix(record: &Value) -> String {
 fn links_suffix(record: &Value) -> String {
     let mut parts = Vec::new();
     for (key, label) in [("relates_to", "relates to"), ("supersedes", "supersedes")] {
-        if let Some(items) = record.get(key).and_then(Value::as_array) {
+        // the array-length gate, not joined-emptiness: an all-empty
+        // member list still renders (`r.relates_to.length > 0`)
+        if let Some(items) = record.get(key).and_then(Value::as_array)
+            && !items.is_empty()
+        {
             let joined = items
                 .iter()
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>()
                 .join(", ");
-            if !joined.is_empty() {
-                parts.push(format!("{label}: {joined}"));
-            }
+            parts.push(format!("{label}: {joined}"));
         }
     }
     if parts.is_empty() {
@@ -205,15 +209,15 @@ fn record_meta(record: &Value, full: bool) -> String {
         .and_then(Value::as_str)
         .unwrap_or("undefined");
     let mut parts = vec![format!("({classification}){}", evidence_suffix(record))];
-    if let Some(tags) = record.get("tags").and_then(Value::as_array) {
+    if let Some(tags) = record.get("tags").and_then(Value::as_array)
+        && !tags.is_empty()
+    {
         let joined = tags
             .iter()
             .filter_map(Value::as_str)
             .collect::<Vec<_>>()
             .join(", ");
-        if !joined.is_empty() {
-            parts.push(format!("[tags: {joined}]"));
-        }
+        parts.push(format!("[tags: {joined}]"));
     }
     format!(" {}{}", parts.join(" "), links_suffix(record))
 }
@@ -259,11 +263,13 @@ fn classification_age(record: &Value, now: Timestamp) -> String {
     if classification == "foundational" {
         return classification.into();
     }
+    // an unparsable recorded_at renders the reference's Invalid-Date
+    // template: `NaNd ago` (Math.floor(NaN) falls through every bound)
     let age = record
         .get("recorded_at")
         .and_then(Value::as_str)
         .and_then(|raw| raw.parse::<Timestamp>().ok())
-        .map_or_else(|| "just now".into(), |then| time_ago(then, now));
+        .map_or_else(|| "NaNd ago".into(), |then| time_ago(then, now));
     format!("{classification} {age}")
 }
 
@@ -522,7 +528,9 @@ fn annotate_plain_line(line: String, annotations: Option<&HashMap<String, String
 /// The xml family's common tail elements (tags/links/outcomes).
 fn xml_common_elements(record: &Value) -> Vec<String> {
     let mut lines = Vec::new();
-    if let Some(tags) = record.get("tags").and_then(Value::as_array) {
+    if let Some(tags) = record.get("tags").and_then(Value::as_array)
+        && !tags.is_empty()
+    {
         let joined = tags
             .iter()
             .filter_map(Value::as_str)
@@ -532,7 +540,9 @@ fn xml_common_elements(record: &Value) -> Vec<String> {
         lines.push(format!("    <tags>{joined}</tags>"));
     }
     for (key, tag) in [("relates_to", "relates_to"), ("supersedes", "supersedes")] {
-        if let Some(items) = record.get(key).and_then(Value::as_array) {
+        if let Some(items) = record.get(key).and_then(Value::as_array)
+            && !items.is_empty()
+        {
             let joined = items
                 .iter()
                 .filter_map(Value::as_str)
@@ -608,11 +618,9 @@ pub(crate) fn promote_mulch(text: &str) -> String {
             && (i == 0 || !is_word_byte(bytes[i - 1]))
         {
             let rest = &text[i + 3..];
-            // longest FIRST: "delete" must not eat "delete-domain"
-            let mut commands: Vec<&str> = COMMANDS.to_vec();
-            commands.sort_by_key(|cmd| std::cmp::Reverse(cmd.len()));
-            let matched = commands.into_iter().find(|cmd| {
-                rest.starts_with(*cmd) && {
+            // COMMANDS is pre-sorted longest-first
+            let matched = COMMANDS.iter().find(|cmd| {
+                rest.starts_with(**cmd) && {
                     let after = &rest[cmd.len()..];
                     after.is_empty()
                         || !is_word_byte(after.as_bytes().first().copied().unwrap_or(b' '))
@@ -989,8 +997,11 @@ fn plain_guides(records: &[Value]) -> Vec<String> {
 
 // ---- shared field access ----
 
-/// A string field, "" when absent/non-string (the JS `undefined` in a
-/// template coerces to nothing for the values we render).
+/// A string field, "" when absent/non-string. The rendered fields are
+/// schema-REQUIRED for their types, so real stores always carry them;
+/// the empty fallback only covers hand-crafted schema-invalid lines
+/// (JS templates would print `undefined` there — accepted divergence
+/// until the 16da differential pins the crafted-store edges).
 fn str_field(record: &Value, field: &str) -> String {
     record
         .get(field)
@@ -1004,15 +1015,14 @@ fn files_list(record: &Value) -> String {
     record
         .get("files")
         .and_then(Value::as_array)
-        .map(|files| {
+        .filter(|files| !files.is_empty())
+        .map_or_else(String::new, |files| {
             files
                 .iter()
                 .filter_map(Value::as_str)
                 .collect::<Vec<_>>()
                 .join(", ")
         })
-        .filter(|joined| !joined.is_empty())
-        .unwrap_or_default()
 }
 
 /// The ` (files)` paren suffix for markdown/compact lines.
@@ -1100,6 +1110,9 @@ mod render_gold_tests {
         let markdown =
             format_domain_expertise("d", &records(), Some(now()), false, Some(&why), now());
         assert!(markdown.contains("truncation. — file match"));
+        let compact =
+            format_domain_expertise_compact("d", &records(), Some(now()), Some(&why), now());
+        assert!(compact.contains("285d ago) — file match"), "{compact}");
         let plain = format_domain_expertise_plain("d", &records(), Some(now()), Some(&why), now());
         assert!(plain.contains("truncation.  (file match)"));
         let xml = format_domain_expertise_xml("d", &records(), Some(now()), Some(&why), now());
@@ -1135,6 +1148,28 @@ mod render_gold_tests {
         assert_eq!(promote_mulch("mlprime stays"), "mlprime stays");
         // ml without a command word stays (e.g. 'the ml binary')
         assert_eq!(promote_mulch("the ml binary"), "the ml binary");
+    }
+
+    /// The truthiness edges of the atoms (spec-review round): empty
+    /// evidence members render nothing; an all-empty-member list still
+    /// renders (array-length gate); an unparsable recorded_at renders
+    /// the reference's `NaNd ago`.
+    #[test]
+    fn truthiness_edges_pin_the_reference_laws() {
+        let record: Value = serde_json::from_str(
+            r#"{"type":"convention","content":"c","id":"mx-e1","classification":"tactical","recorded_at":"not-a-date","evidence":{"commit":"","issue":"M-9"},"tags":[""],"relates_to":[""]}"#,
+        )
+        .expect("edge fixture parses");
+        // evidence: only the truthy member renders
+        assert_eq!(evidence_suffix(&record), " [issue: M-9]");
+        // links: the array-length gate renders empty members verbatim
+        assert_eq!(links_suffix(&record), " [relates to: ]");
+        // full-meta tags: same gate
+        assert!(record_meta(&record, true).contains("[tags: ]"));
+        // unparsable recorded_at: the reference's Invalid-Date template
+        let compact_line =
+            format_domain_expertise_compact("d", std::slice::from_ref(&record), None, None, now());
+        assert!(compact_line.contains("tactical NaNd ago"), "{compact_line}");
     }
 
     /// The RENDER_TABLE stays parallel to REGISTRY (row() never misses

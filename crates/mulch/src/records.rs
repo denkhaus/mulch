@@ -501,12 +501,10 @@ fn sentence_end(window: &str) -> Option<usize> {
 }
 
 /// An ordered distribution counter with the reference's JS semantics
-/// at the JSON boundary (moved from the status command, mulch-8ba4 —
-/// prime's manifest needs the same law; `computeTypeCounts`).
-/// An ordered distribution counter with the reference's JS semantics
 /// at the JSON boundary: seeded keys first, extras in first-seen
 /// order; a missing/non-string field counts under the literal key
-/// `"undefined"`.
+/// `"undefined"` (moved from the status command, mulch-8ba4 — prime's
+/// manifest needs the same law; `computeTypeCounts`).
 #[derive(Debug)]
 pub struct Counter {
     counts: Vec<(String, Option<u64>)>,
