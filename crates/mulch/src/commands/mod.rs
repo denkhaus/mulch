@@ -9,6 +9,7 @@ mod init;
 mod move_cmd;
 mod outcome;
 mod record;
+mod render;
 mod status;
 mod validate;
 

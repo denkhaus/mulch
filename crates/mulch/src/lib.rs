@@ -18,6 +18,7 @@ mod ids;
 pub mod jsval;
 mod records;
 pub mod schema;
+pub mod scoring;
 pub mod stale;
 mod store_files;
 
@@ -36,11 +37,12 @@ pub use jsval::{
     truthy_str, value_text,
 };
 pub use records::{
-    LenientLine, LineRecord, OutcomeEntry, ResolveError, UpsertPlan, assign_missing_id,
+    Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, UpsertPlan, assign_missing_id,
     find_duplicate, legacy_entry, legacy_outcome, merge_outcomes, read_lenient, read_strict,
     record_summary, resolve_record_id, upsert_plan, write_records,
 };
 pub use schema::CLASSIFICATIONS;
+pub use scoring::{apply_confirmation_boost, confirmation_score};
 pub use store_files::{StoreFiles, StoreLocation};
 
 /// The reference implementation this crate is read+write compatible with

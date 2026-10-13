@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::ids::{PAYLOAD_TYPES, id_key_field, is_named_type, record_id};
-use crate::jsval::{js_dedup_eq, parse_non_negative_number, truthy_str};
+use crate::jsval::{js_dedup_eq, js_key_sorted, parse_non_negative_number, truthy_str, value_text};
 
 /// One parsed record with its physical line number.
 #[derive(Debug)]
@@ -498,6 +498,73 @@ fn sentence_end(window: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// An ordered distribution counter with the reference's JS semantics
+/// at the JSON boundary (moved from the status command, mulch-8ba4 —
+/// prime's manifest needs the same law; `computeTypeCounts`).
+/// An ordered distribution counter with the reference's JS semantics
+/// at the JSON boundary: seeded keys first, extras in first-seen
+/// order; a missing/non-string field counts under the literal key
+/// `"undefined"`.
+#[derive(Debug)]
+pub struct Counter {
+    counts: Vec<(String, Option<u64>)>,
+}
+
+impl Counter {
+    pub fn seeded(keys: &[&str]) -> Self {
+        Self {
+            counts: keys.iter().map(|k| ((*k).to_owned(), Some(0))).collect(),
+        }
+    }
+
+    /// Counts the field under its JS property key (`String(key)`
+    /// coercion — `5` becomes `"5"`, `null` becomes `"null"`,
+    /// objects `[object Object]`; a missing field is `"undefined"`).
+    pub fn bump_field(&mut self, field: Option<&Value>) {
+        let key = field.map_or_else(|| "undefined".into(), value_text);
+        self.bump_key(&key, false);
+    }
+
+    /// Counts the field only when its key is one of `known`; anything
+    /// else lands under its key as `None` (the reference's counter
+    /// goes NaN there, JSON `null`).
+    pub fn bump_known_field(&mut self, field: Option<&Value>, known: &[&str]) {
+        let key = field.map_or_else(|| "undefined".into(), value_text);
+        self.bump_key(&key, !known.contains(&key.as_str()));
+    }
+
+    fn bump_key(&mut self, key: &str, force_null: bool) {
+        if let Some(slot) = self.counts.iter_mut().find(|(k, _)| k == key) {
+            if force_null {
+                slot.1 = None;
+            } else {
+                slot.1 = Some(slot.1.unwrap_or(0) + 1);
+            }
+            return;
+        }
+        let value = if force_null { None } else { Some(1) };
+        self.counts.push((key.to_owned(), value));
+    }
+
+    /// The JSON object: counts, `null` for the NaN-emulating slots.
+    /// Key order follows JS object enumeration: integer-like keys
+    /// ascending first, then string keys in insertion order (probe:
+    /// `{"type": 5}` yields `"5"` before the seeded names).
+    pub fn to_distribution(&self) -> Value {
+        // JS object enumeration order is the jsval seam's law
+        // (integer-like keys ascending first, then first-seen order).
+        let mut map = Map::new();
+        for (key, count) in js_key_sorted(&self.counts) {
+            let value = match count {
+                Some(count) => Value::from(*count),
+                None => Value::Null,
+            };
+            map.insert(key.clone(), value);
+        }
+        Value::Object(map)
+    }
 }
 
 #[cfg(test)]

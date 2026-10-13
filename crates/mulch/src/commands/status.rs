@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 
 use jiff::Timestamp;
 use mulch::stale::{StaleRule, StaleVerdict};
-use mulch::{CLASSIFICATIONS, js_key_sorted, js_round_u64};
+use mulch::{CLASSIFICATIONS, Counter, js_round_u64};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -278,70 +278,6 @@ fn parse_timestamp(raw: Option<&str>) -> Result<Option<Timestamp>, jiff::Error> 
 /// The record count as the thresholds' u64 shape.
 fn count64(count: usize) -> u64 {
     u64::try_from(count).unwrap_or(0)
-}
-
-/// An ordered distribution counter with the reference's JS semantics
-/// at the JSON boundary: seeded keys first, extras in first-seen
-/// order; a missing/non-string field counts under the literal key
-/// `"undefined"`.
-#[derive(Debug)]
-struct Counter {
-    counts: Vec<(String, Option<u64>)>,
-}
-
-impl Counter {
-    fn seeded(keys: &[&str]) -> Self {
-        Self {
-            counts: keys.iter().map(|k| ((*k).to_owned(), Some(0))).collect(),
-        }
-    }
-
-    /// Counts the field under its JS property key (`String(key)`
-    /// coercion — `5` becomes `"5"`, `null` becomes `"null"`,
-    /// objects `[object Object]`; a missing field is `"undefined"`).
-    fn bump_field(&mut self, field: Option<&Value>) {
-        let key = field.map_or_else(|| "undefined".into(), mulch::value_text);
-        self.bump_key(&key, false);
-    }
-
-    /// Counts the field only when its key is one of `known`; anything
-    /// else lands under its key as `None` (the reference's counter
-    /// goes NaN there, JSON `null`).
-    fn bump_known_field(&mut self, field: Option<&Value>, known: &[&str]) {
-        let key = field.map_or_else(|| "undefined".into(), mulch::value_text);
-        self.bump_key(&key, !known.contains(&key.as_str()));
-    }
-
-    fn bump_key(&mut self, key: &str, force_null: bool) {
-        if let Some(slot) = self.counts.iter_mut().find(|(k, _)| k == key) {
-            if force_null {
-                slot.1 = None;
-            } else {
-                slot.1 = Some(slot.1.unwrap_or(0) + 1);
-            }
-            return;
-        }
-        let value = if force_null { None } else { Some(1) };
-        self.counts.push((key.to_owned(), value));
-    }
-
-    /// The JSON object: counts, `null` for the NaN-emulating slots.
-    /// Key order follows JS object enumeration: integer-like keys
-    /// ascending first, then string keys in insertion order (probe:
-    /// `{"type": 5}` yields `"5"` before the seeded names).
-    fn to_distribution(&self) -> Value {
-        // JS object enumeration order is the jsval seam's law
-        // (integer-like keys ascending first, then first-seen order).
-        let mut map = Map::new();
-        for (key, count) in js_key_sorted(&self.counts) {
-            let value = match count {
-                Some(count) => json_num(*count),
-                None => Value::Null,
-            };
-            map.insert(key.clone(), value);
-        }
-        Value::Object(map)
-    }
 }
 
 /// Relative-time rendering ("just now", "2m ago", "3h ago", "4d ago").
