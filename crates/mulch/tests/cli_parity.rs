@@ -6230,3 +6230,551 @@ mod battery_s24 {
         );
     }
 }
+
+// ---- sprint 25 (mulch-cbe2/e2cf/1209/2153/8ca8/5fd8): the record
+// flag-path residuals ----
+
+/// The config file's text, for domain side-effect pins.
+fn config_text(dir: &Path) -> String {
+    std::fs::read_to_string(dir.join(".mulch").join("mulch.config.yaml"))
+        .expect("init wrote a config")
+}
+
+/// Whether the store registered a domain (its `domains:` mapping
+/// carries a bare `{}` row).
+fn has_domain(dir: &Path, domain: &str) -> bool {
+    config_text(dir).contains(&format!("\n  {domain}: {{}}"))
+}
+
+/// One captured run with piped stdin (the reference's `--stdin`
+/// surface).
+fn run_stdin(dir: &Path, program: &Path, args: &[&str], input: &str) -> Run {
+    use std::io::Write as _;
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn stdin run");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin pipe")
+        .write_all(input.as_bytes())
+        .expect("write stdin");
+    let output = child.wait_with_output().expect("wait stdin run");
+    Run {
+        code:   output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// mulch-cbe2: the flag path REQUIRES `--type` — after the
+/// auto-create side effect, exit 1, nothing written, in plain and
+/// json (the envelope rides stderr beside the stdout auto-create
+/// line).
+#[test]
+fn record_flag_path_requires_type_after_auto_create() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("cbe2-ours");
+    let theirs = TempDir::new("cbe2-theirs");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&theirs.0, &ml, &["init"]);
+
+    for mode in [&[] as &[&str], &["--json"]] {
+        let mut args = mode.to_vec();
+        args.extend_from_slice(&["record", "d", "--name", "n", "--description", "d"]);
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let theirs_run = run_in(&theirs.0, &ml, &args);
+        assert_eq!(ours_run.code, 1, "exit is 1 {mode:?}");
+        assert_eq!(ours_run.code, theirs_run.code, "exit differs {mode:?}");
+        assert_eq!(
+            ours_run.stdout, theirs_run.stdout,
+            "stdout differs {mode:?}"
+        );
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "stderr differs {mode:?}"
+        );
+        assert!(ours_run.stderr.contains(
+            "--type is required (convention, pattern, failure, decision, reference, guide)"
+        ));
+        // the side effect happened, the record did not: the domain
+        // file registers as an EMPTY line container in both
+        assert!(has_domain(&ours.0, "d"));
+        assert!(has_domain(&theirs.0, "d"));
+        assert_eq!(read_store_file(&ours.0, "expertise/d.jsonl"), "");
+        assert_eq!(read_store_file(&theirs.0, "expertise/d.jsonl"), "");
+    }
+}
+
+/// mulch-e2cf: the positional `[content]` is a type-specific fallback
+/// (convention→content, pattern/reference/guide→description,
+/// failure/decision→dropped) — and it satisfies the missing-flags
+/// check while the Retry echo still renders it as a bare argument.
+#[test]
+fn record_positional_is_the_type_specific_fallback() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("e2cf-ours");
+    let theirs = TempDir::new("e2cf-theirs");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&theirs.0, &ml, &["init"]);
+
+    // the positional feeds the fallback field per type
+    let cases: &[&[&str]] = &[
+        &["record", "dc", "content-x", "--type", "convention"],
+        &[
+            "record",
+            "dp",
+            "content-x",
+            "--type",
+            "pattern",
+            "--name",
+            "np",
+        ],
+        &[
+            "record",
+            "dr",
+            "content-x",
+            "--type",
+            "reference",
+            "--name",
+            "nr",
+        ],
+        &[
+            "record",
+            "dg",
+            "content-x",
+            "--type",
+            "guide",
+            "--name",
+            "ng",
+        ],
+        // failure/decision: the positional drops, the flags carry the record
+        &[
+            "record",
+            "df",
+            "content-x",
+            "--type",
+            "failure",
+            "--description",
+            "dd",
+            "--resolution",
+            "rr",
+        ],
+        &[
+            "record",
+            "dd",
+            "content-x",
+            "--type",
+            "decision",
+            "--title",
+            "tt",
+            "--rationale",
+            "ta",
+        ],
+    ];
+    for args in cases {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "exit {args:?}");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout {args:?}");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr {args:?}");
+    }
+    for domain in ["dc", "dp", "dr", "dg", "df", "dd"] {
+        assert_eq!(
+            normalize(&read_store_file(
+                &ours.0,
+                &format!("expertise/{domain}.jsonl")
+            )),
+            normalize(&read_store_file(
+                &theirs.0,
+                &format!("expertise/{domain}.jsonl")
+            )),
+            "store {domain} differs"
+        );
+    }
+    // the fallback satisfies the check; the Retry echo still renders
+    // the positional as a bare argument, the missing flag as a pair
+    let args = [
+        "record",
+        "dretry",
+        "content-x",
+        "--type",
+        "pattern",
+        "--files",
+        "a.rs",
+    ];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let theirs_run = run_in(&theirs.0, &ml, &args);
+    assert_eq!(ours_run.code, theirs_run.code, "exit retry");
+    assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr retry");
+    assert!(ours_run.stderr.contains(
+        "  Retry: ml record dretry \"content-x\" --type pattern --files \"a.rs\" --name \"<name>\""
+    ));
+}
+
+/// mulch-1209: empty flag values drop under JS truthiness — payload
+/// flags become missing, list flags and evidence flags store no key,
+/// the outcome entry carries status(+recorded_at) alone, and the
+/// plain outcome line renders no attribution parens.
+#[test]
+fn record_empty_flag_values_drop_like_js_truthiness() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("b1209-ours");
+    let theirs = TempDir::new("b1209-theirs");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&theirs.0, &ml, &["init"]);
+
+    let cases: &[&[&str]] = &[
+        // lists + evidence: empty values store no key, the truthy
+        // evidence flag survives
+        &[
+            "record",
+            "f",
+            "--type",
+            "convention",
+            "--content",
+            "c1",
+            "--tags",
+            "",
+            "--relates-to",
+            "",
+            "--supersedes",
+            "",
+            "--evidence-issue",
+            "",
+            "--evidence-commit",
+            "",
+            "--evidence-linear",
+            "L1",
+        ],
+        // an empty required payload flag is MISSING, not stored
+        &[
+            "record",
+            "g",
+            "--type",
+            "pattern",
+            "--name",
+            "",
+            "--description",
+            "d4",
+        ],
+        // an empty --files drops; a comma-only --files stores an
+        // empty list (the key exists, so no git-context populate)
+        &[
+            "record",
+            "h",
+            "--type",
+            "pattern",
+            "--name",
+            "n5",
+            "--description",
+            "d5",
+            "--files",
+            "",
+        ],
+        &[
+            "record",
+            "i",
+            "--type",
+            "pattern",
+            "--name",
+            "n6",
+            "--description",
+            "d6",
+            "--files",
+            ",",
+        ],
+        // record-path outcome entry: empty agent/test_results drop
+        &[
+            "record",
+            "j",
+            "--type",
+            "convention",
+            "--content",
+            "cj",
+            "--outcome-status",
+            "success",
+            "--outcome-agent",
+            "",
+            "--outcome-test-results",
+            "",
+        ],
+    ];
+    for args in cases {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "exit {args:?}");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout {args:?}");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr {args:?}");
+    }
+    for domain in ["f", "g", "h", "i", "j"] {
+        assert_eq!(
+            normalize(&read_store_file(
+                &ours.0,
+                &format!("expertise/{domain}.jsonl")
+            )),
+            normalize(&read_store_file(
+                &theirs.0,
+                &format!("expertise/{domain}.jsonl")
+            )),
+            "store {domain} differs"
+        );
+    }
+    let store = read_store_file(&ours.0, "expertise/f.jsonl");
+    assert!(store.contains("\"linear\":\"L1\""));
+    assert!(!store.contains("tags"));
+    assert!(!store.contains("relates_to"));
+    assert!(!store.contains("supersedes"));
+    assert!(!store.contains("issue"));
+    assert!(!store.contains("commit"));
+    let comma = read_store_file(&ours.0, "expertise/i.jsonl");
+    assert!(comma.contains("\"files\":[]"));
+
+    // the outcome command: same seam, plus the plain line without parens
+    let seed = [
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "n",
+        "--description",
+        "desc",
+    ];
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &seed);
+    let _ = run_in(&theirs.0, &ml, &seed);
+    let args = [
+        "outcome",
+        "d",
+        "mx-fd666c",
+        "--status",
+        "success",
+        "--agent",
+        "",
+        "--notes",
+        "",
+        "--test-results",
+        "",
+    ];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let theirs_run = run_in(&theirs.0, &ml, &args);
+    assert_eq!(ours_run.code, theirs_run.code, "exit outcome");
+    assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout outcome");
+    assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr outcome");
+    assert_eq!(
+        ours_run.stdout, "✓ Outcome recorded: success on mx-fd666c\n",
+        "no empty-flag parens"
+    );
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/d.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/d.jsonl")),
+        "outcome store differs"
+    );
+}
+
+/// mulch-2153: the Retry echo carries every provided flag in the
+/// reference's buildRetryCommand order — the bare positional first,
+/// `--type`/`--classification` raw (classification only when it
+/// differs from tactical), payload pairs, then files/dir-anchor/tags
+/// and the evidence pairs (`--evidence-commit` unquoted), the
+/// missing pairs last. Plain and json (where the envelope says
+/// `Example:`) are byte-pinned.
+#[test]
+fn record_missing_flags_retry_echoes_non_payload_flags() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("b2153-ours");
+    let theirs = TempDir::new("b2153-theirs");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&theirs.0, &ml, &["init"]);
+
+    for mode in [&[] as &[&str], &["--json"]] {
+        let mut args = mode.to_vec();
+        args.extend_from_slice(&[
+            "record",
+            "d",
+            "--type",
+            "pattern",
+            "--name",
+            "n",
+            "--files",
+            "a.rs",
+            "--tags",
+            "x",
+            "--evidence-issue",
+            "M-1",
+            "--evidence-commit",
+            "deadbeef",
+            "--dir-anchor",
+            "src",
+            "--classification",
+            "foundational",
+        ]);
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let theirs_run = run_in(&theirs.0, &ml, &args);
+        assert_eq!(ours_run.code, 1, "exit is 1 {mode:?}");
+        assert_eq!(ours_run.code, theirs_run.code, "exit differs {mode:?}");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout {mode:?}");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr {mode:?}");
+    }
+    assert_eq!(read_store_text_or_empty(&ours.0, "expertise/d.jsonl"), "");
+}
+
+/// Reads a store file when it exists, empty text otherwise (failed
+/// record paths never write).
+fn read_store_text_or_empty(dir: &Path, relative: &str) -> String {
+    std::fs::read(dir.join(".mulch").join(relative)).map_or_else(
+        |_| String::new(),
+        |bytes| String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+/// mulch-8ca8: the batch-file-not-found gate precedes every store
+/// side effect — no auto-create line, no domain registration — and
+/// the plain error and stderr json envelope match byte-for-byte.
+#[test]
+fn record_batch_not_found_precedes_side_effects() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("b8ca8-ours");
+    let theirs = TempDir::new("b8ca8-theirs");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&theirs.0, &ml, &["init"]);
+
+    for mode in [&[] as &[&str], &["--json"]] {
+        for batch in ["missing.json", "-"] {
+            let mut args = mode.to_vec();
+            args.extend_from_slice(&["record", "d", "--batch", batch]);
+            let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+            let theirs_run = run_in(&theirs.0, &ml, &args);
+            assert_eq!(ours_run.code, 1, "exit is 1 {batch} {mode:?}");
+            assert_eq!(ours_run.code, theirs_run.code, "exit differs {batch}");
+            assert_eq!(
+                ours_run.stdout, theirs_run.stdout,
+                "stdout {batch} {mode:?}"
+            );
+            assert_eq!(
+                ours_run.stderr, theirs_run.stderr,
+                "stderr {batch} {mode:?}"
+            );
+        }
+    }
+    // no side effect at all: the domain never registered
+    assert!(!has_domain(&ours.0, "d"));
+    assert!(!has_domain(&theirs.0, "d"));
+}
+
+/// mulch-5fd8: the batch/stdin family creates the domain SILENTLY
+/// (no notice line in plain or json) while the single-record path
+/// still prints it; `--batch ""` is no batch at all (JS truthiness —
+/// the flag path runs with its own --type check); batch wins over
+/// stdin when both are given.
+#[test]
+fn record_batch_mode_creates_domains_silently() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("b5fd8-ours");
+    let theirs = TempDir::new("b5fd8-theirs");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&theirs.0, &ml, &["init"]);
+    let fixture = |dir: &Path| {
+        std::fs::write(
+            dir.join("b.json"),
+            r#"[{"type":"convention","content":"from-file"}]"#,
+        )
+        .expect("batch fixture");
+    };
+    fixture(&ours.0);
+    fixture(&theirs.0);
+
+    let cases: &[&[&str]] = &[
+        // plain batch: silent auto-create
+        &["record", "dnew", "--batch", "b.json"],
+        // json batch: envelope only
+        &["--json", "record", "dnew2", "--batch", "b.json"],
+        // batch wins over stdin (both flags given)
+        &["record", "dboth", "--batch", "b.json", "--stdin"],
+    ];
+    for args in cases {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "exit {args:?}");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout {args:?}");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr {args:?}");
+        assert!(
+            !ours_run.stdout.contains("Auto-created"),
+            "batch family prints no notice line: {args:?}"
+        );
+    }
+    for domain in ["dnew", "dnew2", "dboth"] {
+        assert!(has_domain(&ours.0, domain), "domain {domain} registered");
+        assert!(
+            has_domain(&theirs.0, domain),
+            "reference registered {domain}"
+        );
+    }
+    // batch-wins content and silent-creation bytes (timestamps are
+    // stamped at write time, hence normalized)
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/dnew.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/dnew.jsonl")),
+        "dnew store differs"
+    );
+    assert!(read_store_file(&ours.0, "expertise/dboth.jsonl").contains("from-file"));
+
+    // stdin: silent too (fed through a piped stdin)
+    {
+        let payload = r#"{"type":"convention","content":"sc"}"#;
+        let ours_run = run_stdin(
+            &ours.0,
+            Path::new(mulch_bin()),
+            &["record", "dnew3", "--stdin"],
+            payload,
+        );
+        let theirs_run = run_stdin(&theirs.0, &ml, &["record", "dnew3", "--stdin"], payload);
+        assert_eq!(ours_run.code, theirs_run.code, "exit stdin");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout stdin");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr stdin");
+        assert!(
+            !ours_run.stdout.contains("Auto-created"),
+            "stdin prints no notice line"
+        );
+        // stdin registers the domain silently too
+        assert!(has_domain(&ours.0, "dnew3"), "domain dnew3 registered");
+        assert!(has_domain(&theirs.0, "dnew3"), "reference registered dnew3");
+        assert_eq!(
+            normalize(&read_store_file(&ours.0, "expertise/dnew3.jsonl")),
+            normalize(&read_store_file(&theirs.0, "expertise/dnew3.jsonl")),
+            "dnew3 store differs"
+        );
+    }
+
+    // `--batch ""` is no batch: the flag path runs and requires --type
+    let args = ["record", "dempty", "--batch", "", "--name", "n"];
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let theirs_run = run_in(&theirs.0, &ml, &args);
+    assert_eq!(ours_run.code, theirs_run.code, "exit batch-empty");
+    assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout batch-empty");
+    assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr batch-empty");
+    assert!(has_domain(&ours.0, "dempty"));
+}

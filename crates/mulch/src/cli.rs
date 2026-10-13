@@ -261,9 +261,12 @@ pub(crate) struct RecordArgs {
     #[arg(long)]
     pub(crate) stdin: bool,
 
-    /// Read a JSON array of records from a file.
+    /// Read a JSON array of records from a file. A `String` arg (not
+    /// `PathBuf`): clap rejects EMPTY values for path args but the
+    /// reference's `if (options.batch)` truthiness treats `--batch ""`
+    /// as no batch at all — the flag path runs (mulch-1209).
     #[arg(long)]
-    pub(crate) batch: Option<std::path::PathBuf>,
+    pub(crate) batch: Option<String>,
 
     /// Preview without writing.
     #[arg(long = "dry-run")]

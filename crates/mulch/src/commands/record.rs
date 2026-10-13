@@ -8,7 +8,7 @@ use mulch::{id_key_field, record_id, schema};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, RecordArgs};
-use crate::commands::{PayloadFlags, now_iso};
+use crate::commands::{PayloadFlags, js_quoted, now_iso};
 use crate::output::{Failure, failure_envelope, print_json, print_line, success_envelope};
 
 /// Builds the canonical JSONL object for the flag path (field order
@@ -20,22 +20,26 @@ fn build_record(
     recorded_at: &str,
     evidence: Option<Map<String, Value>>,
 ) -> Result<Map<String, Value>, Failure> {
-    let record_type = mulch::effective_type(args.record_type.as_deref()).to_string();
+    let record_type = args
+        .record_type
+        .as_deref()
+        .expect("run rejects the flag path without --type (mulch-cbe2)")
+        .to_string();
     let payload: &[&str] = mulch::payload_fields(&record_type);
-    let flags = PayloadFlags::from_record(args);
+    let flags = PayloadFlags::from_record(args, &record_type);
 
+    // The reference's collectField law: a flag value OR the
+    // positional fallback counts only when non-empty — `value ===
+    // undefined || value === ""` is missing (required) or dropped
+    // (optional) there (mulch-1209, mulch-e2cf).
+    let present = |field: &str| flags.resolved(field).is_some_and(|value| !value.is_empty());
     let missing: Vec<&str> = payload
         .iter()
         .copied()
-        .filter(|field| flags.get(field).is_none())
+        .filter(|field| !present(field))
         .collect();
     if !missing.is_empty() {
-        return Err(missing_flags_failure(
-            &record_type,
-            &missing,
-            &args.domain,
-            &flags,
-        ));
+        return Err(missing_flags_failure(&record_type, &missing, args, &flags));
     }
 
     let mut record = Map::new();
@@ -52,13 +56,17 @@ fn build_record(
     if let Some(evidence) = evidence {
         record.insert("evidence".into(), Value::Object(evidence));
     }
-    if let Some(tags) = split_list(args.tags.as_deref()) {
+    // The base list props store only non-empty splits (reference
+    // `base.tags.length > 0` gate): an empty flag value, a comma-only
+    // value, or all-whitespace items mean the key is absent
+    // (mulch-1209).
+    if let Some(tags) = non_empty_list(args.tags.as_deref()) {
         record.insert("tags".into(), strings_value(&tags));
     }
-    if let Some(relates) = split_list(args.relates_to.as_deref()) {
+    if let Some(relates) = non_empty_list(args.relates_to.as_deref()) {
         record.insert("relates_to".into(), strings_value(&relates));
     }
-    if let Some(supersedes) = split_list(args.supersedes.as_deref()) {
+    if let Some(supersedes) = non_empty_list(args.supersedes.as_deref()) {
         record.insert("supersedes".into(), strings_value(&supersedes));
     }
     // outcomes precede dir_anchors (reference buildRecordFromOptions
@@ -89,17 +97,22 @@ fn build_record(
         record.insert("dir_anchors".into(), Value::Array(anchors));
     }
     for field in payload {
-        record.insert(
-            (*field).into(),
-            Value::String(flags.get(field).unwrap_or_default().to_string()),
-        );
+        if let Some(value) = flags.resolved(field).filter(|value| !value.is_empty()) {
+            record.insert((*field).into(), Value::String(value.to_string()));
+        }
     }
     // The reference collects fields from `def.required ∪ def.optional`
     // only: `--files` on a type that does not declare it is DROPPED
     // (mulch-b8ca; `files` is declared by pattern and reference).
+    // collectField drops an empty `--files` value before the split
+    // (mulch-1209); a comma-only value splits to an EMPTY list, which
+    // the reference stores (and the git-context auto-populate skips
+    // because the key exists).
     let declares_files =
         mulch::type_spec(&record_type).is_some_and(|spec| spec.optional.contains(&"files"));
-    if declares_files && let Some(files) = split_list(args.files.as_deref()) {
+    if declares_files
+        && let Some(files) = split_list(args.files.as_deref().filter(|value| !value.is_empty()))
+    {
         record.insert("files".into(), strings_value(&files));
     }
 
@@ -111,7 +124,10 @@ fn build_record(
         return Err(ref_validation_failure(&subs, &hint));
     }
 
-    let id_key_value = flags.get(id_key_field(&record_type)).unwrap_or_default();
+    let id_key_value = flags
+        .resolved(id_key_field(&record_type))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_default();
     let id = record_id(&record_type, id_key_value);
     record.insert("id".into(), Value::String(id));
     Ok(record)
@@ -134,18 +150,75 @@ fn ref_validation_failure(subs: &[schema::SubError], hint: &str) -> Failure {
     failure
 }
 
-/// The missing-required-flag failure with the reference's Retry hint.
+/// The missing-required-flag failure with the reference's Retry hint
+/// (buildRetryCommand, mulch-2153): the echo mirrors the reference's
+/// argument order — the positional content first (bare,
+/// JSON.stringify-quoted), `--type` and `--classification` raw
+/// (classification only when it differs from tactical), the six
+/// payload flag pairs, then `--files` (the raw comma string), one
+/// `--dir-anchor` per anchor, `--tags`, the evidence pairs
+/// (`--evidence-commit` unquoted, the rest JSON.stringify), and the
+/// missing payload pairs last. Empty flag values are not echoed (JS
+/// truthiness); the positional is echoed as a bare argument, never
+/// as a `--description` pair.
 fn missing_flags_failure(
     record_type: &str,
     missing: &[&str],
-    domain: &str,
+    args: &RecordArgs,
     flags: &PayloadFlags<'_>,
 ) -> Failure {
     let missing_flags: Vec<String> = missing.iter().map(|f| format!("--{f}")).collect();
-    let mut echo = format!("ml record {domain} --type {record_type}");
-    for field in ["name", "description", "resolution", "title", "rationale"] {
+    let mut echo = format!("ml record {}", args.domain);
+    if let Some(content) = args.content.as_deref().filter(|value| !value.is_empty()) {
+        let _ = write!(echo, " {}", js_quoted(content));
+    }
+    let _ = write!(echo, " --type {record_type}");
+    if let Some(classification) = args
+        .classification
+        .as_deref()
+        .filter(|value| !value.is_empty() && *value != "tactical")
+    {
+        let _ = write!(echo, " --classification {classification}");
+    }
+    // buildRetryCommand's payload pair order, not the registry's.
+    for field in [
+        "name",
+        "content",
+        "description",
+        "resolution",
+        "title",
+        "rationale",
+    ] {
         if let Some(pair) = flags.retry_pair(field) {
             let _ = write!(echo, " {pair}");
+        }
+    }
+    if let Some(files) = args.files.as_deref().filter(|value| !value.is_empty()) {
+        let _ = write!(echo, " --files {}", js_quoted(files));
+    }
+    for anchor in &args.dir_anchors {
+        let _ = write!(echo, " --dir-anchor {}", js_quoted(anchor));
+    }
+    if let Some(tags) = args.tags.as_deref().filter(|value| !value.is_empty()) {
+        let _ = write!(echo, " --tags {}", js_quoted(tags));
+    }
+    if let Some(commit) = args
+        .evidence_commit
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        let _ = write!(echo, " --evidence-commit {commit}");
+    }
+    for (key, value) in [
+        ("issue", &args.evidence_issue),
+        ("file", &args.evidence_file),
+        ("bead", &args.evidence_bead),
+        ("seeds", &args.evidence_seeds),
+        ("gh", &args.evidence_gh),
+        ("linear", &args.evidence_linear),
+    ] {
+        if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
+            let _ = write!(echo, " --evidence-{key} {}", js_quoted(value));
         }
     }
     for flag in &missing_flags {
@@ -162,7 +235,8 @@ fn missing_flags_failure(
     )
 }
 
-/// Comma list split.
+/// Comma list split (raw): `""` and comma-only values split to an
+/// EMPTY list.
 fn split_list(raw: Option<&str>) -> Option<Vec<String>> {
     raw.map(|text| {
         text.split(',')
@@ -170,6 +244,12 @@ fn split_list(raw: Option<&str>) -> Option<Vec<String>> {
             .filter(|item| !item.is_empty())
             .collect()
     })
+}
+
+/// The base list props' gate (reference `base.tags.length > 0`):
+/// absent, empty, or comma-only values store no key.
+fn non_empty_list(raw: Option<&str>) -> Option<Vec<String>> {
+    split_list(raw).filter(|list| !list.is_empty())
 }
 
 /// A JSON array of strings.
@@ -201,9 +281,12 @@ fn evidence_map(args: &RecordArgs) -> Option<Map<String, Value>> {
         ("gh", &args.evidence_gh),
         ("linear", &args.evidence_linear),
     ];
+    // JS truthiness (mulch-1209): an empty evidence flag is absent —
+    // dropped from the object, and the git-commit fallback triggers
+    // for `--evidence-commit ""` too (`if (!options.evidenceCommit)`).
     for (key, value) in pairs {
-        if let Some(value) = value {
-            evidence.insert(key.into(), Value::String(value.clone()));
+        if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
+            evidence.insert(key.into(), Value::String(value.to_string()));
         }
     }
     if !evidence.contains_key("commit")
@@ -218,24 +301,70 @@ fn evidence_map(args: &RecordArgs) -> Option<Map<String, Value>> {
 pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     let mut store = crate::commands::open_store("record", false)?;
 
+    // JS truthiness on the --batch flag: `--batch ""` is NO batch (the
+    // reference's `if (options.batch)` gate) — the flag path runs with
+    // its own --type check.
+    let batch = args
+        .batch
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(std::path::Path::new);
+
+    // The reference checks the batch file BEFORE any store side effect
+    // (the existsSync gate leads the command): no auto-create, no
+    // domain write. The json envelope rides the stderr channel with a
+    // capital-B error where the plain line says `Error: ` lowercase
+    // (mulch-8ca8).
+    if let Some(path) = batch
+        && !path.exists()
+    {
+        let mut failure = Failure::handled_on_stderr(
+            "record",
+            format!("Error: batch file not found: {}", path.display()),
+        );
+        failure.envelope["error"] =
+            Value::String(format!("Batch file not found: {}", path.display()));
+        return Err(failure);
+    }
+
     // Auto-create precedes validation AND dry-run (reference behavior:
     // the domain side effects happen even for dry-runs and failed
-    // records).
+    // records) — but the batch/stdin family creates the domain
+    // SILENTLY (processStdinRecords has no notice line); the line is
+    // the single-record path's alone (mulch-5fd8). It hits stdout
+    // even in --json mode; it is quiet-gated (spec review).
     let known = store.domains().iter().any(|d| d == &args.domain);
     if !known {
         store
             .register_domain(&args.domain)
             .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
-        // The auto-create line hits stdout even in --json mode; it is
-        // quiet-gated (spec review).
-        print_line(
-            opts.quiet,
-            &format!("✓ Auto-created domain \"{}\"", args.domain),
-        );
+        if !args.stdin && batch.is_none() {
+            print_line(
+                opts.quiet,
+                &format!("✓ Auto-created domain \"{}\"", args.domain),
+            );
+        }
     }
 
-    if args.stdin || args.batch.is_some() {
-        return stdin_batch(opts, args, &store);
+    // Batch wins over stdin when both are given (the reference's
+    // batch block precedes the stdin block).
+    if args.stdin || batch.is_some() {
+        return stdin_batch(opts, args, batch, &store);
+    }
+
+    // Validate --type is provided for non-stdin mode (reference
+    // record.ts order: the check follows the auto-create side
+    // effect; nothing is written). `--type ""` never reaches the
+    // command — clap's value_parser rejects it before, like the
+    // reference's commander choices — so only absence is left
+    // (mulch-cbe2). stdin/batch records default to convention in
+    // both binaries (effective_type law, mulch-3f08).
+    if args.record_type.is_none() {
+        let choices = mulch::PAYLOAD_TYPES.join(", ");
+        return Err(Failure::handled_on_stderr(
+            "record",
+            format!("Error: --type is required ({choices})"),
+        ));
     }
 
     let recorded_at = now_iso();
@@ -476,25 +605,23 @@ fn upsert_update(
 }
 
 /// stdin/batch path: preserves input key order, appends recorded_at,
-/// classification, id.
+/// classification, id. The batch file wins over stdin when both are
+/// given (the reference's batch block precedes the stdin block).
 fn stdin_batch(
     opts: &GlobalOpts,
     args: &RecordArgs,
+    batch: Option<&std::path::Path>,
     store: &mulch::StoreFiles,
 ) -> Result<(), Failure> {
-    let raw = if args.stdin {
+    let raw = if let Some(path) = batch {
+        std::fs::read_to_string(path)
+            .map_err(|source| Failure::handled("record", format!("reading batch: {source}")))?
+    } else {
         let mut buffer = String::new();
         std::io::stdin()
             .read_to_string(&mut buffer)
             .map_err(|source| Failure::handled("record", format!("reading stdin: {source}")))?;
         buffer
-    } else {
-        let path = args
-            .batch
-            .as_ref()
-            .expect("stdin_batch runs only when stdin or a batch path was given");
-        std::fs::read_to_string(path)
-            .map_err(|source| Failure::handled("record", format!("reading batch: {source}")))?
     };
     let parsed: Value = serde_json::from_str(&raw)
         .map_err(|source| Failure::handled("record", format!("parsing input: {source}")))?;

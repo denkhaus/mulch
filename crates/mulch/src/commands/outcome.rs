@@ -213,9 +213,12 @@ fn append(
         fields.insert("total_outcomes".into(), Value::from(total as u64));
         print_json(&success_envelope("outcome", fields), false);
     } else {
+        // JS truthiness (mulch-1209): an empty `--agent` renders no
+        // attribution parens (the entry itself already dropped it).
         let attribution = flags
             .agent
             .as_deref()
+            .filter(|agent| !agent.is_empty())
             .map_or_else(String::new, |agent| format!(" ({agent})"));
         print_line(
             opts.quiet,

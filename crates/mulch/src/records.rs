@@ -272,8 +272,11 @@ pub fn parse_non_negative_number(raw: &str) -> Option<Value> {
 /// One outcome entry's raw flag strings — the shared owner of the
 /// entry key order per command family and the strict duration parse
 /// (the three outcome builders in record.ts/edit.ts/outcome.ts plus
-/// utils/numeric-flags.ts). `timestamped` selects the `outcome`
-/// command family (status, recorded_at, duration, agent, notes,
+/// utils/numeric-flags.ts), and the builders' JS truthiness law
+/// (mulch-1209): empty `agent`/`notes`/`test_results` flags are
+/// dropped, `duration` is not (`--duration ""` reaches the strict
+/// parse and errors). `timestamped` selects the `outcome` command
+/// family (status, recorded_at, duration, agent, notes,
 /// test_results); the record/edit family writes status, duration,
 /// test_results, agent. Plain data: fill the fields, call [`build`].
 ///
@@ -316,21 +319,26 @@ impl OutcomeEntry<'_> {
             };
             entry.insert("duration".into(), value);
         }
+        // JS truthiness (reference `if (options.agent)` class, mulch-1209):
+        // an empty flag value is absent — never stored, never rendered.
+        let agent = self.agent.filter(|value| !value.is_empty());
+        let notes = self.notes.filter(|value| !value.is_empty());
+        let test_results = self.test_results.filter(|value| !value.is_empty());
         if self.timestamped {
-            if let Some(agent) = self.agent {
+            if let Some(agent) = agent {
                 entry.insert("agent".into(), Value::String(agent.into()));
             }
-            if let Some(notes) = self.notes {
+            if let Some(notes) = notes {
                 entry.insert("notes".into(), Value::String(notes.into()));
             }
-            if let Some(test_results) = self.test_results {
+            if let Some(test_results) = test_results {
                 entry.insert("test_results".into(), Value::String(test_results.into()));
             }
         } else {
-            if let Some(test_results) = self.test_results {
+            if let Some(test_results) = test_results {
                 entry.insert("test_results".into(), Value::String(test_results.into()));
             }
-            if let Some(agent) = self.agent {
+            if let Some(agent) = agent {
                 entry.insert("agent".into(), Value::String(agent.into()));
             }
         }
