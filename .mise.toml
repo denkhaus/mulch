@@ -4,8 +4,8 @@
 # server-managed `mulch-toolchain` environment pins that image). The
 # Rust toolchain is owned by rustup (pinned nightly-2026-09-22, see
 # AGENTS.md). The tracker is the external `seeds` binary (denkhaus/
-# seeds): globally installed already, on PATH — no mise entry needed
-# (curl install script: https://github.com/denkhaus/seeds/releases).
+# seeds), per-repo pinned via the cargo backend (curl install script
+# for other machines: https://github.com/denkhaus/seeds/releases).
 
 [tools]
 just = "1.58.0"
@@ -24,6 +24,7 @@ bun = "1.4.0"
 # global ~/.config/mise/config.toml entry; the per-repo pin makes the
 # dependency explicit for this checkout.
 "http:but" = { version = "0.22.3-fork.5", url = "https://github.com/denkhaus/gitbutler/releases/download/v0.22.3-fork.5/but-0.22.3-fork.5-x86_64-unknown-linux-gnu.tar.gz" }
+"cargo:seeds" = "0.8.0"
 
 [settings.npm]
 # Non-TTY installs abort on the default backend's interactive approval
