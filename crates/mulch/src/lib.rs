@@ -15,6 +15,7 @@
 mod config;
 mod error;
 mod ids;
+pub mod jsval;
 mod records;
 pub mod schema;
 pub mod stale;
@@ -26,11 +27,17 @@ pub use ids::{
     PAYLOAD_TYPES, REGISTRY, TypeSpec, effective_type, hint_fields, id_key_field, is_named_type,
     payload_fields, record_id, type_spec,
 };
+// the JS-quirk facade: the command-consumed jsval items re-export at
+// the root like the records/schema constants (one convention;
+// `mulch::jsval` stays the deep path for the rest, e.g. `js_dedup_eq`)
+pub use jsval::{
+    js_key_sorted, js_length, js_round_u64, js_string, parse_non_negative_number, truthy,
+    truthy_str, value_text,
+};
 pub use records::{
     LenientLine, LineRecord, OutcomeEntry, ResolveError, UpsertPlan, assign_missing_id,
-    find_duplicate, legacy_entry, legacy_outcome, merge_outcomes, parse_non_negative_number,
-    read_lenient, read_strict, record_summary, resolve_record_id, upsert_plan, value_text,
-    write_records,
+    find_duplicate, legacy_entry, legacy_outcome, merge_outcomes, read_lenient, read_strict,
+    record_summary, resolve_record_id, upsert_plan, write_records,
 };
 pub use schema::CLASSIFICATIONS;
 pub use store_files::{StoreFiles, StoreLocation};

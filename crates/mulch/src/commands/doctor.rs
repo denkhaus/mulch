@@ -685,18 +685,12 @@ fn file_anchors(domains: &[DomainLines], project_root: &std::path::Path) -> Chec
 
 /// The reference's id bracket (`record.id ? `[${record.id}]` : ""`):
 /// JS-truthy ids interpolate through the template-literal coercion
-/// ([`mulch::value_text`]). Bounded to the shapes a store can reach —
-/// the schema pins ids to the `mx-` pattern, so only strings and
-/// hand-crafted numbers ever render (objects and arrays are truthy in
-/// JS but unreachable as ids).
+/// ([`mulch::value_text`]). Truthiness is the jsval seam's general law
+/// — arrays/objects are truthy in JS, and a hand-corrupted store that
+/// carries one as an id renders its coercion (probe-pinned to the
+/// reference's own template literal, mulch-ec71).
 fn id_bracket(id: Option<&Value>) -> String {
-    let truthy = match id {
-        Some(Value::Bool(on)) => *on,
-        Some(Value::Number(number)) => number.as_f64().is_some_and(|n| n != 0.0),
-        Some(Value::String(text)) => !text.is_empty(),
-        None | Some(Value::Null | Value::Array(_) | Value::Object(_)) => false,
-    };
-    match id.filter(|_| truthy) {
+    match id.filter(|id| mulch::truthy(id)) {
         Some(value) => format!("[{}]", mulch::value_text(value)),
         None => String::new(),
     }
@@ -1627,6 +1621,15 @@ mod tests {
             id_bracket(record(r#"{"v":"mx-1"}"#).get("v")),
             "[mx-1]",
             "the schema's id shape renders as-is"
+        );
+        // the jsval seam's general truthiness: arrays and objects ARE
+        // truthy — a hand-corrupted id renders its coercion like the
+        // reference's template literal (mulch-ec71; the inline match
+        // used to suppress these unreachable-by-schema shapes)
+        assert_eq!(id_bracket(record(r#"{"v":[1]}"#).get("v")), "[1]");
+        assert_eq!(
+            id_bracket(record(r#"{"v":{}}"#).get("v")),
+            "[[object Object]]"
         );
     }
 

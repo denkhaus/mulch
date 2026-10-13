@@ -17,7 +17,7 @@ use std::path::Path;
 /// Store lookup: the filesystem seam lives in the library
 /// ([`mulch::StoreFiles`]); the CLI only matches its outcome.
 pub(crate) use mulch::StoreLocation;
-use mulch::{Error, ResolveError};
+use mulch::{Error, ResolveError, js_string, truthy_str};
 
 use crate::cli::{Cli, Command, EditArgs, RecordArgs};
 use crate::output::Failure;
@@ -376,9 +376,7 @@ impl<'a> PayloadFlags<'a> {
     /// non-empty flag (buildRetryCommand echoes flag values alone,
     /// JSON.stringify-quoted).
     pub(crate) fn retry_pair(&self, field: &str) -> Option<String> {
-        self.get(field)
-            .filter(|value| !value.is_empty())
-            .map(|value| format!("--{field} {}", js_quoted(value)))
+        truthy_str(self.get(field)).map(|value| format!("--{field} {}", js_string(value)))
     }
 
     /// The table's field universe (the pin surface in
@@ -387,12 +385,6 @@ impl<'a> PayloadFlags<'a> {
     pub(crate) fn fields(&self) -> impl Iterator<Item = &'static str> {
         self.table.iter().map(|(name, _)| *name)
     }
-}
-
-/// JSON.stringify for the retry echo: serde_json's string encoding
-/// is byte-identical to the reference's quoting (mulch-2153).
-fn js_quoted(value: &str) -> String {
-    serde_json::to_string(value).expect("serializing a str cannot fail")
 }
 
 /// Reads a one-line answer from stdin (the delete-domain prompt).

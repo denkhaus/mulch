@@ -10,6 +10,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::ids::{PAYLOAD_TYPES, id_key_field, is_named_type, record_id};
+use crate::jsval::{js_dedup_eq, parse_non_negative_number, truthy_str};
 
 /// One parsed record with its physical line number.
 #[derive(Debug)]
@@ -156,35 +157,6 @@ fn normalize_legacy_outcome(record: &mut Value) {
     object.insert("outcomes".into(), Value::Array(vec![Value::Object(entry)]));
 }
 
-/// Renders a JSON value the way a JS template literal or property key
-/// would stringify it: strings raw, `null` as "null", arrays joined
-/// with "," (null items empty), objects as "[object Object]"
-/// (probe-pinned 2026-10-04, ml 0.10.7).
-pub fn value_text(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        Value::Null => "null".into(),
-        Value::Array(items) => items
-            .iter()
-            .map(|item| match item {
-                Value::Null => String::new(),
-                other => value_text(other),
-            })
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Object(_) => "[object Object]".into(),
-        other => other.to_string(),
-    }
-}
-
-/// The reference's duplicate detector (`findDuplicate`,
-/// utils/expertise.ts): the first same-type record whose dedup-field
-/// value equals the candidate's. The dedup field is the registry's
-/// dedupKey — same mapping as [`id_key_field`] — never the id, so a
-/// renamed record still dedupes after `edit --name`. Unregistered
-/// types never duplicate (the reference registry has no definition);
-/// records missing the field on both sides match, like JS
-/// `undefined === undefined`.
 pub fn find_duplicate<'a, I>(records: I, candidate: &Value) -> Option<usize>
 where
     I: IntoIterator<Item = &'a Value>,
@@ -199,74 +171,6 @@ where
         record.get("type").and_then(Value::as_str) == Some(record_type)
             && js_dedup_eq(record.get(key), new_value)
     })
-}
-
-/// JS strict equality (`===`) for the reference's dedup-field
-/// comparison (`findDuplicate`, utils/expertise.ts): missing fields
-/// compare equal (`undefined === undefined`), numbers compare as f64
-/// (`1` equals `1.0` — both parse to the same JS number), and objects
-/// or arrays never match because `===` compares object identity and
-/// separately parsed lines never share one.
-fn js_dedup_eq(a: Option<&Value>, b: Option<&Value>) -> bool {
-    match (a, b) {
-        (None, None) => true,
-        (Some(Value::Number(a)), Some(Value::Number(b))) => a.as_f64() == b.as_f64(),
-        // objects/arrays never match (JS === compares identity), and
-        // undefined never equals a present value (and vice versa) —
-        // this arm MUST precede the structural-eq arm or identical
-        // object shapes would wrongly match
-        (Some(Value::Object(_) | Value::Array(_)), _)
-        | (_, Some(Value::Object(_) | Value::Array(_)))
-        | (None, Some(_))
-        | (Some(_), None) => false,
-        (Some(a), Some(b)) => a == b,
-    }
-}
-
-/// The reference's strict numeric-flag parse (`parseStrictNonNegativeNumber`,
-/// utils/numeric-flags.ts). A deliberate public seam of its own: the
-/// reference feeds `rank --min-score` from the same util (mulch-16da
-/// consumes it when that surface lands). Accepts `/^\d+(\.\d+)?$/` —
-/// digits with an optional
-/// fractional part, nothing else (`-5`, `1e3`, `.5`, `5.`, `1.2.3`, spaces
-/// all reject). Values canonicalize like JS `Number()` + `JSON.stringify`:
-/// `"42.0"` stores as the integer `42`, `"42.5"` as the float `42.5`.
-pub fn parse_non_negative_number(raw: &str) -> Option<Value> {
-    let mut parts = raw.split('.');
-    let integral = parts.next().unwrap_or_default();
-    let fractional = parts.next();
-    if parts.next().is_some()
-        || integral.is_empty()
-        || !integral.bytes().all(|b| b.is_ascii_digit())
-    {
-        return None;
-    }
-    if let Some(frac) = fractional
-        && (frac.is_empty() || !frac.bytes().all(|b| b.is_ascii_digit()))
-    {
-        return None;
-    }
-    let number: f64 = raw.parse().ok()?;
-    if !number.is_finite() {
-        return None;
-    }
-    // Everything routes through f64 — JS Number rounds literals above
-    // 2^53 to the nearest f64 BEFORE any canonicalization, so the
-    // rounded value is what both sides store ("9007199254740993" is
-    // 9007199254740992 on both). Integral values keep the full-digit
-    // integer FORM while exactly castable (through i64::MAX ≈ 9.2e18 —
-    // JS stringify expands digits to 1e21, and serde's f64 form
-    // diverges from that above the i64 range: absurd territory for a
-    // millisecond duration, documented in README DEVIATIONS).
-    if number.fract() == 0.0 && number <= i64::MAX as f64 {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "guarded by the fract()==0 and <= i64::MAX bounds"
-        )]
-        let exact = number as i64;
-        return Some(Value::from(exact));
-    }
-    Some(Value::from(number))
 }
 
 /// One outcome entry's raw flag strings — the shared owner of the
@@ -319,11 +223,12 @@ impl OutcomeEntry<'_> {
             };
             entry.insert("duration".into(), value);
         }
-        // JS truthiness (reference `if (options.agent)` class, mulch-1209):
-        // an empty flag value is absent — never stored, never rendered.
-        let agent = self.agent.filter(|value| !value.is_empty());
-        let notes = self.notes.filter(|value| !value.is_empty());
-        let test_results = self.test_results.filter(|value| !value.is_empty());
+        // JS truthiness (reference `if (options.agent)` class,
+        // mulch-1209): an empty flag value is absent — never stored,
+        // never rendered. The jsval seam owns the law.
+        let agent = truthy_str(self.agent);
+        let notes = truthy_str(self.notes);
+        let test_results = truthy_str(self.test_results);
         if self.timestamped {
             if let Some(agent) = agent {
                 entry.insert("agent".into(), Value::String(agent.into()));
@@ -736,50 +641,10 @@ mod upsert_plan_tests {
 mod outcome_entry_tests {
     use serde_json::{Map, json};
 
-    use super::{OutcomeEntry, parse_non_negative_number};
+    use super::OutcomeEntry;
 
-    fn number(raw: &str) -> Option<serde_json::Value> {
-        parse_non_negative_number(raw)
-    }
-
-    #[test]
-    fn parse_accepts_digits_and_canonical_decimals() {
-        // plain integers stay integers
-        assert_eq!(number("42"), Some(json!(42)));
-        assert_eq!(number("0"), Some(json!(0)));
-        // leading zeros collapse like JS Number("007") === 7
-        assert_eq!(number("007"), Some(json!(7)));
-        // "42.0" is JS 42 — the canonical integer form
-        assert_eq!(number("42.0"), Some(json!(42)));
-        assert_eq!(number("0.500"), Some(json!(0.5)));
-        // decimals stay floats
-        assert_eq!(number("42.5"), Some(json!(42.5)));
-    }
-
-    #[test]
-    fn parse_rounds_above_js_safe_integers_like_number() {
-        // JS Number rounds literals above 2^53 BEFORE storing — the
-        // rounded value is what both sides keep (sprint-16 spec review).
-        assert_eq!(
-            number("9007199254740993"),
-            Some(json!(9_007_199_254_740_992i64))
-        );
-        // Beyond the i64 range the f64 holds the same NUMBER as JS,
-        // with serde's float byte form (README DEVIATIONS).
-        assert_eq!(
-            number("18446744073709551615").and_then(|value| value.as_f64()),
-            Some(1.844_674_407_370_955_2e19)
-        );
-    }
-
-    #[test]
-    fn parse_rejects_everything_else_like_the_reference_regex() {
-        for raw in [
-            "", "abc", "-5", "+5", "1e3", ".5", "5.", "1.2.3", " 42", "42 ", "４２",
-        ] {
-            assert_eq!(number(raw), None, "raw {raw:?} must reject");
-        }
-    }
+    // the numeric-flag parse pins moved to jsval's table test
+    // (mulch-ec71): one quirk surface.
 
     fn key_order(map: &Map<String, serde_json::Value>) -> Vec<&str> {
         map.keys().map(String::as_str).collect()

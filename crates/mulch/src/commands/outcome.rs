@@ -1,7 +1,7 @@
 //! `mulch outcome <domain> <id>` — append an outcome entry or list
 //! the record's outcomes (mulch-b88b).
 
-use mulch::value_text;
+use mulch::{js_length, truthy, value_text};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, OutcomeFlags};
@@ -84,18 +84,6 @@ fn list(
 /// The reference's engine error for a non-array `outcomes` value
 /// (`outcome.ts:90-97`, JSC text via the outer catch).
 const JS_ENTRIES_ERROR: &str = "Error: outcomes.entries is not a function. (In 'outcomes.entries()', 'outcomes.entries' is undefined)";
-
-/// The count the reference's header template prints for an outcomes
-/// value: array length, string `.length` (UTF-16 units in JS, chars
-/// here — astral-plane corrupt values would differ), `undefined` for
-/// every other shape.
-fn js_length(value: &Value) -> String {
-    match value {
-        Value::Array(items) => items.len().to_string(),
-        Value::String(text) => text.chars().count().to_string(),
-        _ => "undefined".to_string(),
-    }
-}
 
 /// The plain listing (reference rendering; chalk styling strips when
 /// piped, which is the byte contract our output pins).
@@ -215,10 +203,7 @@ fn append(
     } else {
         // JS truthiness (mulch-1209): an empty `--agent` renders no
         // attribution parens (the entry itself already dropped it).
-        let attribution = flags
-            .agent
-            .as_deref()
-            .filter(|agent| !agent.is_empty())
+        let attribution = mulch::truthy_str(flags.agent.as_deref())
             .map_or_else(String::new, |agent| format!(" ({agent})"));
         print_line(
             opts.quiet,
@@ -226,19 +211,6 @@ fn append(
         );
     }
     Ok(())
-}
-
-/// JS truthiness for the optional listing fields (the reference's bare
-/// field checks): empty string, 0 and null are skipped; every array
-/// and object is truthy, even an empty one.
-fn truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(flag) => *flag,
-        Value::Number(number) => number.as_f64().is_some_and(|n| n != 0.0),
-        Value::String(text) => !text.is_empty(),
-        Value::Array(_) | Value::Object(_) => true,
-    }
 }
 
 #[cfg(test)]
@@ -298,31 +270,5 @@ mod tests {
             // empty array is truthy: the line prints with no value
             "     notes: ",
         ]);
-    }
-
-    #[test]
-    fn js_length_matches_the_reference_header_count() {
-        assert_eq!(js_length(&serde_json::json!([])), "0");
-        assert_eq!(js_length(&serde_json::json!([1, 2])), "2");
-        assert_eq!(js_length(&serde_json::json!("not-an-array")), "12");
-        assert_eq!(js_length(&serde_json::json!(42)), "undefined");
-        assert_eq!(js_length(&serde_json::json!({})), "undefined");
-    }
-
-    #[test]
-    fn truthy_and_value_text_pin_the_js_contracts() {
-        assert!(truthy(&serde_json::json!([])));
-        assert!(truthy(&serde_json::json!({})));
-        assert!(truthy(&serde_json::json!(1)));
-        assert!(!truthy(&serde_json::json!("")));
-        assert!(!truthy(&serde_json::json!(0)));
-        assert!(!truthy(&serde_json::json!(null)));
-
-        assert_eq!(value_text(&serde_json::json!("raw")), "raw");
-        assert_eq!(value_text(&serde_json::json!(null)), "null");
-        assert_eq!(value_text(&serde_json::json!(42)), "42");
-        assert_eq!(value_text(&serde_json::json!(true)), "true");
-        assert_eq!(value_text(&serde_json::json!(["a", "b"])), "a,b");
-        assert_eq!(value_text(&serde_json::json!({})), "[object Object]");
     }
 }

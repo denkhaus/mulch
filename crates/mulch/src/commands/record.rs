@@ -4,11 +4,11 @@
 use std::fmt::Write as _;
 use std::io::Read as _;
 
-use mulch::{id_key_field, record_id, schema};
+use mulch::{id_key_field, js_string, record_id, schema, truthy_str};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, RecordArgs};
-use crate::commands::{PayloadFlags, js_quoted, now_iso};
+use crate::commands::{PayloadFlags, now_iso};
 use crate::output::{Failure, failure_envelope, print_json, print_line, success_envelope};
 
 /// Builds the canonical JSONL object for the flag path (field order
@@ -97,7 +97,7 @@ fn build_record(
         record.insert("dir_anchors".into(), Value::Array(anchors));
     }
     for field in payload {
-        if let Some(value) = flags.resolved(field).filter(|value| !value.is_empty()) {
+        if let Some(value) = truthy_str(flags.resolved(field)) {
             record.insert((*field).into(), Value::String(value.to_string()));
         }
     }
@@ -110,9 +110,7 @@ fn build_record(
     // because the key exists).
     let declares_files =
         mulch::type_spec(&record_type).is_some_and(|spec| spec.optional.contains(&"files"));
-    if declares_files
-        && let Some(files) = split_list(args.files.as_deref().filter(|value| !value.is_empty()))
-    {
+    if declares_files && let Some(files) = split_list(truthy_str(args.files.as_deref())) {
         record.insert("files".into(), strings_value(&files));
     }
 
@@ -124,10 +122,7 @@ fn build_record(
         return Err(ref_validation_failure(&subs, &hint));
     }
 
-    let id_key_value = flags
-        .resolved(id_key_field(&record_type))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_default();
+    let id_key_value = truthy_str(flags.resolved(id_key_field(&record_type))).unwrap_or_default();
     let id = record_id(&record_type, id_key_value);
     record.insert("id".into(), Value::String(id));
     Ok(record)
@@ -174,8 +169,8 @@ fn missing_flags_failure(
     // (user directive 2026-10-13, README DEVIATIONS; the battery
     // normalizes the name and pins ours explicitly).
     let mut echo = format!("mulch record {}", args.domain);
-    if let Some(content) = args.content.as_deref().filter(|value| !value.is_empty()) {
-        let _ = write!(echo, " {}", js_quoted(content));
+    if let Some(content) = truthy_str(args.content.as_deref()) {
+        let _ = write!(echo, " {}", js_string(content));
     }
     let _ = write!(echo, " --type {record_type}");
     if let Some(classification) = args
@@ -198,20 +193,16 @@ fn missing_flags_failure(
             let _ = write!(echo, " {pair}");
         }
     }
-    if let Some(files) = args.files.as_deref().filter(|value| !value.is_empty()) {
-        let _ = write!(echo, " --files {}", js_quoted(files));
+    if let Some(files) = truthy_str(args.files.as_deref()) {
+        let _ = write!(echo, " --files {}", js_string(files));
     }
     for anchor in &args.dir_anchors {
-        let _ = write!(echo, " --dir-anchor {}", js_quoted(anchor));
+        let _ = write!(echo, " --dir-anchor {}", js_string(anchor));
     }
-    if let Some(tags) = args.tags.as_deref().filter(|value| !value.is_empty()) {
-        let _ = write!(echo, " --tags {}", js_quoted(tags));
+    if let Some(tags) = truthy_str(args.tags.as_deref()) {
+        let _ = write!(echo, " --tags {}", js_string(tags));
     }
-    if let Some(commit) = args
-        .evidence_commit
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(commit) = truthy_str(args.evidence_commit.as_deref()) {
         let _ = write!(echo, " --evidence-commit {commit}");
     }
     for (key, value) in [
@@ -222,8 +213,8 @@ fn missing_flags_failure(
         ("gh", &args.evidence_gh),
         ("linear", &args.evidence_linear),
     ] {
-        if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
-            let _ = write!(echo, " --evidence-{key} {}", js_quoted(value));
+        if let Some(value) = truthy_str(value.as_deref()) {
+            let _ = write!(echo, " --evidence-{key} {}", js_string(value));
         }
     }
     for flag in &missing_flags {
@@ -290,7 +281,7 @@ fn evidence_map(args: &RecordArgs) -> Option<Map<String, Value>> {
     // dropped from the object, and the git-commit fallback triggers
     // for `--evidence-commit ""` too (`if (!options.evidenceCommit)`).
     for (key, value) in pairs {
-        if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
+        if let Some(value) = truthy_str(value.as_deref()) {
             evidence.insert(key.into(), Value::String(value.to_string()));
         }
     }
@@ -309,11 +300,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     // JS truthiness on the --batch flag: `--batch ""` is NO batch (the
     // reference's `if (options.batch)` gate) — the flag path runs with
     // its own --type check.
-    let batch = args
-        .batch
-        .as_deref()
-        .filter(|value| !value.is_empty())
-        .map(std::path::Path::new);
+    let batch = truthy_str(args.batch.as_deref()).map(std::path::Path::new);
 
     // The reference checks the batch file BEFORE any store side effect
     // (the existsSync gate leads the command): no auto-create, no

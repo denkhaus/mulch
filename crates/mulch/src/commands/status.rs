@@ -3,8 +3,8 @@
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
-use mulch::CLASSIFICATIONS;
 use mulch::stale::{StaleRule, StaleVerdict};
+use mulch::{CLASSIFICATIONS, js_key_sorted, js_round_u64};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -127,7 +127,7 @@ impl DomainStatus {
                 // Math.floor of the total-hours quotient (reference
                 // age-in-days); the span is finite and non-negative
                 let age_days =
-                    f64_to_u64(((now - newest).total(jiff::Unit::Hour)).unwrap_or(0.0) / 24.0);
+                    js_round_u64(((now - newest).total(jiff::Unit::Hour)).unwrap_or(0.0) / 24.0);
                 if age_days > shelf.observational {
                     (true, Some(age_days))
                 } else {
@@ -200,7 +200,7 @@ impl DomainStatus {
         let utilization = (self.count as f64 / self.max_entries as f64) * 100.0;
         health.insert(
             "governance_utilization".into(),
-            json_num(f64_to_u64(utilization.round())),
+            json_num(js_round_u64(utilization.round())),
         );
         health.insert("stale_count".into(), json_num(self.stale_count as u64));
         health.insert(
@@ -330,18 +330,10 @@ impl Counter {
     /// ascending first, then string keys in insertion order (probe:
     /// `{"type": 5}` yields `"5"` before the seeded names).
     fn to_distribution(&self) -> Value {
-        let mut integer_keys: Vec<&(String, Option<u64>)> = self
-            .counts
-            .iter()
-            .filter(|(key, _)| key.parse::<u64>().is_ok())
-            .collect();
-        integer_keys.sort_by_key(|(key, _)| key.parse::<u64>().unwrap_or(0));
+        // JS object enumeration order is the jsval seam's law
+        // (integer-like keys ascending first, then first-seen order).
         let mut map = Map::new();
-        for (key, count) in integer_keys.into_iter().chain(
-            self.counts
-                .iter()
-                .filter(|(key, _)| key.parse::<u64>().is_err()),
-        ) {
+        for (key, count) in js_key_sorted(&self.counts) {
             let value = match count {
                 Some(count) => json_num(*count),
                 None => Value::Null,
@@ -398,25 +390,6 @@ fn shelf_life_json(shelf: &mulch::ShelfLife) -> Value {
 }
 
 /// JSON number helper.
-/// Clamps a non-negative reference computation into u64 (the
-/// Math.round contract on finite, non-negative inputs).
-fn f64_to_u64(value: f64) -> u64 {
-    if value.is_finite() && value > 0.0 {
-        // the reference's Math.round output (finite, non-negative);
-        // truncation cannot lose data past .round()
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "guarded and rounded; mirrors Math.round"
-        )]
-        {
-            value as u64
-        }
-    } else {
-        0
-    }
-}
-
 fn json_num(value: u64) -> Value {
     Value::from(value)
 }
