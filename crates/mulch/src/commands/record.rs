@@ -168,7 +168,12 @@ fn missing_flags_failure(
     flags: &PayloadFlags<'_>,
 ) -> Failure {
     let missing_flags: Vec<String> = missing.iter().map(|f| format!("--{f}")).collect();
-    let mut echo = format!("ml record {}", args.domain);
+    // The echo promotes THIS binary: the reference's buildRetryCommand
+    // hardcodes its own name (`ml record`), we say `mulch record` — the
+    // user-facing surface never sends anyone to the retired binary
+    // (user directive 2026-10-13, README DEVIATIONS; the battery
+    // normalizes the name and pins ours explicitly).
+    let mut echo = format!("mulch record {}", args.domain);
     if let Some(content) = args.content.as_deref().filter(|value| !value.is_empty()) {
         let _ = write!(echo, " {}", js_quoted(content));
     }

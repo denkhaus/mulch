@@ -156,6 +156,13 @@ expectation (the parity rule: never silently):
   hard-deleted, the domain file left empty, the domain stays
   registered. Expectation: fixes print as `Pruned`/`Removed` lines and
   the exit code stays the PRE-fix check result.
+- **The missing-flags `Retry` hint (and its `--json` `Example:` form)
+  names THIS binary**: we echo `mulch record …` where the reference's
+  `buildRetryCommand` hardcodes its own name (`ml record …`). Every
+  other byte of the hint — flag order, quoting, placeholders — stays
+  reference-identical. The shipped binary never promotes the tool it
+  replaces (user directive 2026-10-13); the battery normalizes the
+  binary name for its byte comparisons and pins ours explicitly.
 
 ## Status
 

@@ -64,6 +64,15 @@ fn normalize(text: &str) -> String {
     regex_free_iso(text)
 }
 
+/// The Retry/Example echo promotes THIS binary (user directive
+/// 2026-10-13: no ml references in the shipped binary — README
+/// DEVIATIONS): ours says `mulch record` where the reference echoes
+/// its own name. Byte comparisons normalize the binary name; the
+/// deviation itself is pinned by `record_echo_promotes_mulch`.
+fn echo_ours_to_reference(text: &str) -> String {
+    text.replace("mulch record", "ml record")
+}
+
 /// ISO-8601 timestamps -> `<TS>` without a regex dependency.
 fn regex_free_iso(text: &str) -> String {
     let bytes = text.as_bytes();
@@ -1523,7 +1532,9 @@ fn record_auto_create_failure_side_effects_match() {
     let theirs_run = run_in(&theirs.0, &ml, &args);
     assert_eq!(ours_run.code, theirs_run.code);
     assert_eq!(ours_run.stdout, theirs_run.stdout);
-    assert_eq!(ours_run.stderr, theirs_run.stderr);
+    // the Retry echo names this binary (README DEVIATIONS) —
+    // normalized, pinned by record_echo_promotes_mulch
+    assert_eq!(echo_ours_to_reference(&ours_run.stderr), theirs_run.stderr);
     // the domain side effect persists on both sides
     assert!(read_store_file(&ours.0, "mulch.config.yaml").contains("devfail: {}"));
     assert!(read_store_file(&theirs.0, "mulch.config.yaml").contains("devfail: {}"));
@@ -2567,7 +2578,7 @@ fn record_missing_flags_json_error_text() {
     let theirs_run = run_in(&theirs.0, &ml, &args);
     assert_eq!(ours_run.code, theirs_run.code);
     assert_eq!(ours_run.stdout, theirs_run.stdout);
-    assert_eq!(ours_run.stderr, theirs_run.stderr);
+    assert_eq!(echo_ours_to_reference(&ours_run.stderr), theirs_run.stderr);
 }
 
 #[test]
@@ -5711,7 +5722,11 @@ mod battery_s23_b {
             let theirs_run = run_in(&theirs.0, &ml, &args);
             assert_eq!(ours_run.code, theirs_run.code, "{tag} exit");
             assert_eq!(ours_run.stdout, theirs_run.stdout, "{tag} stdout");
-            assert_eq!(ours_run.stderr, theirs_run.stderr, "{tag} stderr");
+            assert_eq!(
+                echo_ours_to_reference(&ours_run.stderr),
+                theirs_run.stderr,
+                "{tag} stderr (echo names this binary — README DEVIATIONS)"
+            );
             assert_eq!(
                 read_store_file(&ours.0, "expertise/d.jsonl"),
                 read_store_file(&theirs.0, "expertise/d.jsonl"),
@@ -6417,9 +6432,13 @@ fn record_positional_is_the_type_specific_fallback() {
     let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &args);
     let theirs_run = run_in(&theirs.0, &ml, &args);
     assert_eq!(ours_run.code, theirs_run.code, "exit retry");
-    assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr retry");
+    assert_eq!(
+        echo_ours_to_reference(&ours_run.stderr),
+        theirs_run.stderr,
+        "stderr retry (echo names this binary)"
+    );
     assert!(ours_run.stderr.contains(
-        "  Retry: ml record dretry \"content-x\" --type pattern --files \"a.rs\" --name \"<name>\""
+        "  Retry: mulch record dretry \"content-x\" --type pattern --files \"a.rs\" --name \"<name>\""
     ));
 }
 
@@ -6519,7 +6538,14 @@ fn record_empty_flag_values_drop_like_js_truthiness() {
         let theirs_run = run_in(&theirs.0, &ml, args);
         assert_eq!(ours_run.code, theirs_run.code, "exit {args:?}");
         assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout {args:?}");
-        assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr {args:?}");
+        // the empty-name case's Retry echo names this binary (README
+        // DEVIATIONS) — normalized here, pinned by
+        // record_echo_promotes_mulch
+        assert_eq!(
+            echo_ours_to_reference(&ours_run.stderr),
+            theirs_run.stderr,
+            "stderr {args:?}"
+        );
     }
     for domain in ["f", "g", "h", "i", "j"] {
         assert_eq!(
@@ -6631,8 +6657,21 @@ fn record_missing_flags_retry_echoes_non_payload_flags() {
         assert_eq!(ours_run.code, 1, "exit is 1 {mode:?}");
         assert_eq!(ours_run.code, theirs_run.code, "exit differs {mode:?}");
         assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout {mode:?}");
-        assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr {mode:?}");
+        assert_eq!(
+            echo_ours_to_reference(&ours_run.stderr),
+            theirs_run.stderr,
+            "stderr {mode:?} (echo names this binary)"
+        );
     }
+    // the deviation itself: ours promotes `mulch`, never the retired
+    // binary (README DEVIATIONS; the missing pair comes last)
+    let plain = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record", "d", "--type", "pattern", "--name", "n",
+    ]);
+    assert!(plain.stderr.contains(
+        "Retry: mulch record d --type pattern --name \"n\" --description \"<description>\""
+    ));
+    assert!(!plain.stderr.contains("ml record"));
     assert_eq!(read_store_text_or_empty(&ours.0, "expertise/d.jsonl"), "");
 }
 

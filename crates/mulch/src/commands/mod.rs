@@ -323,10 +323,15 @@ impl<'a> PayloadFlags<'a> {
                 ("rationale", args.rationale.as_deref()),
             ],
             positional: args.content.as_deref(),
+            // The positional drops for the two flag-only types — named
+            // arms so a new registry type forces a revisit.
             fallback:   match record_type {
                 "convention" => Some("content"),
                 "pattern" | "reference" | "guide" => Some("description"),
-                _ => None,
+                "failure" | "decision" => None,
+                other => {
+                    unreachable!("clap's value_parser gates --type to the registry: {other}")
+                }
             },
         }
     }
@@ -387,7 +392,7 @@ impl<'a> PayloadFlags<'a> {
 /// JSON.stringify for the retry echo: serde_json's string encoding
 /// is byte-identical to the reference's quoting (mulch-2153).
 fn js_quoted(value: &str) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| format!("\"{value}\""))
+    serde_json::to_string(value).expect("serializing a str cannot fail")
 }
 
 /// Reads a one-line answer from stdin (the delete-domain prompt).
