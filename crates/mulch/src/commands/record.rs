@@ -295,7 +295,14 @@ fn evidence_map(args: &RecordArgs) -> Option<Map<String, Value>> {
 
 /// Runs `record`.
 pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
-    let mut store = crate::commands::open_store("record", false)?;
+    // The writer lock wraps the whole load→mutate→save cycle of real
+    // runs; `--dry-run` reads lock-free like the reference's dry-run
+    // branch (mulch-228d).
+    let mut store = if args.dry_run {
+        crate::commands::open_store("record", false)?
+    } else {
+        crate::commands::open_store_mut("record", false)?
+    };
 
     // JS truthiness on the --batch flag: `--batch ""` is NO batch (the
     // reference's `if (options.batch)` gate) — the flag path runs with

@@ -19,6 +19,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
         &args.id,
         DomainFailure::Standard,
         false,
+        true,
     )?;
     // Output surfaces carry the resolved record's own id (reference
     // `record.id`; its `?? id` fallback is dead — resolution matches

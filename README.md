@@ -90,6 +90,27 @@ expectation (the parity rule: never silently):
   untouched) — and `edit`/`move` abort on such records through the
   updated-record schema gate, like the reference (mulch-15d3,
   mulch-7896).
+- **The store writer lock is kernel-owned and store-wide.** Every
+  mutating command (`record`, `edit`, `outcome`, `add`, `delete`,
+  `delete-domain`, `move`, `doctor --fix`, `init`) wraps its whole
+  load→mutate→save cycle in an advisory exclusive `flock` on the
+  permanent zero-byte `.mulch/.lock` (ported from seeds-0d7b,
+  mulch-228d); reads and `--dry-run` runs stay lock-free. The
+  reference instead locks each file with an `O_CREAT | O_EXCL`
+  lockfile (`<file>.lock`) plus 30-second mtime-staleness recovery:
+  a crashed holder wedges writers until the file ages out or is
+  deleted by hand, and a >30-second holder can be double-admitted.
+  Our lock lives on the open file description, so the kernel releases
+  it on crash — no stale-lockfile machinery. `init` writes
+  `.mulch/.gitignore` (`*.lock`) to keep the lock sibling out of
+  version control; existing stores add that ignore once by hand.
+  Contended writers wait 5 seconds (the reference's budget), then
+  fail fast naming the lock file — the wording differs from the
+  reference's timeout error, which advises deleting its lockfile by
+  hand (meaningless for a kernel-owned lock). Store-wide granularity
+  also serializes cross-domain writers (the reference's per-file lock
+  does not) and covers config mutations the per-file lock leaves
+  racing.
 - **Argument-parse errors use clap wording** (choice rejections,
   missing-argument hints): same channels and exit code 1, different
   text than commander's. The no-store paths of `add`, `record`,

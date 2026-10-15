@@ -65,7 +65,14 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     // on stderr) instead of a plain handled error.
     let cwd = std::env::current_dir()
         .map_err(|source| Failure::handled("doctor", format!("resolving cwd: {source}")))?;
-    let store = match mulch::StoreFiles::locate(&cwd) {
+    // `--fix` repairs under the writer lock (the whole re-read/repair
+    // cycle, mulch-228d); the report-only mode stays lock-free.
+    let located = if fix {
+        mulch::StoreFiles::locate_exclusive(&cwd)
+    } else {
+        mulch::StoreFiles::locate(&cwd)
+    };
+    let store = match located {
         Ok(mulch::StoreLocation::Open(store)) => store,
         Ok(mulch::StoreLocation::Missing | mulch::StoreLocation::NoConfig) => {
             return Err(no_store_report(opts));

@@ -47,9 +47,38 @@ pub(crate) fn open_store(
     command: &'static str,
     config_message: bool,
 ) -> Result<mulch::StoreFiles, Failure> {
+    open_located(command, config_message, false)
+}
+
+/// Opens the store under the writer lock (mulch-228d): the advisory
+/// exclusive lock on `.mulch/.lock` is held until the returned store
+/// drops, so the command's whole load→mutate→save cycle is atomic
+/// against other mulch processes. Every mutating command opens this
+/// way; a contended lock fails fast through the shared error path
+/// naming the lock file.
+pub(crate) fn open_store_mut(
+    command: &'static str,
+    config_message: bool,
+) -> Result<mulch::StoreFiles, Failure> {
+    open_located(command, config_message, true)
+}
+
+/// The shared open body behind [`open_store`] and
+/// [`open_store_mut`]: locate (optionally exclusive) and map the
+/// no-store/error contracts once.
+fn open_located(
+    command: &'static str,
+    config_message: bool,
+    exclusive: bool,
+) -> Result<mulch::StoreFiles, Failure> {
     let cwd = std::env::current_dir()
         .map_err(|source| Failure::handled(command, format!("resolving cwd: {source}")))?;
-    match locate(&cwd) {
+    let located = if exclusive {
+        mulch::StoreFiles::locate_exclusive(&cwd)
+    } else {
+        locate(&cwd)
+    };
+    match located {
         Ok(StoreLocation::Open(store)) => Ok(store),
         Ok(StoreLocation::Missing | StoreLocation::NoConfig) => {
             let message = if config_message {
@@ -269,8 +298,16 @@ pub(crate) fn locate_record(
     id: &str,
     shape: DomainFailure,
     config_message: bool,
+    exclusive: bool,
 ) -> Result<(mulch::StoreFiles, Vec<mulch::LineRecord>, usize), Failure> {
-    let store = open_store(command, config_message)?;
+    // Mutating callers (edit, outcome) hold the writer lock across
+    // the whole cycle; the read family (query, mulch-16da) passes
+    // false (mulch-228d).
+    let store = if exclusive {
+        open_store_mut(command, config_message)?
+    } else {
+        open_store(command, config_message)?
+    };
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {
         return Err(unknown_domain_failure(

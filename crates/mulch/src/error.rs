@@ -48,6 +48,27 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// The store writer lock could not be acquired (I/O failure).
+    #[error("acquiring the writer lock on {path}")]
+    Lock {
+        /// The lock file that failed to open or lock.
+        path:   PathBuf,
+        /// The underlying I/O failure.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The store writer lock was not released within the wait budget
+    /// (mulch-228d): another mulch process kept writing past the
+    /// timeout.
+    #[error(
+        "timed out waiting for the writer lock on {path} — another mulch process is writing the store"
+    )]
+    LockTimeout {
+        /// The lock file another process still holds.
+        path: PathBuf,
+    },
+
     /// `mulch.config.yaml` is not valid YAML or not a mapping.
     #[error("parsing config {path}")]
     ConfigParse {

@@ -43,10 +43,21 @@ pub enum StoreLocation {
 
 /// A `.mulch/` directory with its parsed config: the single owner of the
 /// store's filesystem conventions.
+///
+/// A store is a session, not a shareable snapshot: sessions opened
+/// through [`StoreFiles::locate_exclusive`] (mulch-228d) hold the
+/// store writer lock until they drop, making the whole
+/// load→mutate→save cycle atomic against other mulch processes.
+/// Embedders that mutate a store must open it exclusively.
 #[derive(Debug)]
 pub struct StoreFiles {
     root:   PathBuf,
     config: Config,
+    /// The writer lock held by exclusive sessions; `None` for
+    /// read-only sessions. Held for its drop side effect — releasing
+    /// the lock — never read.
+    #[expect(dead_code, reason = "holding the lock is the field's whole purpose")]
+    lock:   Option<crate::lock::WriterLock>,
 }
 
 impl StoreFiles {
@@ -58,7 +69,34 @@ impl StoreFiles {
     /// [`Error::ConfigParse`] / [`Error::UnsupportedVersion`] when it
     /// does not parse.
     pub fn locate(project_root: &Path) -> Result<StoreLocation> {
+        Self::locate_inner(&project_root.join(".mulch"), None)
+    }
+
+    /// Locates the store under the writer lock (mulch-228d): the
+    /// advisory exclusive lock on `.mulch/.lock` is acquired BEFORE
+    /// the config is read and held until the store drops, so the
+    /// whole load→mutate→save cycle of one session is atomic against
+    /// other mulch processes. A concurrent writer waits up to the
+    /// acquire timeout, then fails fast with [`Error::LockTimeout`].
+    /// Every mutating command opens this way; read-only sessions use
+    /// [`StoreFiles::locate`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Lock`] / [`Error::LockTimeout`] when the lock cannot
+    /// be taken, plus the [`StoreFiles::locate`] failures.
+    pub fn locate_exclusive(project_root: &Path) -> Result<StoreLocation> {
         let root = project_root.join(".mulch");
+        if !root.is_dir() {
+            return Ok(StoreLocation::Missing);
+        }
+        let lock = crate::lock::WriterLock::acquire(&root)?;
+        Self::locate_inner(&root, Some(lock))
+    }
+
+    /// The shared locate body: discovery, config read, and the
+    /// optional pre-acquired writer lock.
+    fn locate_inner(root: &Path, lock: Option<crate::lock::WriterLock>) -> Result<StoreLocation> {
         if !root.is_dir() {
             return Ok(StoreLocation::Missing);
         }
@@ -72,7 +110,11 @@ impl StoreFiles {
         })?;
         let config = Config::parse(&text)?;
         config.ensure_supported()?;
-        Ok(StoreLocation::Open(Self { root, config }))
+        Ok(StoreLocation::Open(Self {
+            root: root.to_path_buf(),
+            config,
+            lock,
+        }))
     }
 
     /// Lenient per-line read of one domain file (reference validate/

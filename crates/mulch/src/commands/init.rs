@@ -13,6 +13,11 @@ const README_TEMPLATE: &str = include_str!("../../fixtures/init/README.md");
 /// commented documentation knobs.
 const CONFIG_TEMPLATE: &str = include_str!("../../fixtures/init/mulch.config.yaml");
 
+/// The store-local ignore for the writer lock's permanent zero-byte
+/// `.lock` sibling (mulch-228d deviation — the reference has no
+/// persistent lock file to ignore).
+const LOCK_GITIGNORE: &str = "*.lock\n";
+
 /// Runs `init`: fresh message on first creation, restore message when
 /// `.mulch/` already exists; missing artifacts are re-created
 /// byte-identically, the command never fails short of I/O errors.
@@ -22,6 +27,16 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let fresh = !store_root.is_dir();
 
     std::fs::create_dir_all(store_root.join("expertise")).map_err(|source| io_failure(&source))?;
+
+    // The store writer lock (mulch-228d): init writes under it too,
+    // so a parallel init cannot interleave artifact creation. The
+    // `.gitignore` keeps the permanent zero-byte `.lock` sibling out
+    // of version control (README DEVIATIONS — the reference writes
+    // no such file).
+    let _writer_lock = mulch::lock::WriterLock::acquire(&store_root)
+        .map_err(|source| Failure::handled("init", crate::output::chain_message(&source)))?;
+    write_missing(&store_root.join(".gitignore"), LOCK_GITIGNORE)?;
+
     write_missing(&store_root.join("README.md"), README_TEMPLATE)?;
     write_missing(&store_root.join("mulch.config.yaml"), CONFIG_TEMPLATE)?;
 

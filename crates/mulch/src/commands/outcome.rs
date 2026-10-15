@@ -19,8 +19,15 @@ pub(super) fn run(
     id: &str,
     flags: &OutcomeFlags,
 ) -> Result<(), Failure> {
-    let (store, records, position) =
-        locate_record(opts, "outcome", domain, id, DomainFailure::Standard, false)?;
+    let (store, records, position) = locate_record(
+        opts,
+        "outcome",
+        domain,
+        id,
+        DomainFailure::Standard,
+        false,
+        true,
+    )?;
 
     match flags.status.as_deref() {
         Some(status) => append(opts, &store, records, position, domain, id, status, flags),

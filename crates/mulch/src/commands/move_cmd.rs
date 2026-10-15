@@ -24,7 +24,14 @@ pub(super) fn run(
     dry_run: bool,
     force: bool,
 ) -> Result<(), Failure> {
-    let store = crate::commands::open_store("move", true)?;
+    // Real runs hold the writer lock across the cycle (store-wide —
+    // the reference nests target+source file locks); --dry-run reads
+    // lock-free (mulch-228d).
+    let store = if dry_run {
+        crate::commands::open_store("move", true)?
+    } else {
+        crate::commands::open_store_mut("move", true)?
+    };
 
     // Same-domain check comes FIRST (reference order).
     if source == target {

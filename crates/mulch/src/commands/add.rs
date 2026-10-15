@@ -6,7 +6,7 @@ use crate::output::{Failure, print_json, print_line, success_envelope};
 /// Runs `add`: fresh domains get an empty expertise file and a
 /// comment-free config rewrite (reference behavior).
 pub(super) fn run(opts: &GlobalOpts, domain: String) -> Result<(), Failure> {
-    let store = crate::commands::open_store("add", false)?;
+    let mut store = crate::commands::open_store_mut("add", false)?;
 
     if store.domains().iter().any(|d| d == &domain) {
         return Err(Failure::handled(
@@ -15,7 +15,6 @@ pub(super) fn run(opts: &GlobalOpts, domain: String) -> Result<(), Failure> {
         ));
     }
 
-    let mut store = store;
     store
         .register_domain(&domain)
         .map_err(|source| Failure::handled("add", crate::output::chain_message(&source)))?;

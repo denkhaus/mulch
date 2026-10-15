@@ -16,6 +16,7 @@ mod config;
 mod error;
 mod ids;
 pub mod jsval;
+pub mod lock;
 mod records;
 pub mod schema;
 pub mod scoring;

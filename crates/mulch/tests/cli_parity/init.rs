@@ -39,6 +39,22 @@ fn init_matches_reference_on_disk_and_output() {
     assert!(ours.0.join(".mulch/expertise").is_dir());
 }
 
+/// Deviation pin (mulch-228d): init additionally writes
+/// `.mulch/.gitignore` (`*.lock`) for the store writer lock's
+/// permanent zero-byte `.lock` sibling; the reference writes no such
+/// file. Everything else init writes stays byte-identical (pinned
+/// above).
+#[test]
+fn init_writes_lock_gitignore_deviation() {
+    let ours = TempDir::new("init-lockignore");
+    run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    assert_eq!(
+        read_store_file(&ours.0, ".gitignore"),
+        "*.lock\n",
+        "the lock ignore must stay stable"
+    );
+}
+
 #[test]
 fn init_reinit_message_matches() {
     let Some(ml) = reference_ml() else {

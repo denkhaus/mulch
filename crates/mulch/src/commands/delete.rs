@@ -97,7 +97,13 @@ pub(super) fn run(
     domain: &str,
     dry_run: bool,
 ) -> Result<(), Failure> {
-    let store = crate::commands::open_store("delete", true)?;
+    // Real runs hold the writer lock across the cycle; --dry-run
+    // reads lock-free like the reference (mulch-228d).
+    let store = if dry_run {
+        crate::commands::open_store("delete", true)?
+    } else {
+        crate::commands::open_store_mut("delete", true)?
+    };
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {
