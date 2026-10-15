@@ -678,7 +678,7 @@ fn stdin_batch(
             let registered = line
                 .get("type")
                 .and_then(Value::as_str)
-                .is_some_and(|kind| mulch::PAYLOAD_TYPES.contains(&kind));
+                .is_some_and(|kind| store.registry().is_known(kind));
             let hint_part = if registered {
                 format!(". {hint}")
             } else {

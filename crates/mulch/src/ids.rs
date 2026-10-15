@@ -35,6 +35,33 @@ pub struct TypeSpec {
     pub files:    Option<&'static str>,
 }
 
+/// How a record's one-line summary renders (the reference's
+/// `def.summary`): builtins read the id-key field (convention and
+/// failure truncated to 60); custom types interpolate their summary
+/// template, or inherit the parent builtin's law.
+#[derive(Debug, PartialEq)]
+pub enum SummaryLaw {
+    /// The named field's value, optionally truncated.
+    Field {
+        /// The field to read.
+        field:    String,
+        /// Truncate to 60 chars (the sentence-end law).
+        truncate: bool,
+    },
+    /// Interpolated template parts (`{field}` → `String(value)`),
+    /// missing fields render empty.
+    Template(Vec<SummaryPart>),
+}
+
+/// One part of a custom summary template.
+#[derive(Debug, PartialEq)]
+pub enum SummaryPart {
+    /// Literal text.
+    Literal(String),
+    /// A `{field}` interpolation.
+    Field(String),
+}
+
 /// One merged registry row — a builtin or a validated custom type.
 /// The config-aware view every registry consumer works over
 /// (mulch-b4bd): schema branches, duplicate detection, id
@@ -64,6 +91,8 @@ pub struct Row {
     /// The field that is a string array instead of a plain string
     /// (`extracts_files` resolved with `files_field`).
     pub files_array: Option<String>,
+    /// How the record's summary line renders.
+    pub summary:     SummaryLaw,
 }
 
 /// The merged registry: the six builtins plus the config's
@@ -91,10 +120,11 @@ impl Registry {
     ///
     /// The first validation failure's message, verbatim (the CLI
     /// renders it through the global config-error surface).
-    pub fn from_config(config: &crate::config::Config) -> Result<Self, String> {
+    pub fn from_config(config: &crate::config::Config) -> Result<Self, crate::error::Error> {
         let mut rows: Vec<Row> = REGISTRY.iter().map(Row::from_spec).collect();
         for (name, cfg) in crate::custom_types::entries(config.custom_types_value()) {
-            crate::custom_types::validate(&name, &cfg)?;
+            crate::custom_types::validate(&name, &cfg)
+                .map_err(|message| crate::error::Error::CustomTypes { message })?;
             let row = crate::custom_types::build_row(&name, &cfg);
             let named = row.dedup.is_some();
             rows.push(Row {
@@ -106,6 +136,7 @@ impl Registry {
                 named,
                 builtin: false,
                 files_array: row.files_array,
+                summary: row.summary,
             });
         }
         Ok(Self { rows })
@@ -150,6 +181,10 @@ impl Row {
             named:       spec.named,
             builtin:     true,
             files_array: spec.files.map(str::to_string),
+            summary:     SummaryLaw::Field {
+                field:    spec.id_key.to_string(),
+                truncate: matches!(spec.name, "convention" | "failure"),
+            },
         }
     }
 }

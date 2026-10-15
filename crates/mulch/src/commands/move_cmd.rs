@@ -130,7 +130,7 @@ pub(super) fn run(
         }
     }
 
-    let summary = record_summary(&record);
+    let summary = record_summary(store.registry(), &record);
     let incoming = incoming_references(
         store.registry(),
         store.root(),

@@ -116,8 +116,7 @@ impl StoreFiles {
         })?;
         let config = Config::parse(&text)?;
         config.ensure_supported()?;
-        let registry = crate::ids::Registry::from_config(&config)
-            .map_err(|message| Error::CustomTypes { message })?;
+        let registry = crate::ids::Registry::from_config(&config)?;
         Ok(StoreLocation::Open(Self {
             root: root.to_path_buf(),
             config,

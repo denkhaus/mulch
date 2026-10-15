@@ -166,7 +166,7 @@ pub(super) fn run(
             (
                 line.id().unwrap_or_default().to_string(),
                 line.record_type(),
-                record_summary(&line.record),
+                record_summary(store.registry(), &line.record),
             )
         })
         .collect();
@@ -189,7 +189,7 @@ pub(super) fn run(
     // (only reachable under --allow-unknown-types).
     if opts.allow_unknown_types {
         for (_, kind, _) in &deleted {
-            if !mulch::PAYLOAD_TYPES.contains(&kind.as_str()) {
+            if !store.registry().is_known(kind) {
                 return Err(Failure::handled_on_stderr(
                     "delete",
                     format!("Error: Unknown record type: {kind}"),

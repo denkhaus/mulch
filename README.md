@@ -19,11 +19,13 @@ product of its own — while `crates/mulch` (the lib) is at the same time
 the native expertise engine that denkhaus/fabro embeds. The lib's public
 API is therefore an integration surface for fabro, not an internal
 convenience; changes to it are integration-relevant. It carries the
-store IO (`StoreFiles`), the record-type registry (`REGISTRY`), the
-record-domain laws — schema validity (`schema::verdict`) and staleness
-decay (`stale::StaleRule`) — and the write-model helpers built on them
-(`UpsertPlan`, `OutcomeEntry`, `value_text`); commands render, the lib
-decides.
+store IO (`StoreFiles`, whose `registry()` is the merged type view —
+the six builtins plus the config's validated `custom_types`, with
+`REGISTRY` as the builtin table behind it), the record-domain laws —
+schema validity (`schema::verdict`), record summaries
+(`record_summary`) and staleness decay (`stale::StaleRule`) — and the
+write-model helpers built on them (`UpsertPlan`, `OutcomeEntry`,
+`value_text`); commands render, the lib decides.
 
 Freeze policy (ADR-0023 in denkhaus/fabro): no upstream following. The
 format is frozen on our side; we extend additively for our own reasons.

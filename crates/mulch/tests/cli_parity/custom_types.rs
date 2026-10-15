@@ -286,3 +286,74 @@ fn custom_doctor_fix_drops_invalid_custom_records() {
     assert_eq!(ours_run.stderr, theirs_run.stderr);
     assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
 }
+
+#[test]
+fn custom_move_and_delete_summaries_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = custom_twins("ct-move");
+    // Fixed ids (the resolver matches the id field verbatim); the
+    // summaries render the COMPILED template ("{name}: {code}").
+    let fixture = "{\"type\":\"snippet\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-15T10:00:00.000Z\",\"name\":\"s1\",\"code\":\"print(1)\",\"id\":\"mx-aaaa01\"}\n{\
+        \"type\":\"snippet\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-15T10:00:00.000Z\",\"name\":\"s2\",\"code\":\"x\",\"id\":\"mx-aaaa02\"}\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), fixture).expect("dev fixture");
+        std::fs::write(dir.join(".mulch/expertise/tgt.jsonl"), "").expect("tgt fixture");
+    }
+
+    for args in [
+        &["move", "dev", "mx-aaaa01", "tgt"][..],
+        &["delete", "dev", "mx-aaaa02", "--dry-run"][..],
+        &["delete", "dev", "mx-aaaa02"][..],
+        &["delete", "dev", "mx-aaaa02", "--json"][..],
+    ] {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} codes differ");
+        assert_eq!(
+            ours_run.stdout, theirs_run.stdout,
+            "{args:?} stdout differs"
+        );
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "{args:?} stderr differs"
+        );
+    }
+    assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
+    assert_same_file(&ours, &theirs, "expertise/tgt.jsonl");
+}
+
+#[test]
+fn custom_batch_validation_hint_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = custom_twins("ct-hint");
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join("bad.json"),
+            "[{\"type\":\"snippet\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-15T18:40:00.000Z\",\"code\":\"x\"}]\n",
+        )
+        .expect("bad batch");
+    }
+
+    for args in [
+        &["record", "dev", "--batch", "bad.json"][..],
+        &["record", "dev", "--batch", "bad.json", "--json"][..],
+    ] {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} codes differ");
+        assert_eq!(
+            ours_run.stdout, theirs_run.stdout,
+            "{args:?} stdout differs"
+        );
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "{args:?} stderr differs"
+        );
+    }
+}

@@ -8,7 +8,7 @@
 
 use serde_yaml::Value as Yaml;
 
-use crate::ids::{REGISTRY, TypeSpec};
+use crate::ids::{REGISTRY, SummaryLaw, SummaryPart, TypeSpec};
 
 /// Fields owned by the base record: custom types must not redeclare
 /// them (reference `BASE_FIELDS`).
@@ -45,10 +45,14 @@ pub(crate) struct CustomTypeCfg {
     /// reports a duplicate `n`).
     pub(crate) required:       Vec<String>,
     pub(crate) optional:       Vec<String>,
-    pub(crate) dedup_key:      Option<String>,
-    pub(crate) id_key:         Option<String>,
-    pub(crate) summary:        Option<String>,
-    pub(crate) compact:        Option<String>,
+    /// Raw `dedup_key`/`id_key`/`summary`/`compact` values: the
+    /// validation law distinguishes present-but-wrong-typed from
+    /// absent (probe: `dedup_key: ''` reads "must set", `summary: 123`
+    /// reads "must be a non-empty string").
+    pub(crate) dedup_key:      Option<Yaml>,
+    pub(crate) id_key:         Option<Yaml>,
+    pub(crate) summary:        Option<Yaml>,
+    pub(crate) compact:        Option<Yaml>,
     pub(crate) extracts_files: Option<bool>,
     pub(crate) files_field:    Option<String>,
 }
@@ -71,6 +75,9 @@ pub(crate) struct CustomRow {
     /// The field that is a string array instead of a plain string
     /// (`extracts_files` resolved with `files_field`).
     pub(crate) files_array: Option<String>,
+    /// The summary rendering law (own template, or the parent
+    /// builtin's field law when `summary` is inherited).
+    pub(crate) summary:     crate::ids::SummaryLaw,
 }
 
 /// The `custom_types` entries in config order. The reference iterates
@@ -91,8 +98,10 @@ pub(crate) fn entries(custom_types: Option<&Yaml>) -> Vec<(String, CustomTypeCfg
             }
         }
         Yaml::String(text) => {
-            for (index, ch) in text.chars().enumerate() {
-                out.push((index.to_string(), string_cfg(&ch.to_string())));
+            for (index, _) in text.chars().enumerate() {
+                // every field lookup on a primitive is `undefined` in
+                // JS — the default config
+                out.push((index.to_string(), CustomTypeCfg::default()));
             }
         }
         Yaml::Sequence(items) => {
@@ -103,12 +112,6 @@ pub(crate) fn entries(custom_types: Option<&Yaml>) -> Vec<(String, CustomTypeCfg
         _ => {}
     }
     out
-}
-
-/// A scalar entry's config: every field lookup on a primitive is
-/// `undefined` in JS — the default config.
-fn string_cfg(_scalar: &str) -> CustomTypeCfg {
-    CustomTypeCfg::default()
 }
 
 /// The config block for one entry; unknown key types read as the
@@ -136,10 +139,10 @@ fn cfg_from_yaml(value: &Yaml) -> CustomTypeCfg {
         extends_raw:    get("extends").cloned(),
         required:       field_list("required"),
         optional:       field_list("optional"),
-        dedup_key:      get("dedup_key").and_then(yaml_string),
-        id_key:         get("id_key").and_then(yaml_string),
-        summary:        get("summary").and_then(yaml_string),
-        compact:        get("compact").and_then(yaml_string),
+        dedup_key:      get("dedup_key").cloned(),
+        id_key:         get("id_key").cloned(),
+        summary:        get("summary").cloned(),
+        compact:        get("compact").cloned(),
         extracts_files: get("extracts_files").and_then(|value| match value {
             Yaml::Bool(flag) => Some(*flag),
             _ => None,
@@ -164,25 +167,26 @@ pub(crate) fn validate(name: &str, cfg: &CustomTypeCfg) -> Result<(), String> {
         ));
     }
 
-    let parent: Option<&'static TypeSpec> = match &cfg.extends_raw {
-        None => None,
-        Some(Yaml::String(extends)) if !extends.is_empty() => {
-            match REGISTRY.iter().find(|spec| spec.name == extends) {
-                Some(spec) => Some(spec),
-                None => {
+    // The parent lookup's own error laws live here (the shared
+    // `parent_spec` helper is the silent variant for build_row).
+    if let Some(raw) = &cfg.extends_raw {
+        match raw {
+            Yaml::String(extends) if !extends.is_empty() => {
+                if parent_spec(cfg).is_none() {
                     return Err(format!(
                         "Custom type \"{name}\" extends \"{extends}\" must be a built-in type. Built-ins: {}. Custom-from-custom inheritance is not supported in v1.",
                         REGISTRY.map(|spec| spec.name).join(", ")
                     ));
                 }
             }
+            _ => {
+                return Err(format!(
+                    "Custom type \"{name}\" extends must be a non-empty string."
+                ));
+            }
         }
-        Some(_) => {
-            return Err(format!(
-                "Custom type \"{name}\" extends must be a non-empty string."
-            ));
-        }
-    };
+    }
+    let parent = parent_spec(cfg);
 
     if parent.is_none() && cfg.required.is_empty() {
         return Err(format!(
@@ -257,27 +261,30 @@ pub(crate) fn validate(name: &str, cfg: &CustomTypeCfg) -> Result<(), String> {
         }
     }
 
-    let effective_dedup: Option<String> = cfg
-        .dedup_key
-        .clone()
-        .or_else(|| parent.map(|spec| spec.id_key.to_string()));
-    let Some(effective_dedup) = effective_dedup else {
+    // The dedup law distinguishes absent (parent fallback), and
+    // present-but-empty-or-wrong-typed: both read "must set"
+    // (the reference's typeof/length gate).
+    let effective_dedup = effective_dedup(cfg, parent);
+    if !yaml_nonempty_string(effective_dedup.as_ref()) {
         return Err(format!(
             "Custom type \"{name}\" must set \"dedup_key\" (field name or \"content_hash\"), or extend a built-in that defines one."
         ));
-    };
-    if effective_dedup != "content_hash" && !merged_seen.contains(&effective_dedup.as_str()) {
+    }
+    let dedup_key = effective_dedup
+        .as_ref()
+        .map_or_else(String::new, yaml_display);
+    if dedup_key != "content_hash" && !merged_seen.contains(&dedup_key.as_str()) {
         return Err(format!(
-            "Custom type \"{name}\" dedup_key \"{effective_dedup}\" must be declared in required/optional or be \"content_hash\"."
+            "Custom type \"{name}\" dedup_key \"{dedup_key}\" must be declared in required/optional or be \"content_hash\"."
         ));
     }
-    if let Some(id_key) = &cfg.id_key
-        && id_key != "content_hash"
-        && !merged_seen.contains(&id_key.as_str())
-    {
-        return Err(format!(
-            "Custom type \"{name}\" id_key \"{id_key}\" must be declared in required/optional or be \"content_hash\"."
-        ));
+    if let Some(id_key) = &cfg.id_key {
+        let id_key = yaml_display(id_key);
+        if id_key != "content_hash" && !merged_seen.contains(&id_key.as_str()) {
+            return Err(format!(
+                "Custom type \"{name}\" id_key \"{id_key}\" must be declared in required/optional or be \"content_hash\"."
+            ));
+        }
     }
 
     if cfg.summary.is_none() && parent.is_none() {
@@ -285,35 +292,37 @@ pub(crate) fn validate(name: &str, cfg: &CustomTypeCfg) -> Result<(), String> {
             "Custom type \"{name}\" must set \"summary\" template string."
         ));
     }
-    if let Some(summary) = &cfg.summary
-        && summary.is_empty()
-    {
-        return Err(format!(
-            "Custom type \"{name}\" \"summary\" must be a non-empty string."
-        ));
-    }
     if let Some(summary) = &cfg.summary {
-        let mut valid_tokens: Vec<&str> = BASE_FIELDS.to_vec();
-        valid_tokens.extend(merged_seen.iter().copied());
-        for token in template_tokens(summary) {
-            if !valid_tokens.contains(&token.as_str()) {
-                let mut known = valid_tokens.clone();
-                known.sort_unstable();
-                return Err(format!(
-                    "Custom type \"{name}\" summary references unknown field \"{{{token}}}\". Declared fields: {}.",
-                    known.join(", ")
-                ));
+        if !yaml_nonempty_string(Some(summary)) {
+            return Err(format!(
+                "Custom type \"{name}\" \"summary\" must be a non-empty string."
+            ));
+        }
+        let summary = yaml_display(summary);
+        {
+            let mut valid_tokens: Vec<&str> = BASE_FIELDS.to_vec();
+            valid_tokens.extend(merged_seen.iter().copied());
+            for token in template_tokens(&summary) {
+                if !valid_tokens.contains(&token.as_str()) {
+                    let mut known = valid_tokens.clone();
+                    known.sort_unstable();
+                    return Err(format!(
+                        "Custom type \"{name}\" summary references unknown field \"{{{token}}}\". Declared fields: {}.",
+                        known.join(", ")
+                    ));
+                }
             }
         }
     }
 
-    if let Some(compact) = &cfg.compact
-        && !COMPACT_STRATEGIES.contains(&compact.as_str())
-    {
-        return Err(format!(
-            "Custom type \"{name}\" compact strategy \"{compact}\" is invalid. Use one of: {}.",
-            COMPACT_STRATEGIES.join(", ")
-        ));
+    if let Some(compact) = &cfg.compact {
+        let compact = yaml_display(compact);
+        if !COMPACT_STRATEGIES.contains(&compact.as_str()) {
+            return Err(format!(
+                "Custom type \"{name}\" compact strategy \"{compact}\" is invalid. Use one of: {}.",
+                COMPACT_STRATEGIES.join(", ")
+            ));
+        }
     }
     if cfg.extracts_files == Some(true)
         && let Some(files_field) = &cfg.files_field
@@ -329,11 +338,7 @@ pub(crate) fn validate(name: &str, cfg: &CustomTypeCfg) -> Result<(), String> {
 
 /// Builds the merged row for a VALIDATED config entry.
 pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> CustomRow {
-    let parent = cfg
-        .extends_raw
-        .as_ref()
-        .and_then(|raw| raw.as_str())
-        .and_then(|extends| REGISTRY.iter().find(|spec| spec.name == extends));
+    let parent = parent_spec(cfg);
 
     let mut required: Vec<String> = parent.map_or_else(Vec::new, |spec| {
         spec.payload.iter().map(|f| (*f).to_string()).collect()
@@ -353,17 +358,19 @@ pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> CustomRow {
     }
     optional.retain(|field| !required.contains(field));
 
-    let dedup: Option<String> = cfg
-        .dedup_key
-        .clone()
-        .or_else(|| parent.map(|spec| spec.id_key.to_string()))
-        .filter(|key| key != "content_hash");
+    let dedup = match effective_dedup(cfg, parent)
+        .as_ref()
+        .map_or_else(String::new, yaml_display)
+    {
+        dedup if dedup == "content_hash" || dedup.is_empty() => None,
+        field => Some(field),
+    };
     let id_key = cfg
         .id_key
         .clone()
-        .or_else(|| cfg.dedup_key.clone())
-        .or_else(|| parent.map(|spec| spec.id_key.to_string()))
-        .unwrap_or_else(|| "content_hash".to_string());
+        .or_else(|| effective_dedup(cfg, parent))
+        .as_ref()
+        .map_or_else(|| "content_hash".to_string(), yaml_display);
 
     let extracts = cfg
         .extracts_files
@@ -375,6 +382,24 @@ pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> CustomRow {
         .unwrap_or_else(|| "files".to_string());
     let files_array = extracts.filter(|extracts| *extracts).map(|_| files_field);
 
+    let summary = match &cfg.summary {
+        Some(raw) if yaml_nonempty_string(Some(raw)) => {
+            SummaryLaw::Template(compile_summary(&yaml_display(raw)))
+        }
+        // extends without an own summary: the parent builtin's field
+        // law (its summary fn over its own field).
+        _ => parent.map_or(
+            SummaryLaw::Field {
+                field:    "content".into(),
+                truncate: false,
+            },
+            |spec| SummaryLaw::Field {
+                field:    spec.id_key.to_string(),
+                truncate: matches!(spec.name, "convention" | "failure"),
+            },
+        ),
+    };
+
     CustomRow {
         name: name.to_string(),
         required,
@@ -382,7 +407,66 @@ pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> CustomRow {
         id_key,
         dedup,
         files_array,
+        summary,
     }
+}
+
+/// The parent builtin spec for `extends` (validated configs only —
+/// `None` for absent extends).
+fn parent_spec(cfg: &CustomTypeCfg) -> Option<&'static TypeSpec> {
+    cfg.extends_raw
+        .as_ref()
+        .and_then(|raw| raw.as_str())
+        .filter(|extends| !extends.is_empty())
+        .and_then(|extends| REGISTRY.iter().find(|spec| spec.name == extends))
+}
+
+/// The effective dedup key: the config's raw value, falling back to
+/// the parent's (builtins key on their id key).
+fn effective_dedup(cfg: &CustomTypeCfg, parent: Option<&'static TypeSpec>) -> Option<Yaml> {
+    cfg.dedup_key
+        .clone()
+        .or_else(|| parent.map(|spec| Yaml::String(spec.id_key.to_string())))
+}
+
+/// Compiles a summary template into literal/field parts
+/// (`{{field}}` preferred over `{field}`).
+fn compile_summary(template: &str) -> Vec<SummaryPart> {
+    let bytes = template.as_bytes();
+    let mut parts = Vec::new();
+    let mut literal = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let mut matched = None;
+        if bytes[i] == b'{'
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'{'
+            && let Some((token, next)) = read_token(template, i + 2, "}}")
+        {
+            matched = Some((token, next));
+        }
+        if matched.is_none()
+            && bytes[i] == b'{'
+            && let Some((token, next)) = read_token(template, i + 1, "}")
+        {
+            matched = Some((token, next));
+        }
+        if let Some((token, next)) = matched {
+            if !literal.is_empty() {
+                parts.push(SummaryPart::Literal(std::mem::take(&mut literal)));
+            }
+            parts.push(SummaryPart::Field(token));
+            i = next;
+        } else {
+            let ch = template[i..].chars().next().expect("in bounds");
+            literal.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    if !literal.is_empty() {
+        parts.push(SummaryPart::Literal(literal));
+    }
+    parts
 }
 
 /// The custom-name rule `^[a-z][a-z0-9_]*$`.
@@ -439,13 +523,15 @@ fn template_tokens(template: &str) -> Vec<String> {
     tokens
 }
 
-/// Reads one `[a-z_][a-z0-9_]*` token starting at `start` and
-/// requiring `end` after it.
+/// Reads one `[a-zA-Z_][a-zA-Z0-9_]*` token starting at `start` and
+/// requiring `end` after it (the reference TOKEN_RE carries the `gi`
+/// flag — case-insensitive extraction; the DECLARED-FIELDS check then
+/// rejects unknown casings with the reference message).
 fn read_token(template: &str, start: usize, end: &str) -> Option<(String, usize)> {
     let mut chars = template[start..].char_indices();
     let mut token = String::new();
     if let Some((_, first)) = chars.next() {
-        if !(first.is_ascii_lowercase() || first == '_') {
+        if !(first.is_ascii_alphabetic() || first == '_') {
             return None;
         }
         token.push(first);
@@ -453,7 +539,7 @@ fn read_token(template: &str, start: usize, end: &str) -> Option<(String, usize)
         return None;
     }
     for (offset, ch) in chars {
-        if ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' {
+        if ch.is_ascii_alphabetic() || ch.is_ascii_digit() || ch == '_' {
             token.push(ch);
         } else {
             let stop = start + offset;
@@ -474,6 +560,12 @@ fn yaml_key_string(key: &Yaml) -> String {
     }
 }
 
+/// Whether the value is a non-empty string (the reference's
+/// `typeof x === "string" && x.length > 0` gates).
+fn yaml_nonempty_string(value: Option<&Yaml>) -> bool {
+    matches!(value, Some(Yaml::String(text)) if !text.is_empty())
+}
+
 fn yaml_string(value: &Yaml) -> Option<String> {
     match value {
         Yaml::String(text) => Some(text.clone()),
@@ -488,6 +580,7 @@ fn yaml_display(value: &Yaml) -> String {
         Yaml::Null => "null".into(),
         Yaml::Bool(flag) => flag.to_string(),
         Yaml::Number(number) => number.to_string(),
+        Yaml::String(text) => text.clone(),
         _ => String::new(),
     }
 }
@@ -616,9 +709,8 @@ mod tests {
             &cfg("extends: pattern\nrequired: [extra]\noptional: [files]\ndedup_key: extra"),
         );
         assert_eq!(row.required, ["name", "description", "extra"]);
-        // `files` promoted to required by inheritance order? No — it
-        // stays optional (parent optional, child optional, not
-        // required); the promoted case is required listing.
+        // the child redeclares `files` optional — it stays optional
+        // (parent optional, child optional)
         assert_eq!(row.optional, ["files"]);
         assert_eq!(row.id_key, "extra");
         assert_eq!(row.dedup.as_deref(), Some("extra"));
@@ -638,5 +730,71 @@ mod tests {
         assert_eq!(template_tokens("{{a}} {b} {no_} {9x} {}"), vec![
             "a", "b", "no_"
         ]);
+        // the `gi` flag: uppercase extracts too (the declared-fields
+        // check rejects it with the reference message)
+        assert_eq!(template_tokens("{Name}"), vec!["Name"]);
+    }
+
+    #[test]
+    fn wrong_typed_scalars_read_the_reference_branches() {
+        // `dedup_key: ''` is present-but-empty: "must set" (the
+        // typeof/length gate), not "must be declared"
+        assert!(
+            validate_err("t", "required: [x]\ndedup_key: ''").contains("must set \"dedup_key\"")
+        );
+        // `summary: 123` is present-but-wrong-typed
+        assert_eq!(
+            validate_err("t", "required: [x]\ndedup_key: x\nsummary: 123"),
+            "Custom type \"t\" \"summary\" must be a non-empty string."
+        );
+        // a non-string dedup_key with extends still reads "must set"
+        assert!(
+            validate_err("t", "extends: pattern\nrequired: []\ndedup_key: 123")
+                .contains("must set \"dedup_key\"")
+        );
+        // a non-string id_key interpolates its display form
+        assert!(
+            validate_err("t", "required: [x]\ndedup_key: x\nid_key: 123")
+                .contains("id_key \"123\" must be declared")
+        );
+    }
+
+    #[test]
+    fn summary_law_templates_and_inheritance() {
+        let row = build_row(
+            "t",
+            &cfg("required: [body]\ndedup_key: body\nsummary: \"{body}!\""),
+        );
+        assert_eq!(
+            row.summary,
+            SummaryLaw::Template(vec![
+                SummaryPart::Field("body".into()),
+                SummaryPart::Literal("!".into())
+            ])
+        );
+        // extends without an own summary: the parent's field law
+        let inherited = build_row("t", &cfg("extends: convention\nrequired: [extra]"));
+        assert_eq!(inherited.summary, SummaryLaw::Field {
+            field:    "content".into(),
+            truncate: true,
+        });
+        let pattern_law = build_row("t", &cfg("extends: pattern\nrequired: [extra]"));
+        assert_eq!(pattern_law.summary, SummaryLaw::Field {
+            field:    "name".into(),
+            truncate: false,
+        });
+    }
+
+    #[test]
+    fn child_required_promotes_a_parent_optional_field() {
+        let row = build_row(
+            "t",
+            &cfg("extends: pattern\nrequired: [files]\ndedup_key: name"),
+        );
+        assert!(row.required.contains(&"files".to_string()));
+        assert!(
+            !row.optional.iter().any(|field| field == "files"),
+            "promoted fields leave the optional list"
+        );
     }
 }

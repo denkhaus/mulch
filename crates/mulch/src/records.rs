@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::ids::{id_key_field, record_id};
+use crate::ids::{Registry, Row, SummaryLaw, SummaryPart, id_key_field, record_id};
 use crate::jsval::{js_dedup_eq, js_key_sorted, parse_non_negative_number, truthy_str, value_text};
 
 /// One parsed record with its physical line number.
@@ -479,15 +479,56 @@ pub fn resolve_record_id(
 }
 
 /// Reference per-type summary (`getRecordSummary`).
-pub fn record_summary(record: &Value) -> String {
+pub fn record_summary(registry: &Registry, record: &Value) -> String {
     let kind = crate::ids::effective_type(record.get("type").and_then(Value::as_str));
-    let value = record
-        .get(id_key_field(kind))
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    match kind {
-        "convention" | "failure" => truncate(value, 60),
-        _ => value.to_string(),
+    match registry.row(kind) {
+        Some(Row {
+            summary: SummaryLaw::Template(parts),
+            ..
+        }) => parts
+            .iter()
+            .map(|part| match part {
+                SummaryPart::Literal(text) => text.clone(),
+                SummaryPart::Field(field) => {
+                    record
+                        .get(field)
+                        .map_or(String::new(), |value| match value {
+                            Value::String(text) => text.clone(),
+                            other => crate::jsval::value_text(other),
+                        })
+                }
+            })
+            .collect(),
+        Some(Row {
+            summary:
+                SummaryLaw::Field {
+                    field,
+                    truncate: shorten,
+                },
+            ..
+        }) => {
+            let value = record
+                .get(field)
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if *shorten {
+                truncate(value, 60)
+            } else {
+                value.to_string()
+            }
+        }
+        // Unknown types keep the static builtin law (move/delete only
+        // reach them under --allow-unknown-types).
+        None => {
+            let value = record
+                .get(id_key_field(kind))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match kind {
+                "convention" | "failure" => truncate(value, 60),
+                _ => value.to_string(),
+            }
+        }
     }
 }
 

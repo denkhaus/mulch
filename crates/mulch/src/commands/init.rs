@@ -37,10 +37,14 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
         .map_err(|source| Failure::handled("init", crate::output::chain_message(&source)))?;
     // The reference builds its registry at CLI start for EVERY
     // command — `init` included: an existing config with invalid
-    // custom_types fails the same global way (probe-pinned).
+    // custom_types fails the same global way (probe-pinned). A config
+    // that does not even PARSE passes through here (the reference
+    // fails it in its global handler with its own YAML wording; our
+    // init stays inert — accepted edge, the crash-path deviation
+    // family).
     if let Ok(text) = std::fs::read_to_string(store_root.join("mulch.config.yaml"))
         && let Ok(config) = mulch::Config::parse(&text)
-        && let Err(message) = mulch::Registry::from_config(&config)
+        && let Err(mulch::Error::CustomTypes { message }) = mulch::Registry::from_config(&config)
     {
         return Err(Failure::config_error(&message));
     }
