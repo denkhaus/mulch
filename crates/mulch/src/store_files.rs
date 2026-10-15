@@ -87,6 +87,9 @@ impl StoreFiles {
     /// be taken, plus the [`StoreFiles::locate`] failures.
     pub fn locate_exclusive(project_root: &Path) -> Result<StoreLocation> {
         let root = project_root.join(".mulch");
+        // The guard is load-bearing: acquiring on a missing store
+        // would create `.mulch/.lock` (and report a lock error) where
+        // every caller expects `Missing`.
         if !root.is_dir() {
             return Ok(StoreLocation::Missing);
         }

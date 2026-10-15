@@ -48,8 +48,8 @@ pub struct WriterLock {
 }
 
 impl WriterLock {
-    /// Acquires the writer lock at `root/.lock`, waiting up to
-    /// [`ACQUIRE_TIMEOUT`].
+    /// Acquires the writer lock at `root/.lock`, waiting up to the
+    /// 5-second acquire budget.
     ///
     /// # Errors
     ///
@@ -60,14 +60,15 @@ impl WriterLock {
         Self::acquire_with_timeout(root, ACQUIRE_TIMEOUT)
     }
 
-    /// Acquires the writer lock with an explicit wait budget.
+    /// Acquires the writer lock with an explicit wait budget (the
+    /// unit pins' seam — the public surface is [`WriterLock::acquire`]).
     ///
     /// # Errors
     ///
     /// Returns [`Error::LockTimeout`] when another process still holds
     /// the lock past `timeout`, and [`Error::Lock`] on lock-file or
     /// locking failures.
-    pub fn acquire_with_timeout(root: &Path, timeout: Duration) -> Result<Self, Error> {
+    fn acquire_with_timeout(root: &Path, timeout: Duration) -> Result<Self, Error> {
         let path = root.join(".lock");
         // create + !truncate: the lock file is a permanent zero-byte
         // sibling; opening must never clobber an existing one.

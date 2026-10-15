@@ -110,7 +110,10 @@ expectation (the parity rule: never silently):
   hand (meaningless for a kernel-owned lock). Store-wide granularity
   also serializes cross-domain writers (the reference's per-file lock
   does not) and covers config mutations the per-file lock leaves
-  racing.
+  racing. The lock-free `--dry-run` carve-out matches the reference
+  exactly, including its dry-run domain auto-create (which therefore
+  still races — probing the reference confirmed it auto-creates in
+  dry-run too).
 - **Argument-parse errors use clap wording** (choice rejections,
   missing-argument hints): same channels and exit code 1, different
   text than commander's. The no-store paths of `add`, `record`,

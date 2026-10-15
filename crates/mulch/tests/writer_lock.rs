@@ -163,6 +163,27 @@ fn record_fails_fast_while_lock_held() {
         "error must name the writer lock: {stderr}"
     );
 
+    // The json arm of the same surface: failure envelope, exit 1.
+    let mut json_args = record_args("blocked");
+    json_args.push("--json".to_string());
+    let json_refs: Vec<&str> = json_args.iter().map(String::as_str).collect();
+    let json_run = run(&dir, &json_refs);
+    assert!(
+        !json_run.status.success(),
+        "--json record must fail under a held lock: {json_run:?}"
+    );
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&json_run.stdout).expect("json envelope on stdout");
+    assert_eq!(envelope["success"], serde_json::Value::Bool(false));
+    assert_eq!(envelope["command"], "record");
+    assert!(
+        envelope["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(".mulch/.lock"),
+        "envelope error must name the lock file: {envelope}"
+    );
+
     kill_holder(&mut holder);
 
     let retry = run(&dir, &refs);
