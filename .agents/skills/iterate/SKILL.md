@@ -62,6 +62,14 @@ policy, per AGENTS.md) governs all Rust code here — planning, writing, testing
   sessions leak into sprint diffs and reviews — commit or discard them on
   their own lane first. Never apply/unapply/update branches or `but pull`
   while a background cargo runs (the tree is rewritten under you).
+- **LANE-STALENESS CHECK (sprint-29 lesson)**: a healthy `but status`
+  with "no changes" does NOT mean the worktree is current — another
+  machine may have moved `origin/iterate`. Compare the state file's
+  `sprints_completed` against the lane's top commit message BEFORE
+  trusting the tree; when behind: `but unapply <other applied lanes>`
+  first (the workspace-merge rebuild dies on fused `.mise.toml` hunks
+  otherwise), then `but branch update iterate`, and re-apply only lanes
+  that do not collide with the new base.
 - **REFLECTION GATE (hard)**: if the state file has
   `sprints_completed > sprints_reflected`, run the pending reflection
   (step 6) NOW, before `seeds ready`. A forgotten reflection blocks the next
