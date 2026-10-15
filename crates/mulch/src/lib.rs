@@ -13,6 +13,7 @@
 //! tracked in this repo's Seeds tracker (seed ids `mulch-…`).
 
 mod config;
+mod custom_types;
 mod error;
 mod ids;
 pub mod jsval;
@@ -26,8 +27,8 @@ mod store_files;
 pub use config::{Config, Governance, Prime, SUPPORTED_VERSION, Search, ShelfLife, TierWeights};
 pub use error::{Error, Result};
 pub use ids::{
-    PAYLOAD_TYPES, REGISTRY, TypeSpec, effective_type, hint_fields, id_key_field, is_named_type,
-    payload_fields, record_id, type_spec,
+    PAYLOAD_TYPES, REGISTRY, Registry, Row, TypeSpec, effective_type, hint_fields, id_key_field,
+    is_named_type, payload_fields, record_id, type_spec,
 };
 // the JS-quirk facade: the command-consumed jsval items re-export at
 // the root like the records/schema constants (one convention;

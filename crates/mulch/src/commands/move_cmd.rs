@@ -132,6 +132,7 @@ pub(super) fn run(
 
     let summary = record_summary(&record);
     let incoming = incoming_references(
+        store.registry(),
         store.root(),
         &source_file,
         &target_file,
@@ -154,7 +155,7 @@ pub(super) fn run(
         // Target: the seam's append-verbatim policy (existing bytes
         // preserved, newline guard included).
         let mut moved = record.clone();
-        mulch::assign_missing_id(&mut moved);
+        mulch::assign_missing_id(store.registry(), &mut moved);
         let line = serde_json::to_string(&moved).unwrap_or_default();
         store
             .append_domain_line(target, &line)
@@ -235,6 +236,7 @@ pub(super) fn run(
 /// Inbound references: every `expertise/*.jsonl` except the source and
 /// target files (reference scans the directory).
 fn incoming_references(
+    registry: &mulch::Registry,
     store_root: &std::path::Path,
     source_file: &std::path::Path,
     target_file: &std::path::Path,
@@ -262,7 +264,7 @@ fn incoming_references(
         let domain = file
             .file_stem()
             .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
-        let Ok(records) = mulch::read_strict(&file, true) else {
+        let Ok(records) = mulch::read_strict(registry, &file, true) else {
             continue;
         };
         for line in records {

@@ -164,6 +164,13 @@ impl Config {
             .unwrap_or_else(|| yaml_str(SUPPORTED_VERSION))
     }
 
+    /// The raw `custom_types` value (config order preserved; the
+    /// registry view parses and validates it).
+    #[must_use]
+    pub fn custom_types_value(&self) -> Option<&serde_yaml::Value> {
+        self.raw.get(yaml_str("custom_types"))
+    }
+
     /// The `domains` mapping (empty when absent), order preserved.
     fn domains_mapping(&self) -> serde_yaml::Value {
         self.raw

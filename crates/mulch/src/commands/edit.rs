@@ -197,7 +197,7 @@ mod gate_tests {
     fn plain_gate_renders_header_and_indented_subs() {
         let failure = updated_record_failed(
             &[
-                SubError::Missing("content"),
+                SubError::Missing("content".into()),
                 SubError::TypeConst,
                 SubError::OneOfTail,
             ],
@@ -214,7 +214,7 @@ mod gate_tests {
     /// stderr, pinned by the battery).
     #[test]
     fn json_gate_joins_subs_behind_the_wrapper() {
-        let failure = updated_record_failed(&[SubError::Missing("content")], true);
+        let failure = updated_record_failed(&[SubError::Missing("content".into())], true);
         assert_eq!(
             failure.envelope["error"],
             "Updated record failed schema validation:  must have required property 'content'"

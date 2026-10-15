@@ -69,6 +69,16 @@ pub enum Error {
         path: PathBuf,
     },
 
+    /// A `custom_types` block violates the registry validation law
+    /// (mulch-b4bd): the message is the reference's verbatim
+    /// validation text; the CLI renders it through the global
+    /// config-error surface.
+    #[error("{message}")]
+    CustomTypes {
+        /// The validation failure message.
+        message: String,
+    },
+
     /// `mulch.config.yaml` is not valid YAML or not a mapping.
     #[error("parsing config {path}")]
     ConfigParse {

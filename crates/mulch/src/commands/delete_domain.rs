@@ -32,9 +32,11 @@ pub(super) fn run(
 
     // Strict read: malformed lines abort before anything is deleted.
     let file = store.domain_path(domain);
-    let records = mulch::read_strict(&file, opts.allow_unknown_types).map_err(|source| {
-        Failure::handled_on_stderr("delete-domain", crate::commands::render_core_error(&source))
-    })?;
+    let records = mulch::read_strict(store.registry(), &file, opts.allow_unknown_types).map_err(
+        |source| {
+            Failure::handled_on_stderr("delete-domain", crate::commands::render_core_error(&source))
+        },
+    )?;
     let record_count = records.len();
     let plural = if record_count == 1 {
         "record"

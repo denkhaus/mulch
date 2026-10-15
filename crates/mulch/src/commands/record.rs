@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 use std::io::Read as _;
 
-use mulch::{id_key_field, js_string, record_id, schema, truthy_str};
+use mulch::{js_string, record_id, schema, truthy_str};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, RecordArgs};
@@ -16,6 +16,7 @@ use crate::output::{Failure, failure_envelope, print_json, print_line, success_e
 /// evidence?, tags?, relates_to?, supersedes?, outcomes?,
 /// dir_anchors?, payload…, files?, id).
 fn build_record(
+    registry: &mulch::Registry,
     args: &RecordArgs,
     recorded_at: &str,
     evidence: Option<Map<String, Value>>,
@@ -117,12 +118,13 @@ fn build_record(
     // Reference-list pattern validation runs on the built record and
     // surfaces the reference's schema-validation blob (probe 3).
     if let schema::FullVerdict::Invalid { subs, hint } =
-        schema::full_verdict(&Value::Object(record.clone()))
+        schema::full_verdict(registry, &Value::Object(record.clone()))
     {
         return Err(ref_validation_failure(&subs, &hint));
     }
 
-    let id_key_value = truthy_str(flags.resolved(id_key_field(&record_type))).unwrap_or_default();
+    let id_key_value =
+        truthy_str(flags.resolved(registry.id_key_field(&record_type))).unwrap_or_default();
     let id = record_id(&record_type, id_key_value);
     record.insert("id".into(), Value::String(id));
     Ok(record)
@@ -367,7 +369,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     }
 
     let recorded_at = now_iso();
-    let record = match build_record(args, &recorded_at, evidence_map(args)) {
+    let record = match build_record(store.registry(), args, &recorded_at, evidence_map(args)) {
         Ok(built) => built,
         Err(mut failure) => {
             // Parity contract: the --json error drops the `Error: `
@@ -401,7 +403,12 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     // with merged outcomes, anonymous ones skip, --force falls through
     // to the create path below.
     let working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
-    match mulch::upsert_plan(&working, &Value::Object(record.clone()), args.force) {
+    match mulch::upsert_plan(
+        store.registry(),
+        &working,
+        &Value::Object(record.clone()),
+        args.force,
+    ) {
         mulch::UpsertPlan::Skip { index } => {
             skip_advisory(opts, args, index, record);
             return Ok(());
@@ -663,7 +670,7 @@ fn stdin_batch(
 
         // Schema validation on the enriched record (reference blobs).
         if let schema::FullVerdict::Invalid { subs, hint } =
-            schema::full_verdict(&Value::Object(line.clone()))
+            schema::full_verdict(store.registry(), &Value::Object(line.clone()))
         {
             // Reference batch entry: `Record ${i}: ${subs}` with the
             // type hint only when the record declares a registered
@@ -685,7 +692,7 @@ fn stdin_batch(
         }
         let record_type =
             mulch::effective_type(line.get("type").and_then(Value::as_str)).to_string();
-        let id_key = id_key_field(&record_type);
+        let id_key = store.registry().id_key_field(&record_type);
         let id_value = line
             .get(id_key)
             .and_then(Value::as_str)
@@ -696,7 +703,12 @@ fn stdin_batch(
         // against the working copy, never the id (mulch-ccf6). The
         // enriched record is safe here: the plan compares only `type`
         // and the type's dedup field, which enrichment never touches.
-        let plan = mulch::upsert_plan(&working, &Value::Object(line.clone()), args.force);
+        let plan = mulch::upsert_plan(
+            store.registry(),
+            &working,
+            &Value::Object(line.clone()),
+            args.force,
+        );
 
         if args.dry_run {
             // Count-only pass over the unmutated working copy

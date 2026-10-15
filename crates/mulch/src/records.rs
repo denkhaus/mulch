@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::ids::{PAYLOAD_TYPES, id_key_field, is_named_type, record_id};
+use crate::ids::{id_key_field, record_id};
 use crate::jsval::{js_dedup_eq, js_key_sorted, parse_non_negative_number, truthy_str, value_text};
 
 /// One parsed record with its physical line number.
@@ -42,7 +42,11 @@ impl LineRecord {
 /// [`Error::MalformedLine`] for unparsable lines,
 /// [`Error::UnknownRecordType`] for unregistered types (unless
 /// `allow_unknown`), [`Error::Read`] for I/O failures.
-pub fn read_strict(path: &Path, allow_unknown: bool) -> Result<Vec<LineRecord>> {
+pub fn read_strict(
+    registry: &crate::ids::Registry,
+    path: &Path,
+    allow_unknown: bool,
+) -> Result<Vec<LineRecord>> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -89,7 +93,7 @@ pub fn read_strict(path: &Path, allow_unknown: bool) -> Result<Vec<LineRecord>> 
         }
         normalize_legacy_outcome(&mut record);
         let kind = record.get("type").and_then(Value::as_str).unwrap_or("");
-        if !allow_unknown && !kind.is_empty() && !PAYLOAD_TYPES.contains(&kind) {
+        if !allow_unknown && !kind.is_empty() && !registry.is_known(kind) {
             return Err(Error::UnknownRecordType {
                 path:        path.to_path_buf(),
                 line:        index + 1,
@@ -157,15 +161,19 @@ fn normalize_legacy_outcome(record: &mut Value) {
     object.insert("outcomes".into(), Value::Array(vec![Value::Object(entry)]));
 }
 
-pub fn find_duplicate<'a, I>(records: I, candidate: &Value) -> Option<usize>
+pub fn find_duplicate<'a, I>(
+    registry: &crate::ids::Registry,
+    records: I,
+    candidate: &Value,
+) -> Option<usize>
 where
     I: IntoIterator<Item = &'a Value>,
 {
     let record_type = candidate.get("type").and_then(Value::as_str)?;
-    if !PAYLOAD_TYPES.contains(&record_type) {
-        return None;
-    }
-    let key = id_key_field(record_type);
+    let row = registry.row(record_type)?;
+    // content_hash never matches; the row's dedup is None then
+    // (mulch-b4bd).
+    let key = row.dedup.as_deref()?;
     let new_value = candidate.get(key);
     records.into_iter().position(|record| {
         record.get("type").and_then(Value::as_str) == Some(record_type)
@@ -277,12 +285,21 @@ pub enum UpsertPlan {
 /// (existing records plus this batch's own appends — within-batch
 /// duplicates upsert too; a dry-run pass keeps `working` unmutated so
 /// within-batch duplicates count as creates there).
-pub fn upsert_plan(working: &[Value], candidate: &Value, force: bool) -> UpsertPlan {
-    if !force && let Some(index) = find_duplicate(working, candidate) {
-        let named = candidate
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(is_named_type);
+pub fn upsert_plan(
+    registry: &crate::ids::Registry,
+    working: &[Value],
+    candidate: &Value,
+    force: bool,
+) -> UpsertPlan {
+    if !force && let Some(index) = find_duplicate(registry, working, candidate) {
+        let named = registry
+            .row(
+                candidate
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+            .is_some_and(|row| row.named);
         if named {
             let incoming = candidate.as_object().cloned().unwrap_or_default();
             let merged = merge_outcomes(&working[index], incoming);
@@ -317,11 +334,15 @@ pub fn merge_outcomes(existing: &Value, mut incoming: Map<String, Value>) -> Map
 /// # Errors
 ///
 /// [`Error::Write`] on I/O failure.
-pub fn write_records(path: &Path, records: &[Value]) -> Result<()> {
+pub fn write_records(
+    registry: &crate::ids::Registry,
+    path: &Path,
+    records: &[Value],
+) -> Result<()> {
     let mut body = String::new();
     for record in records {
         let mut record = record.clone();
-        assign_missing_id(&mut record);
+        assign_missing_id(registry, &mut record);
         body.push_str(&serde_json::to_string(&record).unwrap_or_default());
         body.push('\n');
     }
@@ -349,7 +370,7 @@ pub fn write_records(path: &Path, records: &[Value]) -> Result<()> {
 }
 
 /// Assigns the deterministic id when a record lacks one.
-pub fn assign_missing_id(record: &mut Value) {
+pub fn assign_missing_id(registry: &crate::ids::Registry, record: &mut Value) {
     let Some(object) = record.as_object_mut() else {
         return;
     };
@@ -357,8 +378,9 @@ pub fn assign_missing_id(record: &mut Value) {
         return;
     }
     let kind = crate::ids::effective_type(object.get("type").and_then(Value::as_str)).to_string();
+    let key_field = registry.id_key_field(&kind);
     let key_value = object
-        .get(id_key_field(&kind))
+        .get(key_field)
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
@@ -567,6 +589,13 @@ impl Counter {
 
 #[cfg(test)]
 mod tests {
+
+    /// The builtins-only registry for the static-law pins below
+    /// (custom-types law pins live in custom_types.rs).
+    fn registry() -> crate::ids::Registry {
+        crate::ids::Registry::builtins()
+    }
+
     use serde_json::json;
 
     use super::*;
@@ -579,16 +608,28 @@ mod tests {
         ];
         // same name, different id: still the duplicate
         assert_eq!(
-            find_duplicate(store.iter(), &json!({"type": "pattern", "name": "p"})),
+            find_duplicate(
+                &registry(),
+                store.iter(),
+                &json!({"type": "pattern", "name": "p"})
+            ),
             Some(0)
         );
         assert_eq!(
-            find_duplicate(store.iter(), &json!({"type": "pattern", "name": "zz"})),
+            find_duplicate(
+                &registry(),
+                store.iter(),
+                &json!({"type": "pattern", "name": "zz"})
+            ),
             None
         );
         // same dedup VALUE on another type never matches
         assert_eq!(
-            find_duplicate(store.iter(), &json!({"type": "guide", "name": "p"})),
+            find_duplicate(
+                &registry(),
+                store.iter(),
+                &json!({"type": "guide", "name": "p"})
+            ),
             None
         );
     }
@@ -598,22 +639,37 @@ mod tests {
         let bare = [json!({"type": "failure", "resolution": "r"})];
         // both sides missing the dedup field match (undefined === undefined)
         assert_eq!(
-            find_duplicate(bare.iter(), &json!({"type": "failure", "resolution": "r2"})),
+            find_duplicate(
+                &registry(),
+                bare.iter(),
+                &json!({"type": "failure", "resolution": "r2"})
+            ),
             Some(0)
         );
         let store = [json!({"type": "failure", "description": "d"})];
         // one side missing does NOT match a present value
         assert_eq!(
-            find_duplicate(store.iter(), &json!({"type": "failure", "resolution": "r"})),
+            find_duplicate(
+                &registry(),
+                store.iter(),
+                &json!({"type": "failure", "resolution": "r"})
+            ),
             None
         );
         // unregistered types never duplicate (no registry definition)
         assert_eq!(
-            find_duplicate(store.iter(), &json!({"type": "custom", "description": "d"})),
+            find_duplicate(
+                &registry(),
+                store.iter(),
+                &json!({"type": "custom", "description": "d"})
+            ),
             None
         );
         // a record without a type never duplicates
-        assert_eq!(find_duplicate(store.iter(), &json!({"name": "p"})), None);
+        assert_eq!(
+            find_duplicate(&registry(), store.iter(), &json!({"name": "p"})),
+            None
+        );
     }
 
     #[test]
@@ -621,28 +677,41 @@ mod tests {
         // numbers compare as f64: 1 matches 1.0 (same JS number)
         let store = [json!({"type": "pattern", "name": 1})];
         assert_eq!(
-            find_duplicate(store.iter(), &json!({"type": "pattern", "name": 1.0})),
+            find_duplicate(
+                &registry(),
+                store.iter(),
+                &json!({"type": "pattern", "name": 1.0})
+            ),
             Some(0)
         );
         // like-typed only: "1" never matches 1
         assert_eq!(
-            find_duplicate(store.iter(), &json!({"type": "pattern", "name": "1"})),
+            find_duplicate(
+                &registry(),
+                store.iter(),
+                &json!({"type": "pattern", "name": "1"})
+            ),
             None
         );
         // null only matches null, never a present value
         let nulls = [json!({"type": "pattern", "name": null})];
         assert_eq!(
-            find_duplicate(nulls.iter(), &json!({"type": "pattern", "name": null})),
+            find_duplicate(
+                &registry(),
+                nulls.iter(),
+                &json!({"type": "pattern", "name": null})
+            ),
             Some(0)
         );
         assert_eq!(
-            find_duplicate(nulls.iter(), &json!({"type": "pattern"})),
+            find_duplicate(&registry(), nulls.iter(), &json!({"type": "pattern"})),
             None
         );
         // objects/arrays never match (JS === compares identity)
         let objects = [json!({"type": "pattern", "name": {"a": 1}})];
         assert_eq!(
             find_duplicate(
+                &registry(),
                 objects.iter(),
                 &json!({"type": "pattern", "name": {"a": 1}})
             ),
@@ -650,7 +719,11 @@ mod tests {
         );
         let arrays = [json!({"type": "pattern", "name": [1]})];
         assert_eq!(
-            find_duplicate(arrays.iter(), &json!({"type": "pattern", "name": [1]})),
+            find_duplicate(
+                &registry(),
+                arrays.iter(),
+                &json!({"type": "pattern", "name": [1]})
+            ),
             None
         );
     }
@@ -658,6 +731,10 @@ mod tests {
 
 #[cfg(test)]
 mod upsert_plan_tests {
+
+    fn registry() -> crate::ids::Registry {
+        crate::ids::Registry::builtins()
+    }
     use serde_json::json;
 
     use super::{UpsertPlan, upsert_plan};
@@ -670,7 +747,7 @@ mod upsert_plan_tests {
         ];
         // named duplicate: Update with outcomes merged existing-first
         let incoming = json!({"type": "pattern", "name": "p", "outcomes": [{"status": "failure"}]});
-        match upsert_plan(&working, &incoming, false) {
+        match upsert_plan(&registry(), &working, &incoming, false) {
             UpsertPlan::Update { index, merged } => {
                 assert_eq!(index, 0);
                 assert_eq!(
@@ -682,6 +759,7 @@ mod upsert_plan_tests {
         }
         // anonymous duplicate: Skip
         match upsert_plan(
+            &registry(),
             &working,
             &json!({"type": "convention", "content": "c"}),
             false,
@@ -691,12 +769,22 @@ mod upsert_plan_tests {
         }
         // force appends even on a duplicate
         assert!(matches!(
-            upsert_plan(&working, &json!({"type": "pattern", "name": "p"}), true),
+            upsert_plan(
+                &registry(),
+                &working,
+                &json!({"type": "pattern", "name": "p"}),
+                true
+            ),
             UpsertPlan::Create
         ));
         // no match: Create
         assert!(matches!(
-            upsert_plan(&working, &json!({"type": "pattern", "name": "q"}), false),
+            upsert_plan(
+                &registry(),
+                &working,
+                &json!({"type": "pattern", "name": "q"}),
+                false
+            ),
             UpsertPlan::Create
         ));
     }
@@ -778,6 +866,10 @@ mod outcome_entry_tests {
 
 #[cfg(test)]
 mod lenient_tests {
+
+    fn registry() -> crate::ids::Registry {
+        crate::ids::Registry::builtins()
+    }
     use super::*;
 
     #[test]
@@ -810,16 +902,16 @@ mod lenient_tests {
         let path = dir.join("d.jsonl");
 
         std::fs::write(&path, "[1,2,3]\n").expect("writable");
-        let records = read_strict(&path, false).expect("arrays are records");
+        let records = read_strict(&registry(), &path, false).expect("arrays are records");
         assert_eq!(records.len(), 1);
 
         std::fs::write(&path, "5\n").expect("writable");
-        let error = read_strict(&path, false).expect_err("scalars are errors");
+        let error = read_strict(&registry(), &path, false).expect_err("scalars are errors");
         assert!(matches!(error, Error::NotAnObject { line: 1, .. }));
 
         std::fs::write(&path, "null\n").expect("writable");
         assert!(matches!(
-            read_strict(&path, false),
+            read_strict(&registry(), &path, false),
             Err(Error::NotAnObject { .. })
         ));
 

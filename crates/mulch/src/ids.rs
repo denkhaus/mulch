@@ -30,6 +30,128 @@ pub struct TypeSpec {
     /// The reference branch's `optional` field list (fields the type
     /// declares but does not require; anything else is additional).
     pub optional: &'static [&'static str],
+    /// The `extracts_files` field (a string array in the schema),
+    /// when the builtin has one.
+    pub files:    Option<&'static str>,
+}
+
+/// One merged registry row — a builtin or a validated custom type.
+/// The config-aware view every registry consumer works over
+/// (mulch-b4bd): schema branches, duplicate detection, id
+/// generation, and the doctor registry surfaces.
+#[derive(Debug, PartialEq)]
+pub struct Row {
+    /// The type name (builtins in the reference's fixed order first,
+    /// then customs in config order).
+    pub name:        String,
+    /// Required fields in schema/write order (parent-first for
+    /// customs).
+    pub payload:     Vec<String>,
+    /// The optional field list.
+    pub optional:    Vec<String>,
+    /// The id key field (`content_hash` reads an absent field — the
+    /// id hashes the type and an empty value).
+    pub id_key:      String,
+    /// The dedup field; `None` is the never-matching `content_hash`
+    /// mode.
+    pub dedup:       Option<String>,
+    /// Whether duplicates upsert (named) or skip (anonymous):
+    /// builtins per the static table, customs when their dedup key
+    /// is a field (reference `isNamedType`).
+    pub named:       bool,
+    /// A builtin row (doctor's registry counts).
+    pub builtin:     bool,
+    /// The field that is a string array instead of a plain string
+    /// (`extracts_files` resolved with `files_field`).
+    pub files_array: Option<String>,
+}
+
+/// The merged registry: the six builtins plus the config's
+/// `custom_types` rows (mulch-b4bd). Built from the store's config
+/// at open time; the builtins-only view serves configless contexts.
+#[derive(Debug, PartialEq)]
+pub struct Registry {
+    rows: Vec<Row>,
+}
+
+impl Registry {
+    /// The builtins-only view (no store / no custom_types).
+    #[must_use]
+    pub fn builtins() -> Self {
+        Self {
+            rows: REGISTRY.iter().map(Row::from_spec).collect(),
+        }
+    }
+
+    /// The merged view over a config's `custom_types` block; every
+    /// entry is validated (the reference `validateCustomTypeConfig`
+    /// law) before its row is built.
+    ///
+    /// # Errors
+    ///
+    /// The first validation failure's message, verbatim (the CLI
+    /// renders it through the global config-error surface).
+    pub fn from_config(config: &crate::config::Config) -> Result<Self, String> {
+        let mut rows: Vec<Row> = REGISTRY.iter().map(Row::from_spec).collect();
+        for (name, cfg) in crate::custom_types::entries(config.custom_types_value()) {
+            crate::custom_types::validate(&name, &cfg)?;
+            let row = crate::custom_types::build_row(&name, &cfg);
+            let named = row.dedup.is_some();
+            rows.push(Row {
+                name: row.name,
+                payload: row.required,
+                optional: row.optional,
+                id_key: row.id_key,
+                dedup: row.dedup,
+                named,
+                builtin: false,
+                files_array: row.files_array,
+            });
+        }
+        Ok(Self { rows })
+    }
+
+    /// All rows: builtins first (fixed order), then customs in
+    /// config order (the oneOf and doctor walk order).
+    #[must_use]
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+
+    /// Whether a type is registered (builtin or custom).
+    #[must_use]
+    pub fn is_known(&self, record_type: &str) -> bool {
+        self.rows.iter().any(|row| row.name == record_type)
+    }
+
+    /// The row for a type.
+    #[must_use]
+    pub fn row(&self, record_type: &str) -> Option<&Row> {
+        self.rows.iter().find(|row| row.name == record_type)
+    }
+
+    /// The id key field for a type (unknown types key on content,
+    /// like the static builtin helper).
+    #[must_use]
+    pub fn id_key_field(&self, record_type: &str) -> &str {
+        self.row(record_type)
+            .map_or("content", |row| row.id_key.as_str())
+    }
+}
+
+impl Row {
+    fn from_spec(spec: &TypeSpec) -> Self {
+        Self {
+            name:        spec.name.to_string(),
+            payload:     spec.payload.iter().map(|f| (*f).to_string()).collect(),
+            optional:    spec.optional.iter().map(|f| (*f).to_string()).collect(),
+            id_key:      spec.id_key.to_string(),
+            dedup:       Some(spec.id_key.to_string()),
+            named:       spec.named,
+            builtin:     true,
+            files_array: spec.files.map(str::to_string),
+        }
+    }
 }
 
 /// The six built-in types in the reference's fixed order.
@@ -40,6 +162,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         id_key:   "content",
         named:    false,
         optional: &[],
+        files:    None,
     },
     TypeSpec {
         name:     "pattern",
@@ -47,6 +170,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         id_key:   "name",
         named:    true,
         optional: &["files"],
+        files:    Some("files"),
     },
     TypeSpec {
         name:     "failure",
@@ -54,6 +178,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         id_key:   "description",
         named:    false,
         optional: &[],
+        files:    None,
     },
     TypeSpec {
         name:     "decision",
@@ -61,6 +186,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         id_key:   "title",
         named:    true,
         optional: &["date"],
+        files:    None,
     },
     TypeSpec {
         name:     "reference",
@@ -68,6 +194,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         id_key:   "name",
         named:    true,
         optional: &["files"],
+        files:    Some("files"),
     },
     TypeSpec {
         name:     "guide",
@@ -75,6 +202,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         id_key:   "name",
         named:    true,
         optional: &[],
+        files:    None,
     },
 ];
 
@@ -141,24 +269,27 @@ mod tests {
     fn registry_rows_pin_the_reference_table() {
         // The literals this registry replaced (verified against the
         // reference builtins.ts; mulch-a3de's probe-diff step).
-        let expected: [(&str, &[&str], &str, bool); 6] = [
-            ("convention", &["content"], "content", false),
-            ("pattern", &["name", "description"], "name", true),
-            (
-                "failure",
-                &["description", "resolution"],
-                "description",
-                false,
-            ),
-            ("decision", &["title", "rationale"], "title", true),
-            ("reference", &["name", "description"], "name", true),
-            ("guide", &["name", "description"], "name", true),
-        ];
-        for (spec, (name, payload, id_key, named)) in REGISTRY.iter().zip(expected) {
-            assert_eq!(spec.name, name);
+        for spec in REGISTRY {
+            let expected = match spec.name {
+                "convention" => (&["content"][..], "content", false, None),
+                "pattern" | "reference" => {
+                    (&["name", "description"][..], "name", true, Some("files"))
+                }
+                "failure" => (
+                    &["description", "resolution"][..],
+                    "description",
+                    false,
+                    None,
+                ),
+                "decision" => (&["title", "rationale"][..], "title", true, None),
+                "guide" => (&["name", "description"][..], "name", true, None),
+                other => panic!("unexpected registry row {other}"),
+            };
+            let (payload, id_key, named, files) = expected;
             assert_eq!(spec.payload, payload);
             assert_eq!(spec.id_key, id_key);
             assert_eq!(spec.named, named);
+            assert_eq!(spec.files, files);
         }
         assert_eq!(
             PAYLOAD_TYPES,

@@ -30,6 +30,32 @@ pub(crate) struct Failure {
 }
 
 impl Failure {
+    /// The global config-error surface (mulch-b4bd): every store
+    /// command fails before doing work when a `custom_types` block
+    /// violates the registry validation law. Plain mode prints the
+    /// two reference lines on stderr; json mode prints the envelope
+    /// on stderr — with `command: "init"`, the reference's global
+    /// registry-init handler hardcodes it regardless of the actual
+    /// command (probe-pinned vs ml 0.10.7).
+    pub(crate) fn config_error(message: &str) -> Self {
+        let mut body = Map::new();
+        body.insert("success".into(), Value::Bool(false));
+        body.insert("command".into(), Value::String("init".into()));
+        body.insert(
+            "error".into(),
+            Value::String(format!("Config error: {message}")),
+        );
+        Self {
+            message:            format!(
+                "Config error: {message}\nEdit .mulch/mulch.config.yaml to resolve, or run `mulch doctor` for details."
+            ),
+            code:               EXIT_ERROR,
+            envelope:           Value::Object(body),
+            envelope_to_stderr: true,
+            rendered:           false,
+        }
+    }
+
     /// Builds a handled error whose JSON envelope renders on stderr
     /// (the per-command channel contract; probe-pinned).
     pub(crate) fn handled_on_stderr(command: &str, error: impl Into<String>) -> Self {

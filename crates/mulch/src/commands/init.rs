@@ -35,6 +35,15 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     // no such file).
     let _writer_lock = mulch::lock::WriterLock::acquire(&store_root)
         .map_err(|source| Failure::handled("init", crate::output::chain_message(&source)))?;
+    // The reference builds its registry at CLI start for EVERY
+    // command — `init` included: an existing config with invalid
+    // custom_types fails the same global way (probe-pinned).
+    if let Ok(text) = std::fs::read_to_string(store_root.join("mulch.config.yaml"))
+        && let Ok(config) = mulch::Config::parse(&text)
+        && let Err(message) = mulch::Registry::from_config(&config)
+    {
+        return Err(Failure::config_error(&message));
+    }
     write_missing(&store_root.join(".gitignore"), LOCK_GITIGNORE)?;
 
     write_missing(&store_root.join("README.md"), README_TEMPLATE)?;

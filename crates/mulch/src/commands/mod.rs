@@ -88,7 +88,10 @@ fn open_located(
             };
             Err(Failure::handled_on_stderr(command, message))
         }
-        Err(source) => Err(Failure::handled(command, chain_message_from(&source))),
+        Err(source) => Err(match &source {
+            mulch::Error::CustomTypes { message } => Failure::config_error(message),
+            _ => Failure::handled(command, chain_message_from(&source)),
+        }),
     }
 }
 
@@ -273,7 +276,7 @@ pub(crate) fn updated_record_verdict(
                         .is_some_and(|object| object.contains_key("outcome")))
     });
     if !raw_had_outcome {
-        return mulch::schema::full_verdict(updated);
+        return mulch::schema::full_verdict(store.registry(), updated);
     }
     // Key presence alone decides the additional-property report; the
     // reference's undefined value is unrepresentable in JSON, and
@@ -282,7 +285,7 @@ pub(crate) fn updated_record_verdict(
     if let Some(object) = augmented.as_object_mut() {
         object.insert("outcome".into(), serde_json::Value::Null);
     }
-    mulch::schema::full_verdict(&augmented)
+    mulch::schema::full_verdict(store.registry(), &augmented)
 }
 
 /// The single-id prologue every per-record command opens with: open

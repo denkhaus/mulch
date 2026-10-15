@@ -51,13 +51,16 @@ pub enum StoreLocation {
 /// Embedders that mutate a store must open it exclusively.
 #[derive(Debug)]
 pub struct StoreFiles {
-    root:   PathBuf,
-    config: Config,
+    root:     PathBuf,
+    config:   Config,
+    /// The merged type registry (builtins + validated custom_types),
+    /// built once at open (mulch-b4bd).
+    registry: crate::ids::Registry,
     /// The writer lock held by exclusive sessions; `None` for
     /// read-only sessions. Held for its drop side effect — releasing
     /// the lock — never read.
     #[expect(dead_code, reason = "holding the lock is the field's whole purpose")]
-    lock:   Option<crate::lock::WriterLock>,
+    lock:     Option<crate::lock::WriterLock>,
 }
 
 impl StoreFiles {
@@ -113,9 +116,12 @@ impl StoreFiles {
         })?;
         let config = Config::parse(&text)?;
         config.ensure_supported()?;
+        let registry = crate::ids::Registry::from_config(&config)
+            .map_err(|message| Error::CustomTypes { message })?;
         Ok(StoreLocation::Open(Self {
             root: root.to_path_buf(),
             config,
+            registry,
             lock,
         }))
     }
@@ -137,6 +143,12 @@ impl StoreFiles {
     /// The parsed config.
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// The merged type registry (builtins + the config's
+    /// custom_types, validated at open; mulch-b4bd).
+    pub fn registry(&self) -> &crate::ids::Registry {
+        &self.registry
     }
 
     /// Live domain names in config order.
@@ -246,7 +258,7 @@ impl StoreFiles {
     /// [`Error::UnknownRecordType`] for unregistered types (unless
     /// `allow_unknown`), [`Error::Read`] for I/O failures.
     pub fn read_records(&self, domain: &str, allow_unknown: bool) -> Result<Vec<LineRecord>> {
-        read_strict(&self.domain_path(domain), allow_unknown)
+        read_strict(&self.registry, &self.domain_path(domain), allow_unknown)
     }
 
     /// A domain file's modification time (a read need the reporting
@@ -274,7 +286,7 @@ impl StoreFiles {
     ///
     /// [`Error::Write`] on I/O.
     pub fn rewrite_domain(&self, domain: &str, records: &[Value]) -> Result<()> {
-        write_records(&self.domain_path(domain), records)
+        write_records(&self.registry, &self.domain_path(domain), records)
     }
 
     /// Appends one line verbatim (existing bytes preserved).

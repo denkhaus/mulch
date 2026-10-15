@@ -8,7 +8,7 @@ use std::collections::hash_map::Entry as HashMapEntry;
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
-use mulch::schema::{doctor_detail, survives_repair};
+use mulch::schema::doctor_detail;
 use mulch::stale::{StaleRule, StaleVerdict};
 use serde_json::{Map, Value};
 
@@ -78,10 +78,10 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
             return Err(no_store_report(opts));
         }
         Err(source) => {
-            return Err(Failure::handled(
-                "doctor",
-                crate::output::chain_message(&source),
-            ));
+            return Err(match &source {
+                mulch::Error::CustomTypes { message } => Failure::config_error(message),
+                _ => Failure::handled("doctor", crate::output::chain_message(&source)),
+            });
         }
     };
 
@@ -220,9 +220,9 @@ fn run_checks(
         },
         jsonl_integrity(domains),
         legacy_outcome(domains),
-        schema_validation(domains),
-        unknown_types(domains, opts.allow_unknown_types),
-        type_registry(domains),
+        schema_validation(store.registry(), domains),
+        unknown_types(store.registry(), domains, opts.allow_unknown_types),
+        type_registry(store.registry(), domains),
         Check {
             name:    "domain-rules-compatibility",
             status:  Status::Pass,
@@ -240,7 +240,7 @@ fn run_checks(
         },
         stale_records(rule, domains),
         orphaned_domains(store),
-        duplicates(domains),
+        duplicates(store.registry(), domains),
         file_anchors(domains, project_root),
         governance_limits(governance, domains),
         Check {
@@ -337,12 +337,13 @@ fn legacy_outcome(domains: &[DomainLines]) -> Check {
     }
 }
 
-fn schema_validation(domains: &[DomainLines]) -> Check {
+fn schema_validation(registry: &mulch::Registry, domains: &[DomainLines]) -> Check {
     let bad: Vec<String> = domains
         .iter()
         .flat_map(|d| {
             records_of(d).filter_map(|(line, record)| {
-                doctor_detail(record).map(|message| format!("{}:{} - {}", d.domain, line, message))
+                doctor_detail(registry, record)
+                    .map(|message| format!("{}:{} - {}", d.domain, line, message))
             })
         })
         .collect();
@@ -365,8 +366,16 @@ fn schema_validation(domains: &[DomainLines]) -> Check {
     }
 }
 
-fn unknown_types(domains: &[DomainLines], allow_unknown: bool) -> Check {
-    let known: Vec<&str> = mulch::REGISTRY.iter().map(|spec| spec.name).collect();
+fn unknown_types(
+    registry: &mulch::Registry,
+    domains: &[DomainLines],
+    allow_unknown: bool,
+) -> Check {
+    let known: Vec<&str> = registry
+        .rows()
+        .iter()
+        .map(|row| row.name.as_str())
+        .collect();
     let bad: Vec<String> = domains
         .iter()
         .flat_map(|d| {
@@ -397,7 +406,7 @@ fn unknown_types(domains: &[DomainLines], allow_unknown: bool) -> Check {
     }
 }
 
-fn type_registry(domains: &[DomainLines]) -> Check {
+fn type_registry(registry: &mulch::Registry, domains: &[DomainLines]) -> Check {
     let mut counts = std::collections::BTreeMap::new();
     for domain in domains {
         for (_, record) in records_of(domain) {
@@ -410,18 +419,25 @@ fn type_registry(domains: &[DomainLines]) -> Check {
             }
         }
     }
-    let details: Vec<String> = mulch::REGISTRY
+    let details: Vec<String> = registry
+        .rows()
         .iter()
-        .map(|spec| {
-            let count = counts.get(spec.name).copied().unwrap_or(0);
+        .map(|row| {
+            let count = counts.get(row.name.as_str()).copied().unwrap_or(0);
             let plural = if count == 1 { "record" } else { "records" };
-            format!("{} (built-in): {count} {plural}", spec.name)
+            let kind = if row.builtin { "built-in" } else { "custom" };
+            format!("{} ({kind}): {count} {plural}", row.name)
         })
         .collect();
+    let builtins = registry.rows().iter().filter(|row| row.builtin).count();
+    let customs = registry.rows().len() - builtins;
     Check {
         name: "type-registry",
         status: Status::Pass,
-        message: "6 type(s) registered: 6 built-in, 0 custom".into(),
+        message: format!(
+            "{} type(s) registered: {builtins} built-in, {customs} custom",
+            registry.rows().len()
+        ),
         fixable: false,
         details,
     }
@@ -505,13 +521,14 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
 /// — a content-hash id whose record was edited in place — is invisible
 /// to the reference's dedup-field match. We report it as our own
 /// fail-class finding after the reference details, never auto-fixed.
-fn duplicates(domains: &[DomainLines]) -> Check {
+fn duplicates(registry: &mulch::Registry, domains: &[DomainLines]) -> Check {
     let mut reference_details = Vec::new();
     let mut divergent_details = Vec::new();
     for domain in domains {
         let records: Vec<&Value> = records_of(domain).map(|(_, record)| record).collect();
         for (index, record) in records.iter().enumerate().skip(1) {
-            let Some(matched) = mulch::find_duplicate(records[..index].iter().copied(), record)
+            let Some(matched) =
+                mulch::find_duplicate(registry, records[..index].iter().copied(), record)
             else {
                 continue;
             };
@@ -902,7 +919,8 @@ fn apply_fixes(
     }
     if gates.schema {
         for domain in domains {
-            if let Some(count) = value_line_pass(store, &domain.domain, survives_repair)? {
+            let keep = |record: &Value| mulch::schema::survives_repair(store.registry(), record);
+            if let Some(count) = value_line_pass(store, &domain.domain, keep)? {
                 fixes.push(format!(
                     "Removed {count} invalid record(s) from {}",
                     domain.domain

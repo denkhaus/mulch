@@ -64,7 +64,7 @@ pub enum SubError {
     MustBeObject,
     /// A required key is absent (key presence — a `null` value counts
     /// as present and fails the property type check instead).
-    Missing(&'static str),
+    Missing(String),
     /// A key outside the branch's declared properties.
     Additional,
     /// A key outside a NESTED object's declared properties
@@ -148,18 +148,18 @@ pub enum Verdict {
 }
 
 /// The oneOf verdict for one parsed record.
-pub fn verdict(record: &serde_json::Value) -> Verdict {
+pub fn verdict(registry: &crate::ids::Registry, record: &serde_json::Value) -> Verdict {
     let Some(object) = record.as_object() else {
         // A non-object line is not a record; ajv's wrapper type fires.
         return Verdict::OneOf(vec![SubError::MustBeObject]);
     };
     let record_type = object.get("type").and_then(serde_json::Value::as_str);
 
-    if let Some(kind) = record_type.filter(|kind| crate::ids::type_spec(kind).is_none()) {
+    if let Some(kind) = record_type.filter(|kind| !registry.is_known(kind)) {
         return Verdict::Unknown(kind.into());
     }
 
-    match one_of_subs(object) {
+    match one_of_subs(registry, object) {
         None => Verdict::Valid,
         Some(subs) => Verdict::OneOf(subs),
     }
@@ -167,19 +167,22 @@ pub fn verdict(record: &serde_json::Value) -> Verdict {
 
 /// The per-branch sub-errors plus the oneOf summary line — `None` when
 /// a branch matched. Every surface carries the tail.
-fn one_of_subs(object: &serde_json::Map<String, serde_json::Value>) -> Option<Vec<SubError>> {
+fn one_of_subs(
+    registry: &crate::ids::Registry,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Vec<SubError>> {
     let mut subs = Vec::new();
-    for spec in crate::ids::REGISTRY {
-        subs.extend(branch_error(&spec, object)?);
+    for row in registry.rows() {
+        subs.extend(branch_error(row, object)?);
     }
     subs.push(SubError::OneOfTail);
     Some(subs)
 }
 
 /// The branch's required keys in reference order.
-fn required_keys(spec: &crate::ids::TypeSpec) -> Vec<&'static str> {
+fn required_keys(row: &crate::ids::Row) -> Vec<&str> {
     std::iter::once("type")
-        .chain(spec.payload.iter().copied())
+        .chain(row.payload.iter().map(String::as_str))
         .chain(["classification", "recorded_at"])
         .collect()
 }
@@ -187,30 +190,30 @@ fn required_keys(spec: &crate::ids::TypeSpec) -> Vec<&'static str> {
 /// The branch's declared property set (the additionalProperties
 /// guard): the base keys, `type`, the payload fields and the branch's
 /// optional fields.
-fn declared_properties(spec: &crate::ids::TypeSpec) -> Vec<&'static str> {
+fn declared_properties(row: &crate::ids::Row) -> Vec<&str> {
     BASE_PROPERTIES
         .iter()
         .copied()
         .chain(["type"])
-        .chain(spec.payload.iter().copied())
-        .chain(spec.optional.iter().copied())
+        .chain(row.payload.iter().map(String::as_str))
+        .chain(row.optional.iter().map(String::as_str))
         .collect()
 }
 
 /// One branch's failing sub-errors, `None` when the branch matches:
 /// the FIRST failing property contributes ALL its failing keywords.
 fn branch_error(
-    spec: &crate::ids::TypeSpec,
+    row: &crate::ids::Row,
     object: &serde_json::Map<String, serde_json::Value>,
 ) -> Option<Vec<SubError>> {
     // 1. required — key presence, in required-array order.
-    let required = required_keys(spec);
+    let required = required_keys(row);
     if let Some(field) = required.iter().find(|field| !object.contains_key(**field)) {
-        return Some(vec![SubError::Missing(field)]);
+        return Some(vec![SubError::Missing((**field).to_string())]);
     }
 
     // 2. additionalProperties — only the branch's declared keys.
-    let declared = declared_properties(spec);
+    let declared = declared_properties(row);
     let has_additional = object.keys().any(|key| !declared.contains(&key.as_str()));
     if has_additional {
         return Some(vec![SubError::Additional]);
@@ -228,7 +231,7 @@ fn branch_error(
     // …then the type const (both keywords when the value is not even a
     // string)…
     match object.get("type") {
-        Some(serde_json::Value::String(kind)) if kind == spec.name => {}
+        Some(serde_json::Value::String(kind)) if *kind == row.name => {}
         Some(serde_json::Value::String(_)) => return Some(vec![SubError::TypeConst]),
         _ => {
             return Some(vec![
@@ -240,33 +243,22 @@ fn branch_error(
             ]);
         }
     }
-    // …then the payload fields (strings)…
-    for field in spec.payload {
-        if let Some(value) = object.get(*field)
-            && !value.is_string()
-        {
-            return Some(vec![SubError::Type {
-                path:     (*field).into(),
-                expected: "string",
-            }]);
-        }
-    }
-    // …then the branch's optional fields (`files` is a string array,
-    // `date` a plain string).
-    for field in spec.optional {
-        let Some(value) = object.get(*field) else {
-            continue;
-        };
-        let error = if *field == "files" {
-            string_array_error(field, value)
-        } else {
-            (!value.is_string()).then(|| SubError::Type {
-                path:     (*field).into(),
-                expected: "string",
-            })
-        };
-        if let Some(error) = error {
-            return Some(vec![error]);
+    // …then the payload fields, then the optional fields (the
+    // extracts-files field is a string array, everything else a
+    // plain string).
+    for field in row.payload.iter().chain(row.optional.iter()) {
+        if let Some(value) = object.get(field) {
+            let error = if row.files_array.as_deref() == Some(field.as_str()) {
+                string_array_error(field, value)
+            } else {
+                (!value.is_string()).then(|| SubError::Type {
+                    path:     field.clone(),
+                    expected: "string",
+                })
+            };
+            if let Some(error) = error {
+                return Some(vec![error]);
+            }
         }
     }
     None
@@ -554,7 +546,7 @@ pub enum FullVerdict {
     Invalid { subs: Vec<SubError>, hint: String },
 }
 
-pub fn full_verdict(record: &serde_json::Value) -> FullVerdict {
+pub fn full_verdict(registry: &crate::ids::Registry, record: &serde_json::Value) -> FullVerdict {
     let Some(object) = record.as_object() else {
         // A non-object line is not a record; ajv's wrapper type fires
         // (mirrors `verdict` — the CLI only ever passes built records,
@@ -566,19 +558,30 @@ pub fn full_verdict(record: &serde_json::Value) -> FullVerdict {
         };
     };
     let record_type = object.get("type").and_then(serde_json::Value::as_str);
-    let Some(subs) = one_of_subs(object) else {
+    let Some(subs) = one_of_subs(registry, object) else {
         return FullVerdict::Valid;
     };
+    let hint = registry_hint(registry, record_type);
+    FullVerdict::Invalid { subs, hint }
+}
+
+/// The missing-fields hint over the merged registry: the record's own
+/// type's payload when registered, the builtin fallback otherwise
+/// (custom types hint their own required fields — mulch-b4bd).
+fn registry_hint(registry: &crate::ids::Registry, record_type: Option<&str>) -> String {
     let kind = effective_type(record_type);
-    FullVerdict::Invalid {
-        subs,
-        hint: format!("Hint: {kind} records require: {}", hint_fields(kind)),
+    match registry.row(kind) {
+        Some(row) => format!("Hint: {kind} records require: {}", row.payload.join(", ")),
+        None => format!("Hint: {kind} records require: {}", hint_fields(kind)),
     }
 }
 
 /// The validate finding message for a non-valid record.
-pub fn validate_message(record: &serde_json::Value) -> Option<String> {
-    match verdict(record) {
+pub fn validate_message(
+    registry: &crate::ids::Registry,
+    record: &serde_json::Value,
+) -> Option<String> {
+    match verdict(registry, record) {
         Verdict::Valid => None,
         Verdict::Unknown(kind) => Some(format!("Unknown record `{kind}`")),
         Verdict::OneOf(subs) => Some(format!(
@@ -591,8 +594,11 @@ pub fn validate_message(record: &serde_json::Value) -> Option<String> {
 /// The doctor detail line for a non-valid record: no wrapper; the
 /// caller prefixes `domain:line - ` and the sub-errors' own path
 /// spaces provide the reference's extra gap.
-pub fn doctor_detail(record: &serde_json::Value) -> Option<String> {
-    match verdict(record) {
+pub fn doctor_detail(
+    registry: &crate::ids::Registry,
+    record: &serde_json::Value,
+) -> Option<String> {
+    match verdict(registry, record) {
         Verdict::Valid => None,
         Verdict::Unknown(kind) => Some(format!("Unknown record `{kind}`")),
         Verdict::OneOf(subs) => Some(render_subs(&subs).join(SUB_SEP)),
@@ -605,13 +611,13 @@ pub fn doctor_detail(record: &serde_json::Value) -> Option<String> {
 /// `checkUnknownTypes` flags them, the repair never deletes them
 /// (mulch-d45c); registered types stay iff schema-valid. A record
 /// without a string `type` counts as typeless and stays.
-pub fn survives_repair(record: &serde_json::Value) -> bool {
+pub fn survives_repair(registry: &crate::ids::Registry, record: &serde_json::Value) -> bool {
     let Some(kind) = record.get("type").and_then(serde_json::Value::as_str) else {
         return true;
     };
-    match crate::ids::type_spec(kind) {
+    match registry.row(kind) {
         None => true,
-        Some(_) => doctor_detail(record).is_none(),
+        Some(_) => doctor_detail(registry, record).is_none(),
     }
 }
 
@@ -631,11 +637,18 @@ pub fn plain_detail_lines(message: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The builtins-only registry for the static-law pins (custom
+    /// rows have their own pins).
+    fn registry() -> crate::ids::Registry {
+        crate::ids::Registry::builtins()
+    }
+
     use super::*;
 
     fn subs_for(line: &str) -> Vec<String> {
         let record: serde_json::Value = serde_json::from_str(line).expect("json");
-        match verdict(&record) {
+        match verdict(&registry(), &record) {
             Verdict::OneOf(subs) => render_subs(&subs),
             other => panic!("expected OneOf, got {other:?}"),
         }
@@ -745,7 +758,7 @@ mod tests {
             r#"{"type":"decision","title":"t","rationale":"r","classification":"tactical","recorded_at":"x","date":"2026-01-01"}"#,
         )
         .expect("json");
-        assert!(matches!(verdict(&record), Verdict::Valid));
+        assert!(matches!(verdict(&registry(), &record), Verdict::Valid));
         // …a wrong-typed date fails on the decision branch (index 3 in
         // registry order)…
         let subs = subs_for(
@@ -773,7 +786,7 @@ mod tests {
     #[test]
     fn non_objects_report_must_be_object() {
         let record: serde_json::Value = serde_json::json!(5);
-        match verdict(&record) {
+        match verdict(&registry(), &record) {
             Verdict::OneOf(subs) => {
                 assert_eq!(render_subs(&subs), vec![" must be object"]);
             }
@@ -787,15 +800,27 @@ mod tests {
             serde_json::from_str(line).expect("json")
         }
         // mulch-d45c: unregistered types are flagged, never deleted
-        assert!(survives_repair(&record(r#"{"type":"wtf","name":"u"}"#)));
-        assert!(survives_repair(&record(r#"{"name":"typeless"}"#)));
+        assert!(survives_repair(
+            &registry(),
+            &record(r#"{"type":"wtf","name":"u"}"#)
+        ));
+        assert!(survives_repair(
+            &registry(),
+            &record(r#"{"name":"typeless"}"#)
+        ));
         // a non-string type counts as typeless; non-objects stay too
-        assert!(survives_repair(&record(r#"{"type":5}"#)));
-        assert!(survives_repair(&record("[1,2]")));
+        assert!(survives_repair(&registry(), &record(r#"{"type":5}"#)));
+        assert!(survives_repair(&registry(), &record("[1,2]")));
         // known types stay iff schema-valid (full required set)
-        assert!(survives_repair(&record(
-            r#"{"type":"pattern","name":"p","description":"d","classification":"tactical","recorded_at":"2026-10-07T00:00:00.000Z"}"#
-        )));
-        assert!(!survives_repair(&record(r#"{"type":"pattern"}"#)));
+        assert!(survives_repair(
+            &registry(),
+            &record(
+                r#"{"type":"pattern","name":"p","description":"d","classification":"tactical","recorded_at":"2026-10-07T00:00:00.000Z"}"#
+            )
+        ));
+        assert!(!survives_repair(
+            &registry(),
+            &record(r#"{"type":"pattern"}"#)
+        ));
     }
 }

@@ -39,7 +39,10 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
                     message: "Invalid JSON: failed to parse".into(),
                 })),
                 mulch::LenientLine::Record { line, record } => {
-                    let unknown = matches!(schema::verdict(&record), schema::Verdict::Unknown(_));
+                    let unknown = matches!(
+                        schema::verdict(store.registry(), &record),
+                        schema::Verdict::Unknown(_)
+                    );
                     if unknown && opts.allow_unknown_types {
                         continue;
                     }
@@ -55,7 +58,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
                         }));
                         continue;
                     }
-                    if let Some(message) = validate_message(&record) {
+                    if let Some(message) = validate_message(store.registry(), &record) {
                         stream.push((false, Finding {
                             domain: domain.clone(),
                             line,
