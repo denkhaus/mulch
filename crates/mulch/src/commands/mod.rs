@@ -375,7 +375,9 @@ impl<'a> PayloadFlags<'a> {
             args.content.as_deref(),
             // The positional drops for the two flag-only builtins and
             // for EVERY custom (positionalFallbackField: builtin-only,
-            // null for `kind !== "builtin"` — probed, mulch-d524).
+            // null for `kind !== "builtin"` — probed, mulch-d524). A
+            // NEW REGISTRY BUILTIN lands in the named arms below; the
+            // registry-shape test in ids.rs forces that revisit.
             match record_type {
                 "convention" => Some("content"),
                 "pattern" | "reference" | "guide" => Some("description"),

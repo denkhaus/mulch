@@ -159,12 +159,6 @@ pub fn js_round_u64(value: f64) -> u64 {
     }
 }
 
-/// JS object enumeration order over `(key, value)` pairs: integer-like
-/// keys (non-negative integers, parseable as u64 — no negatives, no
-/// leading zeros, which JS treats as string keys) ascending first,
-/// then string keys in first-seen order. The reference's counters and
-/// every hand-ordered JSON boundary follow it (probe: `{"type": 5}`
-/// counts under `"5"` before the seeded names).
 /// The reference's `truncate` (utils/format-helpers.ts): UTF-16 code
 /// units are the counting law (live-probed 2026-10-16 vs ml 0.10.7:
 /// 31 emoji = 62 units cut at 60 → 30 emoji + `...`; the same string
@@ -216,6 +210,12 @@ fn is_js_whitespace(unit: u16) -> bool {
     )
 }
 
+/// JS object enumeration order over `(key, value)` pairs: integer-like
+/// keys (non-negative integers, parseable as u64 — no negatives, no
+/// leading zeros, which JS treats as string keys) ascending first,
+/// then string keys in first-seen order. The reference's counters and
+/// every hand-ordered JSON boundary follow it (probe: `{"type": 5}`
+/// counts under `"5"` before the seeded names).
 pub fn js_key_sorted<T>(entries: &[(String, T)]) -> Vec<&(String, T)> {
     // one partition pass, one parse per entry: the JS array-index
     // check IS the u64 parse (plus the canonical-numeral shape)

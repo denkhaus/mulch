@@ -25,7 +25,7 @@ fn main() -> ExitCode {
     let dynamic = match cli::augment(&mut command) {
         Ok(dynamic) => dynamic,
         Err(failure) => {
-            let json = std::env::args().any(|token| token == "--json");
+            let json = std::env::args_os().any(|token| token == "--json");
             output::render_failure(&failure, json);
             return ExitCode::from(failure.code);
         }

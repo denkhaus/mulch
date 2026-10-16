@@ -525,6 +525,9 @@ fn register_custom_flags(
     declared: &[&str],
     dynamic: &mut DynamicFlags,
 ) -> clap::Command {
+    // the help prefix mirrors the reference's per-command wording
+    // (record.ts "… field: …", edit.ts "update … field: …")
+    let help_prefix = if name == "edit" { "update " } else { "" };
     let mut seen: Vec<String> = declared.iter().map(|flag| (*flag).to_string()).collect();
     let mut command = subcommand;
     for row in registry.rows().iter().filter(|row| !row.builtin) {
@@ -538,7 +541,7 @@ fn register_custom_flags(
                 clap::Arg::new(flag.clone())
                     .long(flag.clone())
                     .value_name(field.clone())
-                    .help(format!("{} field: {field}", row.name)),
+                    .help(format!("{help_prefix}{} field: {field}", row.name)),
             );
             dynamic.entries.push((name, flag, field.clone()));
         }
@@ -568,9 +571,48 @@ pub(crate) fn inject_dynamic(cli: &mut Cli, matches: &clap::ArgMatches, dynamic:
 }
 
 /// The first non-flag argv token (the subcommand position — every
-/// global flag is a boolean).
+/// global flag is a boolean). `args_os` + lossy conversion: a
+/// non-UTF-8 argv must fall through to clap's parse error, not
+/// panic in the pre-parse scan.
 fn invoked_subcommand() -> Option<String> {
-    std::env::args()
+    std::env::args_os()
         .skip(1)
-        .find(|token| !token.starts_with('-'))
+        .find(|token| !token.to_string_lossy().starts_with('-'))
+        .map(|token| token.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod dynamic_flag_tests {
+    use clap::CommandFactory as _;
+
+    use super::*;
+
+    /// The declared-flag lists are the drift pins for the dynamic
+    /// custom-flag registration: every long flag the derive actually
+    /// declares on `record`/`edit` must appear in the matching list,
+    /// or a custom field of a new flag's name would register a
+    /// colliding `--flag` instead of reading the builtin (the
+    /// reference's declaredOptionNames set, record.ts:513-524).
+    #[test]
+    fn declared_flag_lists_cover_the_derive_surface() {
+        let command = Cli::command();
+        for (sub, declared) in [("record", &RECORD_FLAGS[..]), ("edit", &EDIT_FLAGS[..])] {
+            let mut longs: Vec<String> = command
+                .find_subcommand(sub)
+                .unwrap_or_else(|| panic!("{sub} subcommand missing"))
+                .get_arguments()
+                .filter_map(clap::Arg::get_long_and_visible_aliases)
+                .flatten()
+                .map(std::string::ToString::to_string)
+                .collect();
+            longs.sort_unstable();
+            longs.dedup();
+            for long in longs {
+                assert!(
+                    declared.contains(&long.as_str()),
+                    "{sub} declares --{long} but the {sub} skip-list misses it"
+                );
+            }
+        }
+    }
 }

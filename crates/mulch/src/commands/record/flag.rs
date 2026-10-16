@@ -275,7 +275,7 @@ fn non_empty_list(raw: Option<&str>) -> Option<Vec<String>> {
 }
 
 /// A JSON array of strings.
-pub(super) fn strings_value(items: &[String]) -> Value {
+fn strings_value(items: &[String]) -> Value {
     Value::Array(items.iter().map(|i| Value::String(i.clone())).collect())
 }
 
@@ -286,19 +286,22 @@ pub(super) fn strings_value(items: &[String]) -> Value {
 fn context_files() -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
     for staged in [true, false] {
+        // each call is independent (the reference's two try/catch
+        // blocks): a failed staged read keeps whatever the unstaged
+        // one collected
         let mut command = std::process::Command::new("git");
         command.args(["diff", "--name-only"]);
         if staged {
             command.arg("--cached");
         }
         let Ok(output) = command.output() else {
-            return Vec::new();
+            continue;
         };
         if !output.status.success() {
-            return Vec::new();
+            continue;
         }
         let Ok(text) = String::from_utf8(output.stdout) else {
-            return Vec::new();
+            continue;
         };
         for file in text.lines().filter(|line| !line.is_empty()) {
             if !files.iter().any(|seen| seen == file) {
