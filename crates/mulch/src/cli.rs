@@ -165,11 +165,10 @@ pub(crate) struct RecordArgs {
     /// Positional content shorthand (convention).
     pub(crate) content: Option<String>,
 
-    /// Record type.
-    #[arg(
-        long = "type",
-        value_parser = ["convention", "pattern", "failure", "decision", "reference", "guide"]
-    )]
+    /// Record type (the choice set is the store's registry —
+    /// builtins plus configured custom types, filled in by
+    /// [`augment`] before parsing; mulch-d524).
+    #[arg(long = "type")]
     pub(crate) record_type: Option<String>,
 
     /// Classification (default tactical).
@@ -271,6 +270,14 @@ pub(crate) struct RecordArgs {
     /// Preview without writing.
     #[arg(long = "dry-run")]
     pub(crate) dry_run: bool,
+
+    /// Custom-type field flags (`--<field>` per the store's registry,
+    /// registered dynamically by [`augment`] and filled by
+    /// [`inject_dynamic`] — the reference declares them on the
+    /// command at startup, record.ts:510-524; mulch-d524). Field
+    /// names keep their underscores; the flag name hyphenates.
+    #[arg(skip)]
+    pub(crate) custom: Vec<(String, String)>,
 }
 
 /// Flags of `mulch edit` (reference surface: no tags/evidence/dir-anchor).
@@ -320,6 +327,11 @@ pub(crate) struct EditArgs {
 
     #[command(flatten)]
     pub(crate) outcome: EditOutcomeFlags,
+
+    /// Custom-type field flags — the edit twin of
+    /// [`RecordArgs::custom`] (edit.ts:51-61).
+    #[arg(skip)]
+    pub(crate) custom: Vec<(String, String)>,
 }
 
 /// Outcome flags of `mulch edit` (reference longs carry the
@@ -372,4 +384,193 @@ pub(crate) struct OutcomeFlags {
     /// Test results summary.
     #[arg(long = "test-results")]
     pub(crate) test_results: Option<String>,
+}
+
+// ---- dynamic custom-type flags (mulch-d524) ----
+//
+// The reference declares custom-type field flags on `record`/`edit`
+// at command registration (record.ts:510-524, edit.ts:51-61) and
+// feeds `--type`'s choices from the registry's names — both read the
+// store config BEFORE the command parses. We mirror that: augment
+// the two subcommands from the store's merged registry, parse, then
+// carry the dynamic values into the args structs.
+
+/// `record`'s own flag names (the reference's `declaredOptionNames`
+/// set plus `files`): a custom field with one of these names reads
+/// the existing flag instead of getting a new one.
+const RECORD_FLAGS: [&str; 28] = [
+    "type",
+    "classification",
+    "name",
+    "content",
+    "description",
+    "resolution",
+    "title",
+    "rationale",
+    "files",
+    "dir-anchor",
+    "tags",
+    "evidence-commit",
+    "evidence-issue",
+    "evidence-file",
+    "evidence-bead",
+    "evidence-seeds",
+    "evidence-gh",
+    "evidence-linear",
+    "relates-to",
+    "supersedes",
+    "outcome-status",
+    "outcome-duration",
+    "outcome-test-results",
+    "outcome-agent",
+    "force",
+    "stdin",
+    "batch",
+    "dry-run",
+];
+
+/// `edit`'s own flag names (same law as [`RECORD_FLAGS`]).
+const EDIT_FLAGS: [&str; 14] = [
+    "classification",
+    "content",
+    "name",
+    "description",
+    "resolution",
+    "title",
+    "rationale",
+    "files",
+    "relates-to",
+    "supersedes",
+    "outcome-status",
+    "outcome-duration",
+    "outcome-test-results",
+    "outcome-agent",
+];
+
+/// The custom flags registered onto the command tree:
+/// (subcommand, flag id, field name) rows, consumed by
+/// [`inject_dynamic`] after parsing.
+#[derive(Default)]
+pub(crate) struct DynamicFlags {
+    entries: Vec<(&'static str, String, String)>,
+}
+
+/// Augments `record`/`edit` from the current store when argv invokes
+/// one of them: `--type`'s choice set becomes the registry's names
+/// and every undeclared custom field gains its `--<field>` flag.
+/// Returns the registry failure when the custom_types config is
+/// broken (the global config-error surface renders it — the same
+/// failure `open_store` would raise, earlier, like the reference's
+/// registry init).
+pub(crate) fn augment(command: &mut clap::Command) -> Result<DynamicFlags, crate::output::Failure> {
+    let Some(sub) = invoked_subcommand() else {
+        return Ok(DynamicFlags::default());
+    };
+    if sub != "record" && sub != "edit" {
+        return Ok(DynamicFlags::default());
+    }
+    // a cwd-resolution failure stays with `open_store`'s rendering
+    // (the same error resurfaces there)
+    let Ok(cwd) = std::env::current_dir() else {
+        return Ok(DynamicFlags::default());
+    };
+    let registry = match mulch::StoreFiles::locate(&cwd) {
+        Ok(mulch::StoreLocation::Open(store)) => store.registry().clone(),
+        // no store: the builtins parse, the command's own no-store
+        // contract fires later (parity — the reference's fallback
+        // registry is builtins-only)
+        Ok(mulch::StoreLocation::Missing | mulch::StoreLocation::NoConfig) => {
+            mulch::Registry::builtins()
+        }
+        // a broken custom_types config fails EVERY command through
+        // the global surface (reference registry init); other errors
+        // stay with `open_store`'s rendering
+        Err(mulch::Error::CustomTypes { message }) => {
+            return Err(crate::output::Failure::config_error(&message));
+        }
+        Err(_) => mulch::Registry::builtins(),
+    };
+
+    let mut dynamic = DynamicFlags::default();
+    if let Some(record) = command.find_subcommand_mut("record") {
+        let choices: Vec<clap::builder::PossibleValue> = registry
+            .rows()
+            .iter()
+            .map(|row| clap::builder::PossibleValue::new(row.name.clone()))
+            .collect();
+        let mut taken = std::mem::take(record);
+        // the derive's static choice set becomes the registry's names
+        // (same id, same rejection wording family)
+        taken = taken.mut_arg("record_type", |arg| {
+            arg.value_parser(clap::builder::PossibleValuesParser::new(choices))
+        });
+        taken = register_custom_flags(taken, "record", &registry, &RECORD_FLAGS, &mut dynamic);
+        *record = taken;
+    }
+    if let Some(edit) = command.find_subcommand_mut("edit") {
+        let taken = std::mem::take(edit);
+        let rebuilt = register_custom_flags(taken, "edit", &registry, &EDIT_FLAGS, &mut dynamic);
+        *edit = rebuilt;
+    }
+    Ok(dynamic)
+}
+
+/// Adds `--<field>` for every custom row field whose hyphenated name
+/// the subcommand does not already declare (first come, like the
+/// reference's `declaredOptionNames` set).
+fn register_custom_flags(
+    subcommand: clap::Command,
+    name: &'static str,
+    registry: &mulch::Registry,
+    declared: &[&str],
+    dynamic: &mut DynamicFlags,
+) -> clap::Command {
+    let mut seen: Vec<String> = declared.iter().map(|flag| (*flag).to_string()).collect();
+    let mut command = subcommand;
+    for row in registry.rows().iter().filter(|row| !row.builtin) {
+        for field in row.payload.iter().chain(row.optional.iter()) {
+            let flag = field.replace('_', "-");
+            if seen.contains(&flag) {
+                continue;
+            }
+            seen.push(flag.clone());
+            command = command.arg(
+                clap::Arg::new(flag.clone())
+                    .long(flag.clone())
+                    .value_name(field.clone())
+                    .help(format!("{} field: {field}", row.name)),
+            );
+            dynamic.entries.push((name, flag, field.clone()));
+        }
+    }
+    command
+}
+
+/// Carries the parsed dynamic values into the args structs.
+pub(crate) fn inject_dynamic(cli: &mut Cli, matches: &clap::ArgMatches, dynamic: &DynamicFlags) {
+    for (sub, flag, field) in &dynamic.entries {
+        let Some(sub_matches) = matches.subcommand_matches(sub) else {
+            continue;
+        };
+        let Some(value) = sub_matches.get_one::<String>(flag.as_str()) else {
+            continue;
+        };
+        match &mut cli.command {
+            Some(Command::Record(args)) if *sub == "record" => {
+                args.custom.push((field.clone(), value.clone()));
+            }
+            Some(Command::Edit(args)) if *sub == "edit" => {
+                args.custom.push((field.clone(), value.clone()));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The first non-flag argv token (the subcommand position — every
+/// global flag is a boolean).
+fn invoked_subcommand() -> Option<String> {
+    std::env::args()
+        .skip(1)
+        .find(|token| !token.starts_with('-'))
 }

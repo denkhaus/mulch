@@ -118,10 +118,16 @@ expectation (the parity rule: never silently):
   dry-run too).
 - **Argument-parse errors use clap wording** (choice rejections,
   missing-argument hints): same channels and exit code 1, different
-  text than commander's. The no-store paths of `add`, `record`,
-  `edit`, `outcome` and the invalid-domain `add` render as clean
-  handled errors where the reference crashes or prints stack traces —
-  same family as the crash-path bullet below.
+  text than commander's. `--type`'s choice set is the store's merged
+  registry (builtins plus configured custom types, read from the
+  store config before parsing — matching the reference's
+  command-registration registry; a broken `custom_types` config fails
+  the global config-error surface right there), so an unconfigured
+  custom type rejects at parse time with this wording while the
+  reference rejects with commander's. The no-store paths of `add`,
+  `record`, `edit`, `outcome` and the invalid-domain `add` render as
+  clean handled errors where the reference crashes or prints stack
+  traces — same family as the crash-path bullet below.
 - **`move` appends a newline when the target file lacks a trailing
   one.** The reference concatenates (`appendFile`), merging the moved
   record onto the last line — a corrupt store. Expectation: the moved

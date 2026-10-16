@@ -357,3 +357,376 @@ fn custom_batch_validation_hint_matches_reference() {
         );
     }
 }
+
+// ---- sprint 31 (mulch-d524): the custom-type-aware flag path ----
+
+/// The flag-path config: adds an extracts-files custom and an
+/// underscored-field custom to the probe pair.
+const FLAG_CONFIG: &str = "version: '1'\n\
+domains:\n  dev: {}\n\
+custom_types:\n  snippet:\n    required: [name, code]\n    optional: [note]\n    dedup_key: name\n    id_key: name\n    summary: \"{name}: {code}\"\n  sketchnote:\n    required: [title, code_name]\n    dedup_key: title\n    id_key: title\n    summary: \"{title}!\"\n  gitfile:\n    required: [name]\n    optional: [files]\n    dedup_key: name\n    id_key: name\n    extracts_files: true\n    summary: \"{name}\"\n\
+governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\n\
+classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30\n";
+
+/// Flag-path twins (no git: evidence and context files stay absent).
+fn flag_twins(tag: &str) -> (TempDir, TempDir) {
+    let ours = TempDir::new(&format!("{tag}-ours"));
+    let theirs = TempDir::new(&format!("{tag}-theirs"));
+    for dir in [&ours.0, &theirs.0] {
+        write_seed_with_config(dir, FLAG_CONFIG, &[]);
+    }
+    (ours, theirs)
+}
+
+/// Git twins with ONE identical dirty state: the same committed
+/// files, the same modification, the same staged addition — so
+/// `getContextFiles` lists identical names on both sides (evidence
+/// commit SHAs differ; the assertions mask them).
+fn git_twins(tag: &str) -> (TempDir, TempDir) {
+    let ours = TempDir::new(&format!("{tag}-ours"));
+    let theirs = TempDir::new(&format!("{tag}-theirs"));
+    for dir in [&ours.0, &theirs.0] {
+        write_seed_with_config(dir, FLAG_CONFIG, &[]);
+        for args in [
+            ["init", "-q"].as_slice(),
+            &["config", "user.email", "t@example.org"],
+            &["config", "user.name", "t"],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(dir)
+                    .output()
+                    .expect("git spawns")
+                    .status
+                    .success()
+            );
+        }
+        std::fs::write(dir.join("a.rs"), "one\n").expect("a.rs");
+        std::fs::create_dir_all(dir.join("src")).expect("src");
+        std::fs::write(dir.join("src").join("b.rs"), "one\n").expect("b.rs");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", ".", "-A"])
+                .current_dir(dir)
+                .output()
+                .expect("git add")
+                .status
+                .success()
+        );
+        assert!(
+            std::process::Command::new("git")
+                .args(["commit", "-qm", "init"])
+                .current_dir(dir)
+                .output()
+                .expect("git commit")
+                .status
+                .success()
+        );
+        // unstaged modification + staged addition
+        std::fs::write(dir.join("a.rs"), "two\n").expect("a.rs modified");
+        std::fs::write(dir.join("src").join("c.rs"), "new\n").expect("c.rs");
+        assert!(
+            std::process::Command::new("git")
+                .args(["add", "src/c.rs"])
+                .current_dir(dir)
+                .output()
+                .expect("git stage")
+                .status
+                .success()
+        );
+    }
+    (ours, theirs)
+}
+
+/// Masks evidence commit shas (the twin repos commit at different
+/// instants — the shas differ, the file names do not).
+fn mask_commits(text: &str) -> String {
+    const KEY: &str = "\"commit\":\"";
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find(KEY) {
+        let value_start = pos + KEY.len();
+        out.push_str(&rest[..value_start]);
+        rest = &rest[value_start..];
+        let end = rest.find('"').expect("commit end");
+        out.push_str("<C>");
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The full flag-path comparison surface: exit code, stdout, stderr,
+/// and store bytes (timestamps and commit shas masked; the Retry
+/// echo normalized to the reference's binary name).
+fn assert_flag_parity(
+    tag: &str,
+    ours: &TempDir,
+    theirs: &TempDir,
+    ours_args: &[&str],
+    theirs_args: &[&str],
+    ml: &Path,
+) {
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), ours_args);
+    let theirs_run = run_in(&theirs.0, ml, theirs_args);
+    assert_eq!(ours_run.code, theirs_run.code, "{tag}: exit codes differ");
+    let clean =
+        |text: &str| mask_commits(&mask_timestamps(&echo_ours_to_reference(&normalize(text))));
+    assert_eq!(
+        clean(&ours_run.stdout),
+        clean(&theirs_run.stdout),
+        "{tag}: stdout"
+    );
+    assert_eq!(
+        clean(&ours_run.stderr),
+        clean(&theirs_run.stderr),
+        "{tag}: stderr"
+    );
+    let files: Vec<std::ffi::OsString> = std::fs::read_dir(ours.0.join(".mulch/expertise"))
+        .expect("expertise dir")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    for name in files {
+        let ours_file = std::fs::read_to_string(ours.0.join(".mulch/expertise").join(&name))
+            .expect("ours store");
+        let theirs_file = std::fs::read_to_string(theirs.0.join(".mulch/expertise").join(&name))
+            .expect("theirs store");
+        assert_eq!(
+            mask_commits(&mask_timestamps(&ours_file)),
+            mask_commits(&mask_timestamps(&theirs_file)),
+            "{tag}: store {}",
+            name.display()
+        );
+    }
+}
+
+#[test]
+fn custom_flag_path_create_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // plain create, json create, underscored field, optional note,
+    // dry-run, positional drop (customs have NO positional fallback)
+    for (tag, args) in [
+        ("plain", vec![
+            "record", "dev", "--type", "snippet", "--name", "s1", "--code", "print(1)",
+        ]),
+        ("json", vec![
+            "record", "dev", "--type", "snippet", "--name", "s2", "--code", "c2", "--json",
+        ]),
+        ("underscore", vec![
+            "record",
+            "dev",
+            "--type",
+            "sketchnote",
+            "--title",
+            "T1",
+            "--code-name",
+            "CN1",
+        ]),
+        ("optional", vec![
+            "record", "dev", "--type", "snippet", "--name", "n1", "--code", "c", "--note",
+            "wichtig",
+        ]),
+        ("dry", vec![
+            "record",
+            "dev",
+            "--type",
+            "snippet",
+            "--name",
+            "d1",
+            "--code",
+            "dc",
+            "--dry-run",
+        ]),
+        ("positional-drop", vec![
+            "record",
+            "dev",
+            "--type",
+            "snippet",
+            "--name",
+            "p1",
+            "--code",
+            "pc",
+            "positional body",
+        ]),
+        ("empty-value-missing", vec![
+            "record", "dev", "--type", "snippet", "--name", "e1", "--code", "",
+        ]),
+        ("upsert-second-run", vec![
+            "record", "dev", "--type", "snippet", "--name", "s1", "--code", "c2",
+        ]),
+    ] {
+        let (ours, theirs) = flag_twins(&format!("ct-flag-{tag}"));
+        if tag == "upsert-second-run" {
+            // the same named record already exists on both sides
+            for (dir, bin) in [
+                (&ours.0, mulch_bin()),
+                (&theirs.0, ml.to_string_lossy().as_ref()),
+            ] {
+                let _ = run_in(dir, Path::new(bin), &[
+                    "record", "dev", "--type", "snippet", "--name", "s1", "--code", "old",
+                ]);
+            }
+        }
+        assert_flag_parity(tag, &ours, &theirs, &args, &args, &ml);
+    }
+}
+
+#[test]
+fn custom_flag_missing_flags_retry_and_choices_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // missing required flags: the hyphenated flag list + the
+    // underscore-keeping placeholder ride the Retry echo
+    for (tag, args) in [
+        ("snippet", vec!["record", "dev", "--type", "snippet"]),
+        ("sketchnote", vec!["record", "dev", "--type", "sketchnote"]),
+        ("no-type", vec!["record", "newdom"]),
+    ] {
+        let (ours, theirs) = flag_twins(&format!("ct-miss-{tag}"));
+        assert_flag_parity(tag, &ours, &theirs, &args, &args, &ml);
+    }
+    // OUR invalid-choice rejection (clap wording is the documented
+    // deviation): the SET is the registry's names and the exit code
+    // matches the reference
+    let (ours, theirs) = flag_twins("ct-choice");
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record", "dev", "--type", "nosuch",
+    ]);
+    let theirs_run = run_in(&theirs.0, &ml, &["record", "dev", "--type", "nosuch"]);
+    assert_eq!(ours_run.code, theirs_run.code);
+    assert!(
+        ours_run.stderr.contains(
+            "[possible values: convention, pattern, failure, decision, reference, guide, snippet, sketchnote, gitfile]"
+        ),
+        "the choice set is the merged registry: {}",
+        ours_run.stderr
+    );
+    assert!(theirs_run.stderr.contains("Allowed choices are convention, pattern, failure, decision, reference, guide, snippet, sketchnote, gitfile."));
+}
+
+#[test]
+fn custom_git_context_files_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // extracts-files types auto-populate from the git context
+    // (staged + unstaged, sorted): the custom AND the builtin pattern
+    for (tag, args) in [
+        ("custom", vec![
+            "record", "dev", "--type", "gitfile", "--name", "g1",
+        ]),
+        ("builtin", vec![
+            "record",
+            "dev",
+            "--type",
+            "pattern",
+            "--name",
+            "p1",
+            "--description",
+            "d1",
+        ]),
+    ] {
+        let (ours, theirs) = git_twins(&format!("ct-ctx-{tag}"));
+        assert_flag_parity(tag, &ours, &theirs, &args, &args, &ml);
+    }
+}
+
+#[test]
+fn custom_edit_flag_path_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // edit accepts custom field flags: scalars replace in place,
+    // undeclared flags drop, the extracts-files field splits commas,
+    // empty values store (the raw flag view), unregistered types
+    // write no payload fields (the write gate rejects either way)
+    for (tag, setup, edit) in [
+        (
+            "custom-field",
+            vec![
+                "record", "dev", "--type", "snippet", "--name", "s1", "--code", "c",
+            ],
+            vec!["edit", "dev", "mx-298f5e", "--code", "new"],
+        ),
+        (
+            "underscore-and-drop",
+            vec![
+                "record",
+                "dev",
+                "--type",
+                "sketchnote",
+                "--title",
+                "T1",
+                "--code-name",
+                "CN",
+            ],
+            vec![
+                "edit",
+                "dev",
+                "mx-1493eb",
+                "--code-name",
+                "CN2",
+                "--note",
+                "dropped",
+            ],
+        ),
+        (
+            "files-comma",
+            vec!["record", "dev", "--type", "gitfile", "--name", "g1"],
+            vec!["edit", "dev", "mx-3d38e9", "--files", "x.rs, y.rs"],
+        ),
+        (
+            "empty-stores",
+            vec![
+                "record", "dev", "--type", "snippet", "--name", "s1", "--code", "c",
+            ],
+            vec!["edit", "dev", "mx-298f5e", "--code", ""],
+        ),
+        (
+            "files-empty-array",
+            vec![
+                "record",
+                "dev",
+                "--type",
+                "pattern",
+                "--name",
+                "p",
+                "--description",
+                "d",
+            ],
+            vec!["edit", "dev", "mx-31be4b", "--files", ""],
+        ),
+    ] {
+        let (ours, theirs) = flag_twins(&format!("ct-edit-{tag}"));
+        for (dir, bin) in [(&ours.0, Path::new(mulch_bin())), (&theirs.0, &ml)] {
+            let seeded = run_in(dir, bin, &setup);
+            assert_eq!(seeded.code, 0, "{tag}: seed failed");
+        }
+        assert_flag_parity(tag, &ours, &theirs, &edit, &edit, &ml);
+    }
+    // unregistered type + --allow-unknown-types: NO payload field is
+    // written (the reference's def loop skips unknown defs) — the
+    // write gate rejects the update with equal bytes, store intact
+    let (ours, theirs) = flag_twins("ct-edit-unknown");
+    let unknown = "{\"type\":\"wtf\",\"name\":\"u\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-16T00:00:00.000Z\",\"id\":\"mx-000001\"}\n";
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), unknown).expect("store");
+    }
+    let edit = [
+        "--allow-unknown-types",
+        "edit",
+        "dev",
+        "mx-000001",
+        "--content",
+        "x",
+    ];
+    assert_flag_parity("unknown", &ours, &theirs, &edit, &edit, &ml);
+}

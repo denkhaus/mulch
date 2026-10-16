@@ -62,22 +62,24 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     // declares it (pattern and reference — the reference's def loop
     // drops the flag for every other type, so no unknown extra field
     // is ever written).
-    let fields: Vec<&str> = store.registry().row(&record_type).map_or_else(
-        || vec!["content"],
-        |row| row.payload.iter().map(String::as_str).collect(),
-    );
+    // The reference's def loop (edit.ts:151-167): the record type's
+    // required ∪ optional fields read the RAW flag view — `value ===
+    // undefined` is the only gate, empty strings store — with the
+    // extracts-files field splitting its comma string into an array.
+    // Unregistered types write NO payload fields (def undefined);
+    // undeclared flags never reach a record (mulch-d524).
     let flags = PayloadFlags::from_edit(args);
-    for field in fields {
-        if let Some(value) = flags.get(field) {
-            record.insert(field.into(), Value::String(value.to_string()));
+    if let Some(row) = store.registry().row(&record_type) {
+        for field in row.payload.iter().chain(row.optional.iter()) {
+            let Some(value) = flags.get(field) else {
+                continue;
+            };
+            if row.files_array.as_deref() == Some(field.as_str()) {
+                set_end_list(&mut record, field, Some(value));
+            } else {
+                record.insert(field.as_str().into(), Value::String(value.to_string()));
+            }
         }
-    }
-    if store
-        .registry()
-        .row(&record_type)
-        .is_some_and(|row| row.files_array.is_some())
-    {
-        set_end_list(&mut record, "files", args.files.as_deref());
     }
 
     // The write gate (mulch-7896): the UPDATED record must pass the

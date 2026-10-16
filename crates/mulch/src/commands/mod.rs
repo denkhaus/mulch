@@ -342,8 +342,15 @@ pub(crate) fn locate_record(
 /// positional renders as a bare quoted argument, never as a pair.
 pub(crate) struct PayloadFlags<'a> {
     /// (payload field, provided flag value) rows — raw flag values,
-    /// `Some("")` included.
-    table:      [(&'static str, Option<&'a str>); 6],
+    /// `Some("")` included. `files` rides along: not a payload field,
+    /// but a declared flag the row loops read when the type declares
+    /// it (the reference's option key space, mulch-d524).
+    table:      [(&'static str, Option<&'a str>); 7],
+    /// Custom-type field flags (field name with underscores, the
+    /// parsed `--<field>` value) — the registry-fed extension of the
+    /// builtin table, one flat map across customs like the
+    /// reference's option key space (mulch-d524).
+    custom:     &'a [(String, String)],
     /// `record`'s positional `[content]` argument.
     positional: Option<&'a str>,
     /// The type's positional fallback field (record path only).
@@ -354,52 +361,79 @@ impl<'a> PayloadFlags<'a> {
     /// `record`'s rows: raw flag values; the positional fallback
     /// resolution happens in [`resolved`](PayloadFlags::resolved).
     pub(crate) fn from_record(args: &'a RecordArgs, record_type: &str) -> Self {
-        Self {
-            table:      [
+        Self::new(
+            [
                 ("content", args.content_flag.as_deref()),
                 ("name", args.name.as_deref()),
                 ("description", args.description.as_deref()),
                 ("resolution", args.resolution.as_deref()),
                 ("title", args.title.as_deref()),
                 ("rationale", args.rationale.as_deref()),
+                ("files", args.files.as_deref()),
             ],
-            positional: args.content.as_deref(),
-            // The positional drops for the two flag-only types — named
-            // arms so a new registry type forces a revisit.
-            fallback:   match record_type {
+            &args.custom,
+            args.content.as_deref(),
+            // The positional drops for the two flag-only builtins and
+            // for EVERY custom (positionalFallbackField: builtin-only,
+            // null for `kind !== "builtin"` — probed, mulch-d524).
+            match record_type {
                 "convention" => Some("content"),
                 "pattern" | "reference" | "guide" => Some("description"),
-                "failure" | "decision" => None,
-                other => {
-                    unreachable!("clap's value_parser gates --type to the registry: {other}")
-                }
+                _ => None,
             },
-        }
+        )
     }
 
     /// `edit`'s rows: content is the `--content` flag alone.
     pub(crate) fn from_edit(args: &'a EditArgs) -> Self {
-        Self {
-            table:      [
+        Self::new(
+            [
                 ("content", args.content.as_deref()),
                 ("name", args.name.as_deref()),
                 ("description", args.description.as_deref()),
                 ("resolution", args.resolution.as_deref()),
                 ("title", args.title.as_deref()),
                 ("rationale", args.rationale.as_deref()),
+                ("files", args.files.as_deref()),
             ],
-            positional: None,
-            fallback:   None,
+            &args.custom,
+            None,
+            None,
+        )
+    }
+
+    /// The shared row constructor (the two commands differ in the
+    /// positional pair alone).
+    fn new(
+        table: [(&'static str, Option<&'a str>); 7],
+        custom: &'a [(String, String)],
+        positional: Option<&'a str>,
+        fallback: Option<&'static str>,
+    ) -> Self {
+        Self {
+            table,
+            custom,
+            positional,
+            fallback,
         }
     }
 
     /// The provided flag value for a payload field, if any — the raw
-    /// flag view (edit's law: store what was flagged).
+    /// flag view (edit's law: store what was flagged). Custom-type
+    /// fields read the dynamic flag table (a field overlapping a
+    /// builtin flag name reads the builtin's row — the reference's
+    /// declaredOptionNames skip).
     pub(crate) fn get(&self, field: &str) -> Option<&'a str> {
         self.table
             .iter()
             .find(|(name, _)| *name == field)
             .and_then(|(_, value)| *value)
+            .or_else(|| {
+                self.custom
+                    .iter()
+                    .find(|(name, _)| name == field)
+                    .map(|(_, value)| value.as_str())
+            })
     }
 
     /// The record-path `collectField` value: the flag when given,
@@ -548,14 +582,16 @@ mod payload_flags_tests {
     }
 
     /// The adapter is the one flag-table owner: its universe is the
-    /// registry's payload universe (the merged mulch-a3de pin; a
-    /// registry row gaining a field without adapter plumbing fails
+    /// registry's payload universe plus `files` (the declared flag
+    /// the extracts-files row loop reads; the merged mulch-a3de pin —
+    /// a registry row gaining a field without adapter plumbing fails
     /// here, and so does a table row the registry dropped).
     #[test]
     fn table_universe_is_the_registry_payload_universe() {
         let mut universe: Vec<&str> = mulch::REGISTRY
             .iter()
             .flat_map(|spec| spec.payload.iter().copied())
+            .chain(["files"])
             .collect();
         universe.sort_unstable();
         universe.dedup();

@@ -12,15 +12,33 @@ mod output;
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
-use clap::{CommandFactory as _, Parser as _};
+use clap::{CommandFactory as _, FromArgMatches as _};
 use cli::Cli;
 
 fn main() -> ExitCode {
     let started = std::time::Instant::now();
-    let cli = match Cli::try_parse() {
+    // The custom-type flags and `--type`'s choice set come from the
+    // store's registry BEFORE parsing (the reference registers them
+    // at command setup, mulch-d524); a broken custom_types config
+    // fails the global surface right here.
+    let mut command = Cli::command();
+    let dynamic = match cli::augment(&mut command) {
+        Ok(dynamic) => dynamic,
+        Err(failure) => {
+            let json = std::env::args().any(|token| token == "--json");
+            output::render_failure(&failure, json);
+            return ExitCode::from(failure.code);
+        }
+    };
+    let matches = match command.try_get_matches_from(std::env::args_os()) {
+        Ok(matches) => matches,
+        Err(error) => return render_parse_failure(&error),
+    };
+    let mut cli = match Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(error) => return render_parse_failure(&error),
     };
+    cli::inject_dynamic(&mut cli, &matches, &dynamic);
     let Some(command) = cli.command.as_ref() else {
         if cli.version {
             #[allow(clippy::print_stdout, reason = "version renders on stdout")]

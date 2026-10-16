@@ -45,6 +45,10 @@ fn build_record(
     if !missing.is_empty() {
         return Err(missing_flags_failure(&record_type, &missing, args, &flags));
     }
+    // The optional fields collect after the required set (reference
+    // collectField's second loop): present-and-non-empty values
+    // store, everything else drops.
+    let optional: &[String] = &row.optional;
 
     let mut record = Map::new();
     record.insert("type".into(), Value::String(record_type.clone()));
@@ -100,21 +104,34 @@ fn build_record(
             .collect();
         record.insert("dir_anchors".into(), Value::Array(anchors));
     }
-    for field in payload {
-        if let Some(value) = truthy_str(flags.resolved(field)) {
+    // collectField over `def.required ∪ def.optional`: the extracts-
+    // files field splits its comma string into an array (builtins and
+    // customs alike — the row carries the resolved `files_array`);
+    // every other field stores the plain string (mulch-d524).
+    for field in payload.iter().chain(optional.iter()) {
+        let Some(value) = truthy_str(flags.resolved(field)) else {
+            continue;
+        };
+        if row.files_array.as_deref() == Some(field.as_str()) {
+            let files = split_list(Some(value)).unwrap_or_default();
+            record.insert(field.as_str().into(), strings_value(&files));
+        } else {
             record.insert(field.as_str().into(), Value::String(value.to_string()));
         }
     }
-    // The reference collects fields from `def.required ∪ def.optional`
-    // only: `--files` on a type that does not declare it is DROPPED
-    // (mulch-b8ca; `files` is declared by pattern and reference).
-    // collectField drops an empty `--files` value before the split
-    // (mulch-1209); a comma-only value splits to an EMPTY list, which
-    // the reference stores (and the git-context auto-populate skips
-    // because the key exists).
-    let declares_files = row.files_array.is_some();
-    if declares_files && let Some(files) = split_list(truthy_str(args.files.as_deref())) {
-        record.insert("files".into(), strings_value(&files));
+    // Git-context auto-populate for extracts-files types whose field
+    // stayed absent (reference buildRecordFromOptions: `getContextFiles`
+    // — staged plus unstaged diff names, deduped and sorted; absent
+    // outside a git repository). Builtins ride the same law: a
+    // pattern without --files picks up the changed files too
+    // (mulch-d524, probed).
+    if let Some(files_field) = &row.files_array
+        && !record.contains_key(files_field.as_str())
+    {
+        let context = context_files();
+        if !context.is_empty() {
+            record.insert(files_field.as_str().into(), strings_value(&context));
+        }
     }
 
     // Reference-list pattern validation runs on the built record and
@@ -166,7 +183,13 @@ fn missing_flags_failure(
     args: &RecordArgs,
     flags: &PayloadFlags<'_>,
 ) -> Failure {
-    let missing_flags: Vec<String> = missing.iter().map(|f| format!("--{f}")).collect();
+    // The missing flag hyphenates its field name; the placeholder
+    // keeps the underscores (reference collectField + buildRetryCommand:
+    // `--code-name "<code_name>"`, probed mulch-d524).
+    let missing_flags: Vec<String> = missing
+        .iter()
+        .map(|field| format!("--{}", field.replace('_', "-")))
+        .collect();
     // The echo promotes THIS binary: the reference's buildRetryCommand
     // hardcodes its own name (`ml record`), we say `mulch record` — the
     // user-facing surface never sends anyone to the retired binary
@@ -221,9 +244,8 @@ fn missing_flags_failure(
             let _ = write!(echo, " --evidence-{key} {}", js_string(value));
         }
     }
-    for flag in &missing_flags {
-        let hint = flag.trim_start_matches("--");
-        let _ = write!(echo, " {flag} \"<{hint}>\"");
+    for (flag, field) in missing_flags.iter().zip(missing) {
+        let _ = write!(echo, " {flag} \"<{field}>\"");
     }
     Failure::handled(
         "record",
@@ -255,6 +277,37 @@ fn non_empty_list(raw: Option<&str>) -> Option<Vec<String>> {
 /// A JSON array of strings.
 fn strings_value(items: &[String]) -> Value {
     Value::Array(items.iter().map(|i| Value::String(i.clone())).collect())
+}
+
+/// The reference's `getContextFiles` (utils/git-context.ts): staged
+/// plus unstaged changed file names, deduped and sorted; no git
+/// repository (or git failure) means no files. Untracked files never
+/// appear — the source is `git diff --name-only [--cached]`.
+fn context_files() -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    for staged in [true, false] {
+        let mut command = std::process::Command::new("git");
+        command.args(["diff", "--name-only"]);
+        if staged {
+            command.arg("--cached");
+        }
+        let Ok(output) = command.output() else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        let Ok(text) = String::from_utf8(output.stdout) else {
+            return Vec::new();
+        };
+        for file in text.lines().filter(|line| !line.is_empty()) {
+            if !files.iter().any(|seen| seen == file) {
+                files.push(file.to_string());
+            }
+        }
+    }
+    files.sort();
+    files
 }
 
 /// Auto-populated git evidence: the full HEAD sha when cwd is a git
@@ -363,7 +416,16 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     // (mulch-cbe2). stdin/batch records default to convention in
     // both binaries (effective_type law, mulch-3f08).
     if args.record_type.is_none() {
-        let choices = mulch::PAYLOAD_TYPES.join(", ");
+        // the registry's names, builtins first then customs — the
+        // reference's typeChoices (probed: customs join the list,
+        // mulch-d524)
+        let choices = store
+            .registry()
+            .rows()
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(Failure::handled_on_stderr(
             "record",
             format!("Error: --type is required ({choices})"),

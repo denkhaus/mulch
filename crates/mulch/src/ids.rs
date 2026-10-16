@@ -39,7 +39,7 @@ pub struct TypeSpec {
 /// `def.summary`): builtins read the id-key field (convention and
 /// failure truncated to 60); custom types interpolate their summary
 /// template, or inherit the parent builtin's law.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SummaryLaw {
     /// The named field's value, optionally truncated.
     Field {
@@ -54,7 +54,7 @@ pub enum SummaryLaw {
 }
 
 /// One part of a custom summary template.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SummaryPart {
     /// Literal text.
     Literal(String),
@@ -66,7 +66,7 @@ pub enum SummaryPart {
 /// The config-aware view every registry consumer works over
 /// (mulch-b4bd): schema branches, duplicate detection, id
 /// generation, and the doctor registry surfaces.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     /// The type name (builtins in the reference's fixed order first,
     /// then customs in config order).
@@ -98,7 +98,7 @@ pub struct Row {
 /// The merged registry: the six builtins plus the config's
 /// `custom_types` rows (mulch-b4bd). Built from the store's config
 /// at open time; the builtins-only view serves configless contexts.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Registry {
     rows: Vec<Row>,
 }
