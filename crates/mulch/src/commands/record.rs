@@ -26,7 +26,10 @@ fn build_record(
         .as_deref()
         .expect("run rejects the flag path without --type (mulch-cbe2)")
         .to_string();
-    let payload: &[&str] = mulch::payload_fields(&record_type);
+    let row = registry
+        .row(&record_type)
+        .expect("clap gates --type to the registry");
+    let payload: &[String] = &row.payload;
     let flags = PayloadFlags::from_record(args, &record_type);
 
     // The reference's collectField law: a flag value OR the
@@ -36,7 +39,7 @@ fn build_record(
     let present = |field: &str| flags.resolved(field).is_some_and(|value| !value.is_empty());
     let missing: Vec<&str> = payload
         .iter()
-        .copied()
+        .map(String::as_str)
         .filter(|field| !present(field))
         .collect();
     if !missing.is_empty() {
@@ -99,7 +102,7 @@ fn build_record(
     }
     for field in payload {
         if let Some(value) = truthy_str(flags.resolved(field)) {
-            record.insert((*field).into(), Value::String(value.to_string()));
+            record.insert(field.as_str().into(), Value::String(value.to_string()));
         }
     }
     // The reference collects fields from `def.required ∪ def.optional`
@@ -109,8 +112,7 @@ fn build_record(
     // (mulch-1209); a comma-only value splits to an EMPTY list, which
     // the reference stores (and the git-context auto-populate skips
     // because the key exists).
-    let declares_files =
-        mulch::type_spec(&record_type).is_some_and(|spec| spec.optional.contains(&"files"));
+    let declares_files = row.files_array.is_some();
     if declares_files && let Some(files) = split_list(truthy_str(args.files.as_deref())) {
         record.insert("files".into(), strings_value(&files));
     }

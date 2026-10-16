@@ -393,10 +393,25 @@ pub(crate) fn repair_fixture(dir: &Path, ml: &Path) {
 /// number, string, null, array, empty object, proper object (control)
 /// — plus one mid-object `outcome` key to pin the trailing position
 /// of the migrated `outcomes` array through the strict-read rewrite.
-pub(crate) fn odd_legacy_fixture(dir: &Path, ml: &Path) {
+/// One fresh-side timestamp for every `odd_legacy_fixture` call in
+/// the process: twin stores stay byte-identical (the same test's
+/// ours/theirs fixtures must not differ by a now() race).
+static LAST_ODD_LEGACY_AT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub(crate) fn odd_legacy_fixture(dir: &Path, ml: &Path) -> String {
     let _ = run_in(dir, ml, &["init"]);
     let _ = run_in(dir, ml, &["add", "probe"]);
-    let base = r#"{"type":"pattern","name":"{name}","description":"d","classification":"tactical","recorded_at":"2026-10-01T00:00:00.000Z","id":"{id}","outcome":{outcome}}"#;
+    // fresh-side by a full day (the sprint-18 time-bomb rule: fixed
+    // calendar dates cross the shelf boundary and flip the doctor
+    // --fix expectation — this fixture's 2026-10-01 pin did on
+    // 2026-10-16)
+    let fresh_at = LAST_ODD_LEGACY_AT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert_with(|| (jiff::Timestamp::now() - jiff::Span::new().hours(24)).to_string())
+        .clone();
+    let base = r#"{"type":"pattern","name":"{name}","description":"d","classification":"tactical","recorded_at":"{at}","id":"{id}","outcome":{outcome}}"#
+        .replace("{at}", &fresh_at);
     let rows = [
         ("num", "mx-111111", "5"),
         ("str", "mx-222222", "\"x\""),
@@ -419,8 +434,8 @@ pub(crate) fn odd_legacy_fixture(dir: &Path, ml: &Path) {
         .collect::<Vec<_>>();
     // mid-object outcome: the rewrite must append outcomes at the END
     store.push(
-        r#"{"type":"pattern","outcome":{"status":"success"},"name":"mid","description":"d","classification":"tactical","recorded_at":"2026-10-01T00:00:00.000Z","id":"mx-777777"}"#
-            .to_string(),
+        r#"{"type":"pattern","outcome":{"status":"success"},"name":"mid","description":"d","classification":"tactical","recorded_at":"{at}","id":"mx-777777"}"#
+            .replace("{at}", &fresh_at),
     );
     std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
     std::fs::write(
@@ -428,6 +443,7 @@ pub(crate) fn odd_legacy_fixture(dir: &Path, ml: &Path) {
         store.join("\n") + "\n",
     )
     .expect("probe store");
+    fresh_at
 }
 
 /// One crafted store shared by the gate probes: five convention

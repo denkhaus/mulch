@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
-use crate::ids::{Registry, Row, SummaryLaw, SummaryPart, id_key_field, record_id};
+use crate::ids::{Registry, Row, SummaryLaw, SummaryPart, record_id};
 use crate::jsval::{js_dedup_eq, js_key_sorted, parse_non_negative_number, truthy_str, value_text};
 
 /// One parsed record with its physical line number.
@@ -517,18 +517,16 @@ pub fn record_summary(registry: &Registry, record: &Value) -> String {
                 value.to_string()
             }
         }
-        // Unknown types keep the static builtin law (move/delete only
-        // reach them under --allow-unknown-types).
-        None => {
-            let value = record
-                .get(id_key_field(kind))
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            match kind {
-                "convention" | "failure" => truncate(value, 60),
-                _ => value.to_string(),
-            }
-        }
+        // Unknown types key on content like every static fallback —
+        // and never truncate: `convention`/`failure` (the only
+        // truncate cases) are always registered rows, so the arm's
+        // truncate branch was dead (move/delete reach unknown types
+        // only under --allow-unknown-types; mulch-b9d4).
+        None => record
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 

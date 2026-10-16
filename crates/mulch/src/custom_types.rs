@@ -57,29 +57,6 @@ pub(crate) struct CustomTypeCfg {
     pub(crate) files_field:    Option<String>,
 }
 
-/// A validated custom type's merged registry row (parent inheritance
-/// resolved).
-#[derive(Debug, PartialEq)]
-pub(crate) struct CustomRow {
-    pub(crate) name:        String,
-    /// Required fields, parent-first then the child's own (write and
-    /// schema order).
-    pub(crate) required:    Vec<String>,
-    /// Optional fields, parent-first minus promoted-to-required.
-    pub(crate) optional:    Vec<String>,
-    /// The id key field (or `content_hash`).
-    pub(crate) id_key:      String,
-    /// The dedup field; `None` is the never-matching `content_hash`
-    /// mode.
-    pub(crate) dedup:       Option<String>,
-    /// The field that is a string array instead of a plain string
-    /// (`extracts_files` resolved with `files_field`).
-    pub(crate) files_array: Option<String>,
-    /// The summary rendering law (own template, or the parent
-    /// builtin's field law when `summary` is inherited).
-    pub(crate) summary:     crate::ids::SummaryLaw,
-}
-
 /// The `custom_types` entries in config order. The reference iterates
 /// `Object.entries(customTypes)`: a mapping yields its pairs, a STRING
 /// or SEQUENCE yields `(index, element)` pairs (probe:
@@ -336,8 +313,11 @@ pub(crate) fn validate(name: &str, cfg: &CustomTypeCfg) -> Result<(), String> {
     Ok(())
 }
 
-/// Builds the merged row for a VALIDATED config entry.
-pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> CustomRow {
+/// Builds the merged registry row for a VALIDATED config entry
+/// (`ids::Row` directly — `builtin: false`, named iff a field dedup
+/// key exists; the parallel `CustomRow` shape folded away,
+/// mulch-b9d4).
+pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> crate::ids::Row {
     let parent = parent_spec(cfg);
 
     let mut required: Vec<String> = parent.map_or_else(Vec::new, |spec| {
@@ -400,12 +380,14 @@ pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> CustomRow {
         ),
     };
 
-    CustomRow {
+    crate::ids::Row {
         name: name.to_string(),
-        required,
+        payload: required,
         optional,
         id_key,
-        dedup,
+        dedup: dedup.clone(),
+        named: dedup.is_some(),
+        builtin: false,
         files_array,
         summary,
     }
@@ -708,7 +690,7 @@ mod tests {
             "t",
             &cfg("extends: pattern\nrequired: [extra]\noptional: [files]\ndedup_key: extra"),
         );
-        assert_eq!(row.required, ["name", "description", "extra"]);
+        assert_eq!(row.payload, ["name", "description", "extra"]);
         // the child redeclares `files` optional — it stays optional
         // (parent optional, child optional)
         assert_eq!(row.optional, ["files"]);
@@ -716,6 +698,8 @@ mod tests {
         assert_eq!(row.dedup.as_deref(), Some("extra"));
         // parent extracts-files semantics inherit
         assert_eq!(row.files_array.as_deref(), Some("files"));
+        assert!(row.named);
+        assert!(!row.builtin);
 
         let content = build_row(
             "t",
@@ -723,6 +707,7 @@ mod tests {
         );
         assert_eq!(content.dedup, None);
         assert_eq!(content.id_key, "content_hash");
+        assert!(!content.named);
     }
 
     #[test]
@@ -791,7 +776,7 @@ mod tests {
             "t",
             &cfg("extends: pattern\nrequired: [files]\ndedup_key: name"),
         );
-        assert!(row.required.contains(&"files".to_string()));
+        assert!(row.payload.contains(&"files".to_string()));
         assert!(
             !row.optional.iter().any(|field| field == "files"),
             "promoted fields leave the optional list"

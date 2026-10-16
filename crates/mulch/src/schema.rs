@@ -14,7 +14,7 @@
 //! with [`SUB_SEP`]. Records with a present-but-unregistered `type`
 //! fail with ``Unknown record `X` `` instead of the oneOf blob.
 
-use crate::ids::{effective_type, hint_fields};
+use crate::ids::effective_type;
 
 /// The separator between oneOf sub-errors (reference join).
 pub const SUB_SEP: &str = "; ";
@@ -554,7 +554,7 @@ pub fn full_verdict(registry: &crate::ids::Registry, record: &serde_json::Value)
         let kind = effective_type(None);
         return FullVerdict::Invalid {
             subs: vec![SubError::MustBeObject],
-            hint: format!("Hint: {kind} records require: {}", hint_fields(kind)),
+            hint: hint_line(registry, kind),
         };
     };
     let record_type = object.get("type").and_then(serde_json::Value::as_str);
@@ -566,14 +566,22 @@ pub fn full_verdict(registry: &crate::ids::Registry, record: &serde_json::Value)
 }
 
 /// The missing-fields hint over the merged registry: the record's own
-/// type's payload when registered, the builtin fallback otherwise
-/// (custom types hint their own required fields — mulch-b4bd).
+/// type's payload when registered, the content-only fallback for
+/// unregistered kinds otherwise (custom types hint their own required
+/// fields — mulch-b4bd; the fallback is registry-derived, the static
+/// helper deleted — mulch-b9d4).
 fn registry_hint(registry: &crate::ids::Registry, record_type: Option<&str>) -> String {
     let kind = effective_type(record_type);
-    match registry.row(kind) {
-        Some(row) => format!("Hint: {kind} records require: {}", row.payload.join(", ")),
-        None => format!("Hint: {kind} records require: {}", hint_fields(kind)),
-    }
+    hint_line(registry, kind)
+}
+
+/// `Hint: <kind> records require: <fields>` over the merged registry
+/// (unregistered kinds keep the content-only fallback bytes).
+fn hint_line(registry: &crate::ids::Registry, kind: &str) -> String {
+    let fields = registry
+        .row(kind)
+        .map_or_else(|| "content".to_string(), |row| row.payload.join(", "));
+    format!("Hint: {kind} records require: {fields}")
 }
 
 /// The validate finding message for a non-valid record.

@@ -728,7 +728,7 @@ fn doctor_fix_on_odd_legacy_outcomes_matches_reference() {
     };
     let ours = TempDir::new("odd1609-fix-ours");
     let theirs = TempDir::new("odd1609-fix-theirs");
-    odd_legacy_fixture(&ours.0, &ml);
+    let fresh_at = odd_legacy_fixture(&ours.0, &ml);
     odd_legacy_fixture(&theirs.0, &ml);
 
     let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
@@ -763,7 +763,11 @@ fn doctor_fix_on_odd_legacy_outcomes_matches_reference() {
     );
     assert_eq!(
         read_store_file(&ours.0, "expertise/probe.jsonl"),
-        "{\"type\":\"pattern\",\"name\":\"obj\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-01T00:00:00.000Z\",\"id\":\"mx-666666\",\"outcomes\":[{\"status\":\"success\",\"agent\":\"a\"}]}\n{\"type\":\"pattern\",\"name\":\"mid\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-01T00:00:00.000Z\",\"id\":\"mx-777777\",\"outcomes\":[{\"status\":\"success\"}]}\n"
+        concat!(
+            "{\"type\":\"pattern\",\"name\":\"obj\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"{at}\",\"id\":\"mx-666666\",\"outcomes\":[{\"status\":\"success\",\"agent\":\"a\"}]}\n",
+            "{\"type\":\"pattern\",\"name\":\"mid\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"{at}\",\"id\":\"mx-777777\",\"outcomes\":[{\"status\":\"success\"}]}\n",
+        )
+        .replace("{at}", &fresh_at)
     );
 }
 

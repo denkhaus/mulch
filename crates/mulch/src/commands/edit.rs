@@ -62,14 +62,21 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     // declares it (pattern and reference — the reference's def loop
     // drops the flag for every other type, so no unknown extra field
     // is ever written).
-    let payload: &[&str] = mulch::payload_fields(&record_type);
+    let fields: Vec<&str> = store.registry().row(&record_type).map_or_else(
+        || vec!["content"],
+        |row| row.payload.iter().map(String::as_str).collect(),
+    );
     let flags = PayloadFlags::from_edit(args);
-    for &field in payload {
+    for field in fields {
         if let Some(value) = flags.get(field) {
             record.insert(field.into(), Value::String(value.to_string()));
         }
     }
-    if mulch::type_spec(&record_type).is_some_and(|spec| spec.optional.contains(&"files")) {
+    if store
+        .registry()
+        .row(&record_type)
+        .is_some_and(|row| row.files_array.is_some())
+    {
         set_end_list(&mut record, "files", args.files.as_deref());
     }
 

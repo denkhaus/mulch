@@ -125,19 +125,7 @@ impl Registry {
         for (name, cfg) in crate::custom_types::entries(config.custom_types_value()) {
             crate::custom_types::validate(&name, &cfg)
                 .map_err(|message| crate::error::Error::CustomTypes { message })?;
-            let row = crate::custom_types::build_row(&name, &cfg);
-            let named = row.dedup.is_some();
-            rows.push(Row {
-                name: row.name,
-                payload: row.required,
-                optional: row.optional,
-                id_key: row.id_key,
-                dedup: row.dedup,
-                named,
-                builtin: false,
-                files_array: row.files_array,
-                summary: row.summary,
-            });
+            rows.push(crate::custom_types::build_row(&name, &cfg));
         }
         Ok(Self { rows })
     }
@@ -241,47 +229,12 @@ pub const REGISTRY: [TypeSpec; 6] = [
     },
 ];
 
-/// The registry row for a type, when it is one of the six built-ins.
-#[must_use]
-pub fn type_spec(record_type: &str) -> Option<&'static TypeSpec> {
-    REGISTRY.iter().find(|spec| spec.name == record_type)
-}
-
-/// The id key field per record type (registry row; convention and
-/// unknown types key on content).
-pub fn id_key_field(record_type: &str) -> &'static str {
-    type_spec(record_type).map_or("content", |spec| spec.id_key)
-}
-
-/// Whether a type upserts on duplicate instead of skipping (reference
-/// `isNamedType`: anonymous `convention`/`failure` skip, the named
-/// types upsert; unknown types default to named, though the duplicate
-/// detector never matches them).
-#[must_use]
-pub fn is_named_type(record_type: &str) -> bool {
-    type_spec(record_type).is_none_or(|spec| spec.named)
-}
-
-/// The required-fields hint line content for a record type (registry
-/// knowledge: the payload fields joined like the reference hint).
-#[must_use]
-pub fn hint_fields(record_type: &str) -> String {
-    payload_fields(record_type).join(", ")
-}
-
 /// The record's effective type: a missing or non-string `type` means
 /// `convention` (the reference default — a format law, not a local
 /// choice; mulch-3f08).
 #[must_use]
 pub fn effective_type(record_type: Option<&str>) -> &str {
     record_type.unwrap_or("convention")
-}
-
-/// Payload fields per record type, in canonical write order (registry
-/// row; convention and unknown types carry only content).
-#[must_use]
-pub fn payload_fields(record_type: &str) -> &'static [&'static str] {
-    type_spec(record_type).map_or(&["content"], |spec| spec.payload)
 }
 
 /// Computes the record id for a payload.
@@ -331,14 +284,5 @@ mod tests {
             REGISTRY.map(|spec| spec.name),
             "the type list IS the registry order"
         );
-    }
-
-    #[test]
-    fn named_types_are_everything_but_convention_and_failure() {
-        assert!(!is_named_type("convention"));
-        assert!(!is_named_type("failure"));
-        for named in ["pattern", "decision", "reference", "guide"] {
-            assert!(is_named_type(named));
-        }
     }
 }
