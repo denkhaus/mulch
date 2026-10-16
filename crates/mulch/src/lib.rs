@@ -35,8 +35,8 @@ pub use ids::{
 // `mulch::jsval` stays the deep path for the rest, e.g. `js_dedup_eq`)
 #[doc(inline)]
 pub use jsval::{
-    js_key_sorted, js_length, js_round_u64, js_string, parse_non_negative_number, truthy,
-    truthy_str, value_text,
+    js_key_sorted, js_length, js_round_u64, js_string, js_truncate, parse_non_negative_number,
+    truthy, truthy_str, value_text,
 };
 pub use records::{
     Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, UpsertPlan, assign_missing_id,

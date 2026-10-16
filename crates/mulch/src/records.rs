@@ -512,7 +512,7 @@ pub fn record_summary(registry: &Registry, record: &Value) -> String {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if *shorten {
-                truncate(value, 60)
+                crate::jsval::js_truncate(value, 60)
             } else {
                 value.to_string()
             }
@@ -528,37 +528,6 @@ pub fn record_summary(registry: &Registry, record: &Value) -> String {
             .unwrap_or_default()
             .to_string(),
     }
-}
-
-/// Reference `truncate(text, maxLen)`: a sentence end inside the window
-/// wins, otherwise `slice(0, maxLen) + "..."`.
-fn truncate(text: &str, max_len: usize) -> String {
-    if text.chars().count() <= max_len {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let window: String = chars[..max_len.min(chars.len())].iter().collect();
-    if let Some(position) = sentence_end(&window) {
-        return window.chars().take(position + 1).collect();
-    }
-    format!("{window}...")
-}
-
-/// The first `[.!?]` followed by whitespace.
-fn sentence_end(window: &str) -> Option<usize> {
-    let bytes: Vec<char> = window.chars().collect();
-    for (index, ch) in bytes.iter().enumerate() {
-        if matches!(ch, '.' | '!' | '?')
-            && bytes
-                .get(index + 1)
-                .is_some_and(|next| next.is_whitespace())
-            && index > 0
-            && index < window.chars().count()
-        {
-            return Some(index);
-        }
-    }
-    None
 }
 
 /// An ordered distribution counter with the reference's JS semantics

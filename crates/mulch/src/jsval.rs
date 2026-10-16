@@ -165,6 +165,57 @@ pub fn js_round_u64(value: f64) -> u64 {
 /// then string keys in first-seen order. The reference's counters and
 /// every hand-ordered JSON boundary follow it (probe: `{"type": 5}`
 /// counts under `"5"` before the seeded names).
+/// The reference's `truncate` (utils/format-helpers.ts): UTF-16 code
+/// units are the counting law (live-probed 2026-10-16 vs ml 0.10.7:
+/// 31 emoji = 62 units cut at 60 → 30 emoji + `...`; the same string
+/// counts 31 chars / 124 bytes under the old private copies). A
+/// sentence end (`[.!?]` + JS whitespace) inside the window wins;
+/// a cut splitting a surrogate pair renders U+FFFD — Node's UTF-8
+/// stdout conversion of a lone surrogate (29×🎉 + X + 🎉 + tail
+/// probed: the 60-unit cut keeps 29 emoji, X, and the orphaned high
+/// half as U+FFFD).
+pub fn js_truncate(text: &str, max_len: usize) -> String {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if units.len() <= max_len {
+        return text.to_string();
+    }
+    if let Some(end) = sentence_end(&units)
+        && end > 0
+        && end < max_len
+    {
+        return String::from_utf16_lossy(&units[..=end]);
+    }
+    let mut cut = String::from_utf16_lossy(&units[..max_len]);
+    cut.push_str("...");
+    cut
+}
+
+/// The first `[.!?]` followed by JS whitespace, as a UTF-16 index —
+/// `text.search(/[.!?]\s/)`. The ECMAScript `\s` set, not Rust's
+/// `White_Space`: U+FEFF counts, U+0085 does not.
+fn sentence_end(units: &[u16]) -> Option<usize> {
+    units.windows(2).enumerate().find_map(|(index, pair)| {
+        is_sentence_punctuation(pair[0])
+            .then(|| is_js_whitespace(pair[1]).then_some(index))
+            .flatten()
+    })
+}
+
+fn is_sentence_punctuation(unit: u16) -> bool {
+    // '.' | '!' | '?' as UTF-16 code units
+    matches!(unit, 0x2E | 0x21 | 0x3F)
+}
+
+/// The ECMAScript `\s` set (unicode escape table of the spec's
+/// `\s` class).
+fn is_js_whitespace(unit: u16) -> bool {
+    matches!(
+        unit,
+        0x09..=0x0D | 0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F
+            | 0x3000 | 0xFEFF
+    )
+}
+
 pub fn js_key_sorted<T>(entries: &[(String, T)]) -> Vec<&(String, T)> {
     // one partition pass, one parse per entry: the JS array-index
     // check IS the u64 parse (plus the canonical-numeral shape)
@@ -316,5 +367,66 @@ mod js_quirk_tests {
                 "raw {reject:?} must reject"
             );
         }
+    }
+
+    // ---- js_truncate (mulch-5e38): the UTF-16 law, live-probed vs
+    // ml 0.10.7 on 2026-10-16 (delete summary 60 / compact render
+    // 100 surfaces) ----
+
+    #[test]
+    fn truncate_counts_utf16_units() {
+        // 58 umlauts + O-umlaut + U-umlaut = 60 units: no cut needed
+        // at exactly the limit, `...` beyond it
+        let sixty = format!("{}ÖÜ", "Ä".repeat(58));
+        assert_eq!(js_truncate(&sixty, 60), sixty);
+        let sixty_one = format!("{sixty} tail");
+        assert_eq!(js_truncate(&sixty_one, 60), format!("{sixty}..."));
+        // 31 emoji = 62 UTF-16 units: the cut keeps 30 — a char-based
+        // copy would keep all 31, a byte-based one 15
+        let emoji = "🎉".repeat(31);
+        assert_eq!(js_truncate(&emoji, 60), format!("{}...", "🎉".repeat(30)));
+        // the compact-render limit: 51 emoji = 102 units
+        assert_eq!(
+            js_truncate(&"🎉".repeat(51), 100),
+            format!("{}...", "🎉".repeat(50))
+        );
+    }
+
+    #[test]
+    fn truncate_splitting_a_surrogate_pair_renders_the_replacement_char() {
+        // 29 emoji (58 units) + X (1) + emoji (2) + tail: the 60-unit
+        // cut orphans the second emoji's high half — Node prints a
+        // lone surrogate as U+FFFD (probed)
+        let text = format!("{}X🎉{}", "🎉".repeat(29), " tail beyond the cut");
+        assert_eq!(
+            js_truncate(&text, 60),
+            format!("{}X\u{fffd}...", "🎉".repeat(29))
+        );
+    }
+
+    #[test]
+    fn truncate_sentence_end_wins_inside_the_window_only() {
+        // the first sentence end INSIDE the window wins and keeps the
+        // punctuation
+        let text = "First sentence. And a much longer tail that exceeds the limit";
+        assert_eq!(js_truncate(text, 20), "First sentence.");
+        // a sentence end at or beyond the limit does not apply
+        let late = format!("{} sentence", "x".repeat(60));
+        assert_eq!(js_truncate(&late, 20), format!("{}...", "x".repeat(20)));
+        // index 0 never wins (`sentenceEnd > 0`)
+        let leading = ". starts with the period and runs far beyond the window";
+        assert_eq!(js_truncate(leading, 10), format!("{}...", &leading[..10]));
+    }
+
+    #[test]
+    fn truncate_whitespace_is_the_ecmascript_set() {
+        // U+00A0 (NBSP) is JS \s and ends a sentence; U+0085 (NEL)
+        // is NOT (Rust char::is_whitespace would flip both)
+        let nbsp = "Ends here.\u{a0}Then more text well beyond the limit";
+        assert_eq!(js_truncate(nbsp, 20), "Ends here.");
+        let nel = "Not a break.\u{85}text continues past every window boundary";
+        // no sentence end: the hard cut keeps 12 units — the period
+        // IS the 12th — then the ellipsis
+        assert_eq!(js_truncate(nel, 12), "Not a break....");
     }
 }

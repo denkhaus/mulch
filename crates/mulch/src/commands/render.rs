@@ -230,28 +230,6 @@ fn id_tag(record: &Value) -> String {
     }
 }
 
-/// `truncate`: the first sentence end inside the limit, else the hard
-/// cut with an ellipsis.
-fn truncate(text: &str, max_len: usize) -> String {
-    if text.len() <= max_len {
-        return text.into();
-    }
-    // sentence end: [.!?] followed by whitespace (JS /[.!?]\s/; the
-    // length check rides bytes — the field text is CLI-written ASCII
-    // in practice, and the hard cut clamps to a char boundary)
-    for (index, window) in text.as_bytes().windows(2).enumerate() {
-        let is_end = matches!(window[0], b'.' | b'!' | b'?') && window[1].is_ascii_whitespace();
-        if is_end && index > 0 && index < max_len {
-            return text[..=index].into();
-        }
-    }
-    let mut cut = max_len;
-    while cut > 0 && !text.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    format!("{}...", &text[..cut])
-}
-
 /// `compactMeta`'s classification+age part: foundational renders bare,
 /// every other classification (including the coerced `undefined` of a
 /// missing field) renders with the recorded_at age.
@@ -754,7 +732,7 @@ fn markdown_guides(records: &[Value], full: bool) -> String {
 fn compact_convention(record: &Value, now: Timestamp) -> String {
     format!(
         "- [convention] {}{}{}{}",
-        truncate(&str_field(record, "content"), 100),
+        mulch::js_truncate(&str_field(record, "content"), 100),
         compact_meta(record, now),
         outcome_suffix(record),
         links_suffix(record)
@@ -765,7 +743,7 @@ fn compact_pattern(record: &Value, now: Timestamp) -> String {
     format!(
         "- [pattern] {}: {}{}{}{}",
         str_field(record, "name"),
-        truncate(&str_field(record, "description"), 100),
+        mulch::js_truncate(&str_field(record, "description"), 100),
         files_paren(record),
         compact_meta(record, now),
         outcome_suffix(record) + &links_suffix(record)
@@ -775,8 +753,8 @@ fn compact_pattern(record: &Value, now: Timestamp) -> String {
 fn compact_failure(record: &Value, now: Timestamp) -> String {
     format!(
         "- [failure] {} → {}{}{}{}",
-        truncate(&str_field(record, "description"), 100),
-        truncate(&str_field(record, "resolution"), 100),
+        mulch::js_truncate(&str_field(record, "description"), 100),
+        mulch::js_truncate(&str_field(record, "resolution"), 100),
         compact_meta(record, now),
         outcome_suffix(record),
         links_suffix(record)
@@ -787,7 +765,7 @@ fn compact_decision(record: &Value, now: Timestamp) -> String {
     format!(
         "- [decision] {}: {}{}{}{}",
         str_field(record, "title"),
-        truncate(&str_field(record, "rationale"), 100),
+        mulch::js_truncate(&str_field(record, "rationale"), 100),
         compact_meta(record, now),
         outcome_suffix(record),
         links_suffix(record)
@@ -797,7 +775,10 @@ fn compact_decision(record: &Value, now: Timestamp) -> String {
 fn compact_reference(record: &Value, now: Timestamp) -> String {
     let files = files_list(record);
     let ref_files = if files.is_empty() {
-        format!(": {}", truncate(&str_field(record, "description"), 100))
+        format!(
+            ": {}",
+            mulch::js_truncate(&str_field(record, "description"), 100)
+        )
     } else {
         format!(": {files}")
     };
@@ -814,7 +795,7 @@ fn compact_guide(record: &Value, now: Timestamp) -> String {
     format!(
         "- [guide] {}: {}{}{}{}",
         str_field(record, "name"),
-        truncate(&str_field(record, "description"), 100),
+        mulch::js_truncate(&str_field(record, "description"), 100),
         compact_meta(record, now),
         outcome_suffix(record),
         links_suffix(record)
