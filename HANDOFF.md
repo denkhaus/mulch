@@ -1,61 +1,78 @@
-# HANDOFF — session 2026-10-17 (evening) → next agent
+# HANDOFF — session 2026-10-17 (post-teardown) → next agent
 
-Overwritten at every session close. Last session: sprints 31 + 32
-CLOSED, notes rotation ported, nu 0.116.1 checked.
+Overwritten at every session close. Last session: sprint 33
+(mulch-6817, the post-gitbutler doc rework) CLOSED with both review
+axes green; the checkout is PLAIN GIT now.
 
-## ⚠ GITBUTLER EXPERIMENT ENDED (user directive 2026-10-17 evening)
+## Version control = plain git (the GitButler experiment is over)
 
-The user ended the GitButler experiment at this session close:
-teardown ran, the checkout is back on plain git / `main`. The iterate
-work lives on the plain `iterate` branch (tip = this commit). ALL
-`but`-specific procedures in AGENTS.md / the iterate skill are VOID
-from here — plain git wording applies (the docs still carry the
-but-era text and need the rework, tracked as a seed). The pending
-lane push (origin/iterate lagged behind by the closed push gate at
-teardown time) becomes a plain `git push origin iterate` through the
-gate when it reopens.
+The experiment ended 2026-10-17 (teardown; main fast-forwarded to the
+iterate tip 247f9ac). ADR-0001 decision 2 carries the amended decision
+body; AGENTS.md's Version control + Push gate sections are the binding
+wording. What changed for the next agent:
+
+- Session start: `ml prime` + `seeds prime` + `git status` — NOT
+  `but status` (the `but` binary errors: "not currently on a
+  gitbutler/* branch"). Lane staleness: `git fetch`, compare
+  `.iterate-state.json` against the lane's top commit, then
+  `git rebase origin/iterate` (clean tree, no background cargo).
+- Commits: plain `git add <paths> && git commit`, with `.seeds/` +
+  `.mulch/` batched into the same commit; long messages via
+  `git commit -F /tmp/msg.txt`; verify the landed file list with
+  `git show --stat <hash>` (the but-era hunk-id collection and
+  `but status -fv` recipes retired with the tool).
+- Push: the AGENTS.md two-layer command in ONE unpiped cell —
+  `nu .fabro/scripts/push-gate.nu` (exit 0), then `git push origin
+  iterate`.
+- DELETED at this close (containment-checked first): local
+  `gitbutler/workspace` (tip 66bed33 is an empty commit),
+  `gitbutler/target` (contained in main), `chore/but-fork-6` (only the
+  obsolete but pin). STILL PRESENT, deliberately untouched — deleting
+  them is a GATED push and was not in the seed's list:
+  `origin/gitbutler/workspace`, `origin/mise-but-pin`,
+  `origin/mise-pin-but-fork3`, `origin/mise-pin-but-fork5`,
+  `origin/vcs/gitbutler-mode`.
 
 ## Read first (standing context)
 
-- `AGENTS.md` (repo rules: but-only VCS, push gate, seeds/mulch protocol)
+- `AGENTS.md` (repo rules: plain-git VCS, push gate, seeds/mulch
+  protocol, iterate loop)
 - `.agents/skills/iterate/SKILL.md` (the local loop)
-- Session start: `ml prime` + `seeds prime`; `mise x -- but status`
+- Session start: `ml prime` + `seeds prime` + `git status`
 
 ## Where things stand
 
-- **Sprint counter** (`.iterate-state.json`): 32 completed / 32
-  reflected, `last_reflection` 2026-10-17. Next arch gate due at
-  sprint **33** (`last_arch_review_at_sprint` = 30).
-- **Sprint 31 CLOSED** (d524 custom-type-aware flag path + b9d4
-  residue kill + 5e38 truncate law; commits db5a3a8/ee4772d/34752d3/
-  946a9c6/ff8830f + fold ebd86a1, closeout 9a4c56f).
-- **Sprint 32 CLOSED** (b1cb custom_types aliases: 9-rule validation
-  law, apply_aliases at every read seam, raw-bytes legacy-outcome
-  corner; commits b67f5dc + fold 582bf39, closeout ors).
-- **PUSH PENDING**: the push gate refused at close (2 active runs on
-  mirtuell.net). Retry `nu .fabro/scripts/push-gate.nu` then
-  `mise x -- but push iterate` when open — the lane carries
-  fbb0679..ors (rotation port + sprints 31/32). Everything is
-  committed locally; only origin/iterate lags.
-- **Workspace gotchas hit this session** (recipes recorded in ml):
-  remote-rewrite `{conflicted}` → containment-check + `but discard`;
-  commit file/hunk IDs from `but status -fv` (NOT grepping but diff
-  box headers — they swallow files).
+- **Sprint counter** (`.iterate-state.json`): 33 completed / 33
+  reflected, `last_reflection` 2026-10-17.
+- **ARCH GATE @ 33 IS DUE** (`33 % 3 == 0`; `last_arch_review_at_sprint`
+  = 30) — run improve-codebase-architecture next, grill the chain order.
+- **Sprint 33 CLOSED** (mulch-6817): commits `08e9401` (the doc
+  rework), `e60d916` (review folds), `71d2f9b` (ml record retirement) +
+  the closeout commit. Follow-up seed filed: **mulch-e2df**.
+- **PUSH PENDING**: the gate refused at this close (1 active run,
+  `01M3AEHDGAT8BFZA0BZQJ6832H`). Retry `nu .fabro/scripts/push-gate.nu`
+  then `git push origin iterate` when it opens — everything is
+  committed locally, only `origin/iterate` (at 247f9ac) lags.
 
 ## Next steps (order)
 
-1. Push the lane when the gate opens (see above), then ORIENT as
-   usual.
-2. **Sprint 33 = the 16da WAVE** (query/prime/search — read+render:
+1. Push the lane when the gate opens (two-layer command above), then
+   ORIENT as usual.
+2. **ARCH GATE @ 33** — improve-codebase-architecture (explorer
+   subagent, HTML report on a localhost URL, grill the Strong-candidate
+   chain order; every non-Speculative candidate becomes a seed).
+3. **Sprint 34 = the 16da WAVE** (query/prime/search — read+render:
    render seam from sprint 28, registry view from sprint 30/b1cb,
    scoring slice from 228c feed it). Probe the reference TS first
    (commands/query.ts, prime surfaces, utils/bm25.ts). Consider
-   splitting into lane subagents — it is the largest remaining
-   surface.
-3. **ARCH GATE @ 33** falls due after sprint 33 closes
-   (improve-codebase-architecture, HTML report on localhost).
-4. Reviews: both axes PARALLEL, hand reviewers GIT hashes, collect
-   ALL hunk IDs via `but status -fv`.
+   splitting into chain subagents — the protocol is now: children own
+   DISJOINT files, never touch git, the HOST commits each delivery.
+4. **mulch-e2df**: rework `scripts/run_workflow.nu` + the justfile run
+   comment off `but` (needs a live petri run to verify) and drop the
+   leftover global `~/.config/mise/config.toml` `http:but` pin.
+5. Reviews: both axes PARALLEL via `pig -p` (one process per axis, the
+   diff passed INLINE in the prompt, 400-word caps) — the `claude -p`
+   channel was credit-exhausted this session.
 
 ## Known ephemera
 
@@ -63,7 +80,7 @@ gate when it reopens.
   .mulch/mulch.config.yaml; domain files at .mulch/expertise/.
 - Rust string continuations (`\` line end) EAT the next line's
   leading whitespace — keep YAML children on one source line in test
-  fixtures (hit twice this session).
+  fixtures (hit twice in sprint 32).
 - Style-guide drift-check 2026-10-17: intentional-diff-only, no
   refresh. nu 0.116.1 compat verified; pin switch waits for the
   seeds image bump (seeds repo owns it).
