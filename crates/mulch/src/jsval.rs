@@ -3,7 +3,8 @@
 //! coercion ([`value_text`]), truthiness for values ([`truthy`]) and
 //! optional string flags ([`truthy_str`]), `.length` counting
 //! ([`js_length`]), JSON.stringify string encoding ([`js_string`]),
-//! JS object property-key enumeration order ([`js_key_sorted`]),
+//! UTF-16 truncation ([`js_truncate`]), JS object property-key
+//! enumeration order ([`js_key_sorted`]),
 //! Math.round's non-negative clamp ([`js_round_u64`]), the strict
 //! numeric-flag parse with Number canonicalization
 //! ([`parse_non_negative_number`]), and the strict-equality comparison

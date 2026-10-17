@@ -10,7 +10,9 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::ids::{Registry, Row, SummaryLaw, SummaryPart, record_id};
-use crate::jsval::{js_dedup_eq, js_key_sorted, parse_non_negative_number, truthy_str, value_text};
+use crate::jsval::{
+    js_dedup_eq, js_key_sorted, js_truncate, parse_non_negative_number, truthy_str, value_text,
+};
 
 /// One parsed record with its physical line number.
 #[derive(Debug)]
@@ -512,7 +514,7 @@ pub fn record_summary(registry: &Registry, record: &Value) -> String {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if *shorten {
-                crate::jsval::js_truncate(value, 60)
+                js_truncate(value, 60)
             } else {
                 value.to_string()
             }

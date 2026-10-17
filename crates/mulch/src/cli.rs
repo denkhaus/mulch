@@ -615,4 +615,28 @@ mod dynamic_flag_tests {
             }
         }
     }
+
+    /// The pre-parse ([`invoked_subcommand`]) assumes every global
+    /// flag is a boolean: a value-taking global flag would swallow the
+    /// subcommand token, skip augmentation, and send a registry-gated
+    /// `--type` to the flag path's `expect`. Pins the derive's
+    /// top-level args to take no values.
+    #[test]
+    fn global_flags_take_no_values() {
+        let command = Cli::command();
+        let value_taking: Vec<String> = command
+            .get_arguments()
+            .filter(|arg| {
+                matches!(
+                    arg.get_action(),
+                    clap::ArgAction::Set | clap::ArgAction::Append
+                )
+            })
+            .map(|arg| arg.get_id().to_string())
+            .collect();
+        assert!(
+            value_taking.is_empty(),
+            "value-taking top-level args break the augment pre-parse: {value_taking:?}"
+        );
+    }
 }

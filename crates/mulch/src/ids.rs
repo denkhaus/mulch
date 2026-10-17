@@ -149,8 +149,7 @@ impl Registry {
         self.rows.iter().find(|row| row.name == record_type)
     }
 
-    /// The id key field for a type (unknown types key on content,
-    /// like the static builtin helper).
+    /// The id key field for a type (unknown types key on content).
     #[must_use]
     pub fn id_key_field(&self, record_type: &str) -> &str {
         self.row(record_type)
