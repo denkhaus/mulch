@@ -3,6 +3,18 @@
 Overwritten at every session close. Last session: sprints 31 + 32
 CLOSED, notes rotation ported, nu 0.116.1 checked.
 
+## ⚠ GITBUTLER EXPERIMENT ENDED (user directive 2026-10-17 evening)
+
+The user ended the GitButler experiment at this session close:
+teardown ran, the checkout is back on plain git / `main`. The iterate
+work lives on the plain `iterate` branch (tip = this commit). ALL
+`but`-specific procedures in AGENTS.md / the iterate skill are VOID
+from here — plain git wording applies (the docs still carry the
+but-era text and need the rework, tracked as a seed). The pending
+lane push (origin/iterate lagged behind by the closed push gate at
+teardown time) becomes a plain `git push origin iterate` through the
+gate when it reopens.
+
 ## Read first (standing context)
 
 - `AGENTS.md` (repo rules: but-only VCS, push gate, seeds/mulch protocol)
