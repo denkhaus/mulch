@@ -730,3 +730,142 @@ fn custom_edit_flag_path_matches_reference() {
     ];
     assert_flag_parity("unknown", &ours, &theirs, &edit, &edit, &ml);
 }
+
+/// The alias config: `code` and `name` each own legacy names (the
+/// read-time canonicalization matrix, mulch-b1cb).
+const ALIAS_CONFIG: &str = "version: '1'\n\
+domains:\n  dev: {}\n\
+custom_types:\n  snippet:\n    required: [code, name]\n    dedup_key: code\n    id_key: code\n    summary: \"{name}\"\n    aliases:\n      code: [snippet_code, legacycode]\n      name: [title2]\n\
+governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\n\
+classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30\n";
+
+/// Seeds a twin pair with the alias config and the alias-on-disk
+/// store: legacy-only, canonical+legacy (canonical must win), null
+/// and empty-string canonicals (legacy must win), one stale record.
+fn alias_twins(tag: &str) -> (TempDir, TempDir) {
+    let ours = TempDir::new(&format!("{tag}-ours"));
+    let theirs = TempDir::new(&format!("{tag}-theirs"));
+    let store = "{\"type\":\"snippet\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-10T10:00:00Z\",\"snippet_code\":\"SC1\",\"title2\":\"Legacy One\"}\n\
+                 {\"type\":\"snippet\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-10T10:00:00Z\",\"code\":\"C2\",\"name\":\"Canon Two\",\"snippet_code\":\"SHOULD_LOSE\"}\n\
+                 {\"type\":\"snippet\",\"classification\":\"tactical\",\"recorded_at\":\"2026-09-01T00:00:00Z\",\"code\":null,\"name\":null,\"legacycode\":\"L3\",\"title2\":\"Legacy Three\"}\n\
+                 {\"type\":\"snippet\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-10T10:00:00Z\",\"code\":\"\",\"name\":\"\",\"legacycode\":\"L4\",\"title2\":\"Legacy Four\"}\n";
+    for dir in [&ours.0, &theirs.0] {
+        write_seed_with_config(dir, ALIAS_CONFIG, &[]);
+        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), store).expect("alias store");
+    }
+    (ours, theirs)
+}
+
+#[test]
+fn custom_alias_read_canonicalization_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = alias_twins("ct-alias-read");
+    for args in [&["validate"][..], &["doctor", "--fix"][..], &["status"][..]] {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} codes differ");
+        assert_eq!(
+            strip_time_and_upgrade(&ours_run.stdout),
+            strip_time_and_upgrade(&theirs_run.stdout),
+            "{args:?} stdout differs"
+        );
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "{args:?} stderr differs"
+        );
+    }
+    // The --fix rewrite canonicalizes exactly like the reference's
+    // readExpertiseFile-based repair: legacy keys gone, canonical
+    // values at object end, ids backfilled last, stale record pruned.
+    assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
+}
+
+#[test]
+fn custom_alias_command_surfaces_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = alias_twins("ct-alias-cmds");
+    // Dedup keys on the CANONICAL field (code=SC1): the upsert finds
+    // record #1 through its aliased store representation.
+    let commands: [&[&str]; 4] = [
+        &[
+            "record",
+            "dev",
+            "--type",
+            "snippet",
+            "--code",
+            "SC1",
+            "--name",
+            "Updated One",
+        ],
+        &["edit", "dev", "mx-b6c65f", "--name", "Edited"],
+        &["delete", "dev", "mx-b6c65f", "--dry-run"],
+        &["move", "dev", "mx-b6c65f", "dev", "--dry-run"],
+    ];
+    for args in commands {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} codes differ");
+        assert_eq!(
+            normalize_dir(&echo_ours_to_reference(&ours_run.stdout), &ours.0),
+            normalize_dir(&theirs_run.stdout, &theirs.0),
+            "{args:?} stdout differs"
+        );
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "{args:?} stderr differs"
+        );
+    }
+    // The upsert stamps `now` — twin stores land microseconds apart,
+    // everything else matches byte-for-byte.
+    assert_eq!(
+        mask_timestamps(&read_store_file(&ours.0, "expertise/dev.jsonl")),
+        mask_timestamps(&read_store_file(&theirs.0, "expertise/dev.jsonl")),
+        "store differs"
+    );
+}
+
+#[test]
+fn custom_alias_invalid_config_matrix_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Each case hits one aliases validation rule (probe matrix
+    // 2026-10-17, reference validateCustomTypeConfig).
+    let base = "version: '1'\n\
+domains:\n  dev: {}\n\
+custom_types:\n  snippet:\n    required: [code, name]\n    dedup_key: code\n    id_key: code\n    summary: \"{name}\"\n    aliases:\n";
+    let cases: [(&str, &str); 9] = [
+        ("not-a-map", "      - a\n"),
+        ("key-undeclared", "      undeclared: [x]\n"),
+        ("entry-empty", "      code: []\n"),
+        ("entry-not-array", "      code: xy\n"),
+        ("name-rule", "      code: [Has-Hyphen]\n"),
+        ("base-collision", "      code: [tags]\n"),
+        ("builtin-collision", "      code: [resolution]\n"),
+        ("current-field", "      code: [name]\n"),
+        ("double-use", "      code: [zz]\n      name: [zz]\n"),
+    ];
+    for (tag, aliases_yaml) in cases {
+        let config = format!(
+            "{base}{aliases_yaml}governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\n\
+                             classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30\n"
+        );
+        let ours = TempDir::new(&format!("ct-alias-{tag}-ours"));
+        let theirs = TempDir::new(&format!("ct-alias-{tag}-theirs"));
+        for dir in [&ours.0, &theirs.0] {
+            write_seed_with_config(dir, &config, &[]);
+        }
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+        let theirs_run = run_in(&theirs.0, &ml, &["status"]);
+        assert_eq!(ours_run.code, theirs_run.code, "{tag} codes differ");
+        assert_eq!(ours_run.stdout, theirs_run.stdout, "{tag} stdout differs");
+        assert_eq!(ours_run.stderr, theirs_run.stderr, "{tag} stderr differs");
+    }
+}

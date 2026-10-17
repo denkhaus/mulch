@@ -1094,7 +1094,7 @@ fn value_line_pass(
     let Some(text) = read_domain_text(store, domain)? else {
         return Ok(None);
     };
-    let records = parsed_records(&text);
+    let records = parsed_records(&text, store.registry());
     let kept: Vec<Value> = records
         .iter()
         .filter(|record| keep(record))
@@ -1116,12 +1116,21 @@ fn value_line_pass(
 /// uncounted (unreachable in practice: the reference's strict checks
 /// crash on truly malformed lines before any repair; comment lines
 /// were removed by the jsonl-integrity pass above), blank lines skip.
-fn parsed_records(text: &str) -> Vec<Value> {
-    text.split('\n')
+fn parsed_records(text: &str, registry: &mulch::Registry) -> Vec<Value> {
+    let mut records: Vec<Value> = text
+        .split('\n')
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
+        .collect();
+    // The repair passes read like the reference's readExpertiseFile
+    // (aliases applied) — the keep filters judge the canonical shape
+    // and the rewrites land canonical (utils/expertise.ts,
+    // mulch-b1cb).
+    for record in &mut records {
+        mulch::apply_aliases_for(registry, record);
+    }
+    records
 }
 
 /// The file-anchors repair on one domain: every line parses, each
@@ -1137,7 +1146,7 @@ fn anchors_pass(
     let Some(text) = read_domain_text(store, domain)? else {
         return Ok(None);
     };
-    let mut records = parsed_records(&text);
+    let mut records = parsed_records(&text, store.registry());
     let mut removed = 0usize;
     for record in &mut records {
         removed += strip_broken_anchors(record, project_root);

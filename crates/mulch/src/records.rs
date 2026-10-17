@@ -103,12 +103,54 @@ pub fn read_strict(
                 record_type: kind.to_string(),
             });
         }
+        apply_aliases_for(registry, &mut record);
         records.push(LineRecord {
             line: index + 1,
             record,
         });
     }
     Ok(records)
+}
+
+/// Reference `applyAliases` (utils/expertise.ts): rewrites legacy
+/// field names to their canonical names per the type's aliases map,
+/// mutating the record. Idempotent. A canonical value that is present
+/// and not `null`/`""` WINS and the legacy name just drops; a missing,
+/// `null`, or empty-string canonical takes the legacy value. A new
+/// canonical key lands at the END of the object (config-declared
+/// aliases order); deleting the legacy key preserves the order of the
+/// rest (mulch-b1cb).
+pub fn apply_aliases(record: &mut Value, aliases: &[(String, Vec<String>)]) {
+    let Some(object) = record.as_object_mut() else {
+        return;
+    };
+    for (canonical, legacy_names) in aliases {
+        for legacy in legacy_names {
+            if !object.contains_key(legacy) {
+                continue;
+            }
+            let canonical_missing_or_empty = match object.get(canonical) {
+                None | Some(Value::Null) => true,
+                Some(Value::String(text)) if text.is_empty() => true,
+                _ => false,
+            };
+            if canonical_missing_or_empty {
+                let value = object.get(legacy).cloned().unwrap_or(Value::Null);
+                object.insert(canonical.clone(), value);
+            }
+            object.shift_remove(legacy);
+        }
+    }
+}
+
+/// Applies a record type's aliases when the type is registered (the
+/// read-seam half of the reference's `readExpertiseFile`: builtins and
+/// unknown types pass through untouched).
+pub fn apply_aliases_for(registry: &crate::ids::Registry, record: &mut Value) {
+    let kind = record.get("type").and_then(Value::as_str).unwrap_or("");
+    if let Some(row) = registry.row(kind) {
+        apply_aliases(record, &row.aliases);
+    }
 }
 
 /// Reference legacy-outcome detection (validate.ts + doctor's
@@ -609,6 +651,106 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn apply_aliases_moves_legacy_to_canonical_at_object_end() {
+        let aliases = vec![
+            ("code".to_string(), vec!["snippet_code".to_string()]),
+            ("name".to_string(), vec!["title2".to_string()]),
+        ];
+        let mut record = json!({
+            "type": "snippet",
+            "recorded_at": "2026-10-10T10:00:00Z",
+            "snippet_code": "SC1",
+            "title2": "Legacy One"
+        });
+        apply_aliases(&mut record, &aliases);
+        // New canonical keys land at the END, in aliases-entry order;
+        // the legacy keys are gone and the rest keeps its order.
+        assert_eq!(
+            record,
+            json!({
+                "type": "snippet",
+                "recorded_at": "2026-10-10T10:00:00Z",
+                "code": "SC1",
+                "name": "Legacy One"
+            })
+        );
+        let keys: Vec<&str> = record
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["type", "recorded_at", "code", "name"]);
+        // Idempotent: a second pass is a no-op.
+        let again = record.clone();
+        apply_aliases(&mut record, &aliases);
+        assert_eq!(record, again);
+    }
+
+    #[test]
+    fn apply_aliases_canonical_wins_over_legacy() {
+        let aliases = vec![("code".to_string(), vec!["snippet_code".to_string()])];
+        // Every non-empty canonical value wins — including JS-falsy
+        // ones (0, false, [], {}): only missing/null/"" count as
+        // empty in the reference (`raw[canonical] === undefined ||
+        // === null || === ""`).
+        for canonical in [json!("C2"), json!(0), json!(false), json!([]), json!({})] {
+            let mut record = json!({
+                "code": canonical.clone(),
+                "snippet_code": "SHOULD_LOSE"
+            });
+            apply_aliases(&mut record, &aliases);
+            assert_eq!(record.get("code"), Some(&canonical), "{canonical:?}");
+            assert!(record.get("snippet_code").is_none(), "{canonical:?}");
+        }
+    }
+
+    #[test]
+    fn apply_aliases_legacy_wins_on_missing_null_or_empty_canonical() {
+        let aliases = vec![("code".to_string(), vec!["snippet_code".to_string()])];
+        // Missing, null, and "" canonical all take the legacy value.
+        let mut missing = json!({"snippet_code": "SC1"});
+        apply_aliases(&mut missing, &aliases);
+        assert_eq!(missing, json!({"code": "SC1"}));
+        let mut null = json!({"code": null, "snippet_code": "SC1"});
+        apply_aliases(&mut null, &aliases);
+        assert_eq!(null, json!({"code": "SC1"}));
+        let mut empty = json!({"code": "", "snippet_code": "SC1"});
+        apply_aliases(&mut empty, &aliases);
+        assert_eq!(empty, json!({"code": "SC1"}));
+        // A null legacy value moves as null.
+        let mut null_legacy = json!({"snippet_code": null});
+        apply_aliases(&mut null_legacy, &aliases);
+        assert_eq!(null_legacy, json!({"code": null}));
+        // A missing canonical key present nowhere: absent legacy keys
+        // are skipped entirely.
+        let mut untouched = json!({"type": "pattern"});
+        apply_aliases(&mut untouched, &aliases);
+        assert_eq!(untouched, json!({"type": "pattern"}));
+    }
+
+    #[test]
+    fn apply_aliases_delete_preserves_surrounding_key_order() {
+        let aliases = vec![("code".to_string(), vec!["mid".to_string()])];
+        let mut record = json!({
+            "type": "snippet",
+            "mid": "SC1",
+            "name": "keeps position",
+            "extra": "also keeps"
+        });
+        apply_aliases(&mut record, &aliases);
+        let keys: Vec<&str> = record
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        // "mid" deleted in place (shift_remove), "code" appended at
+        // the end — the survivors keep their relative order.
+        assert_eq!(keys, ["type", "name", "extra", "code"]);
+    }
 
     #[test]
     fn find_duplicate_matches_on_the_dedup_field_not_the_id() {

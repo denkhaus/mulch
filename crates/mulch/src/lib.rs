@@ -39,9 +39,10 @@ pub use jsval::{
     truthy, truthy_str, value_text,
 };
 pub use records::{
-    Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, UpsertPlan, assign_missing_id,
-    find_duplicate, legacy_entry, legacy_outcome, merge_outcomes, read_lenient, read_strict,
-    record_summary, resolve_record_id, upsert_plan, write_records,
+    Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, UpsertPlan, apply_aliases,
+    apply_aliases_for, assign_missing_id, find_duplicate, legacy_entry, legacy_outcome,
+    merge_outcomes, read_lenient, read_strict, record_summary, resolve_record_id, upsert_plan,
+    write_records,
 };
 pub use schema::CLASSIFICATIONS;
 pub use scoring::{apply_confirmation_boost, confirmation_score};

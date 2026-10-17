@@ -55,6 +55,10 @@ pub(crate) struct CustomTypeCfg {
     pub(crate) compact:        Option<Yaml>,
     pub(crate) extracts_files: Option<bool>,
     pub(crate) files_field:    Option<String>,
+    /// Raw `aliases` value: the map shape, the entry arrays, and the
+    /// legacy-name rules are validation law (probe matrix
+    /// 2026-10-17, mulch-b1cb).
+    pub(crate) aliases:        Option<Yaml>,
 }
 
 /// The `custom_types` entries in config order. The reference iterates
@@ -125,6 +129,7 @@ fn cfg_from_yaml(value: &Yaml) -> CustomTypeCfg {
             _ => None,
         }),
         files_field:    get("files_field").and_then(yaml_string),
+        aliases:        get("aliases").cloned(),
     }
 }
 
@@ -310,7 +315,125 @@ pub(crate) fn validate(name: &str, cfg: &CustomTypeCfg) -> Result<(), String> {
         ));
     }
 
+    if let Some(aliases) = &cfg.aliases {
+        validate_aliases(name, aliases, &merged_seen)?;
+    }
+
     Ok(())
+}
+
+/// The `aliases` block law (reference `validateCustomTypeConfig`'s
+/// aliases section): canonical keys must be declared, entries are
+/// non-empty arrays of legacy names obeying the custom-name rule, and
+/// a legacy name collides with nothing — base fields, foreign
+/// builtin-type fields (unless declared here), current fields, or a
+/// second canonical owner. Errors byte-exact (probe matrix
+/// 2026-10-17).
+fn validate_aliases(name: &str, aliases: &Yaml, merged_seen: &[&str]) -> Result<(), String> {
+    let Yaml::Mapping(mapping) = aliases else {
+        return Err(format!(
+            "Custom type \"{name}\" aliases must be a map of canonical field name → legacy alias names."
+        ));
+    };
+    let builtins = builtin_fields();
+    let mut seen: Vec<String> = Vec::new();
+    for (key, entry) in mapping {
+        let canonical = yaml_key_string(key);
+        if !merged_seen.contains(&canonical.as_str()) {
+            return Err(format!(
+                "Custom type \"{name}\" aliases key \"{canonical}\" must be declared in required/optional."
+            ));
+        }
+        let empty_entry = || {
+            format!(
+                "Custom type \"{name}\" aliases entry \"{canonical}\" must be a non-empty array of legacy field names."
+            )
+        };
+        let Yaml::Sequence(legacy_names) = entry else {
+            return Err(empty_entry());
+        };
+        if legacy_names.is_empty() {
+            return Err(empty_entry());
+        }
+        for legacy in legacy_names {
+            let legacy_name = match legacy {
+                Yaml::String(text) if !text.is_empty() => text.clone(),
+                other => {
+                    return Err(format!(
+                        "Custom type \"{name}\" aliases entry \"{canonical}\" has an invalid legacy name: {}.",
+                        json_stringify(other)
+                    ));
+                }
+            };
+            if !valid_custom_name(&legacy_name) {
+                return Err(format!(
+                    "Custom type \"{name}\" aliases legacy name \"{legacy_name}\" ({}). Allowed: {NAMING_RULE}.",
+                    describe_name_violation(&legacy_name)
+                ));
+            }
+            if BASE_FIELDS.contains(&legacy_name.as_str()) {
+                return Err(format!(
+                    "Custom type \"{name}\" aliases legacy name \"{legacy_name}\" collides with a base field."
+                ));
+            }
+            if builtins.contains(&legacy_name.as_str())
+                && !merged_seen.contains(&legacy_name.as_str())
+            {
+                return Err(format!(
+                    "Custom type \"{name}\" aliases legacy name \"{legacy_name}\" collides with a built-in type's field. Use a name that isn't already owned by another type, or set it as required/optional on this type if the field really belongs here."
+                ));
+            }
+            if merged_seen.contains(&legacy_name.as_str()) {
+                return Err(format!(
+                    "Custom type \"{name}\" aliases legacy name \"{legacy_name}\" is already declared as a current field; aliases are for retired names only."
+                ));
+            }
+            if seen.contains(&legacy_name) {
+                return Err(format!(
+                    "Custom type \"{name}\" aliases legacy name \"{legacy_name}\" appears under multiple canonical fields; each alias maps to one canonical name."
+                ));
+            }
+            seen.push(legacy_name);
+        }
+    }
+    Ok(())
+}
+
+/// The fields owned by built-in types (reference `BUILTIN_FIELDS`):
+/// an alias legacy name must not swallow a foreign type's field.
+fn builtin_fields() -> Vec<&'static str> {
+    let mut fields: Vec<&'static str> = REGISTRY
+        .iter()
+        .flat_map(|spec| spec.payload.iter().chain(spec.optional.iter()))
+        .copied()
+        .collect();
+    fields.sort_unstable();
+    fields.dedup();
+    fields
+}
+
+/// JS `JSON.stringify` for yaml values (the invalid-legacy-name
+/// rendering): strings quoted via [`crate::js_string`], scalars
+/// bare, containers in JSON shape.
+fn json_stringify(value: &Yaml) -> String {
+    match value {
+        Yaml::Null => "null".into(),
+        Yaml::Bool(flag) => flag.to_string(),
+        Yaml::Number(number) => number.to_string(),
+        Yaml::String(text) => crate::js_string(text),
+        Yaml::Sequence(items) => {
+            let parts: Vec<String> = items.iter().map(json_stringify).collect();
+            format!("[{}]", parts.join(","))
+        }
+        Yaml::Mapping(mapping) => {
+            let parts: Vec<String> = mapping
+                .iter()
+                .map(|(key, value)| format!("{}:{}", json_stringify(key), json_stringify(value)))
+                .collect();
+            format!("{{{}}}", parts.join(","))
+        }
+        Yaml::Tagged(tagged) => json_stringify(&tagged.value),
+    }
 }
 
 /// Builds the merged registry row for a VALIDATED config entry
@@ -380,6 +503,31 @@ pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> crate::ids::Row {
         ),
     };
 
+    // Config-declared order preserved (the read-time canonicalization
+    // appends canonical keys in this order when a record only carries
+    // legacy names).
+    let aliases = cfg.aliases.as_ref().map_or_else(Vec::new, |value| {
+        let Yaml::Mapping(mapping) = value else {
+            return Vec::new();
+        };
+        mapping
+            .iter()
+            .map(|(key, entry)| {
+                let names = match entry {
+                    Yaml::Sequence(items) => items
+                        .iter()
+                        .map(|item| match item {
+                            Yaml::String(text) => text.clone(),
+                            other => yaml_display(other),
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                (yaml_key_string(key), names)
+            })
+            .collect()
+    });
+
     crate::ids::Row {
         name: name.to_string(),
         payload: required,
@@ -389,6 +537,7 @@ pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> crate::ids::Row {
         named: dedup.is_some(),
         builtin: false,
         files_array,
+        aliases,
         summary,
     }
 }

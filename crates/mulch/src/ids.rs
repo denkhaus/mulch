@@ -93,6 +93,11 @@ pub struct Row {
     pub files_array: Option<String>,
     /// How the record's summary line renders.
     pub summary:     SummaryLaw,
+    /// Canonical field → legacy names, config-declared order
+    /// (custom types only): applied at the read seams so disk
+    /// records keep working after a field rename (reference
+    /// `applyAliases`, mulch-b1cb).
+    pub aliases:     Vec<(String, Vec<String>)>,
 }
 
 /// The merged registry: the six builtins plus the config's
@@ -172,6 +177,7 @@ impl Row {
                 field:    spec.id_key.to_string(),
                 truncate: matches!(spec.name, "convention" | "failure"),
             },
+            aliases:     Vec::new(),
         }
     }
 }

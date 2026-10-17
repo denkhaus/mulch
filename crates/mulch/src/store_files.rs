@@ -131,7 +131,16 @@ impl StoreFiles {
     /// (only the strict reader skips them). Missing files read
     /// empty.
     pub fn read_lenient(&self, domain: &str) -> Vec<LenientLine> {
-        crate::records::read_lenient(&self.domain_path(domain))
+        let mut lines = crate::records::read_lenient(&self.domain_path(domain));
+        // Aliases apply at this seam too (the reference's validate and
+        // doctor checks parse their own lines but run `applyAliases`
+        // before the schema verdict — same canonical view).
+        for line in &mut lines {
+            if let LenientLine::Record { record, .. } = line {
+                crate::records::apply_aliases_for(&self.registry, record);
+            }
+        }
+        lines
     }
 
     /// The `.mulch` directory.
