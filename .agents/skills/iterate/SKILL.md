@@ -139,7 +139,10 @@ architecture direction, milestone content, go/no-go):
   each one — or write down why not.
 - **Commit regularly** — after each coherent unit, never large WIP. All
   writes via `but` (`but commit -b iterate -m "<msg>" <file-ids>` with
-  explicit file IDs from `but diff`); NEVER `git add/commit/push/...`.
+  explicit file IDs); NEVER `git add/commit/push/...`. Take the IDs from
+  `but status -fv` (per-file hunk IDs) — grepping `but diff`'s box
+  headers misses files (3x this session); the commit-integrity check
+  below is the net that catches the misses.
   LONG messages go through a file: `but commit -m "$(cat /tmp/msg.txt)"`
   — inline `-m` strings with quotes/backticks get shell-mangled (sprint
   25: the message lost its quoted parts and needed a reword).
