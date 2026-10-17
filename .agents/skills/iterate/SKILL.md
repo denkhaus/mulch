@@ -329,6 +329,16 @@ equal after a reflection. ORIENT refuses to start a sprint while
 `sprints_completed % 3 == 0` and `last_arch_review_at_sprint !=
 sprints_completed`.
 
+**Notes rotate (ported from brightctl 2026-10-17):** the state file keeps
+the **last 10** notes; older ones move to `.iterate-state-archive.jsonl`
+as JSONL (history stays git-diffable, one `{"note": …}` record per line,
+oldest first). Deterministic and idempotent: `nu
+scripts/rotate-sprint-notes.nu` (just: `just rotate-notes`, `-dry` to
+preview). Run it after every sprint close when `notes > 10` — 41 notes
+had grown the state file to 33 KB, read whole at every session start.
+The script needs no entry in the reflection procedure: it changes the
+file, not the loop.
+
 ## Pointers (read, don't duplicate)
 
 - Format contract + product direction: `README.md`; basis ADR-0023 in

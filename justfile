@@ -22,6 +22,17 @@ qualitygate:
 verify stage:
     nu scripts/verify.nu {{ stage }}
 
+# Rotate sprint notes: .iterate-state.json keeps the newest 10 notes,
+# older ones move to .iterate-state-archive.jsonl (one JSON record per
+# line, oldest first, append-only). Ported from brightctl 2026-10-17 —
+# the growing notes list cost every session start a full-file read.
+# Idempotent; the -dry variant previews the split without writing.
+rotate-notes:
+    nu scripts/rotate-sprint-notes.nu
+
+rotate-notes-dry:
+    nu scripts/rotate-sprint-notes.nu --dry-run
+
 # Run a workflow end to end: create+start+attach, wait, integrate
 # (thin wrapper — logic lives in scripts/run_workflow.nu; GitButler-
 # adapted: integration via `but branch update main`).
