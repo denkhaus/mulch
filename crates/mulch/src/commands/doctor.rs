@@ -52,8 +52,15 @@ impl Status {
 
 /// A domain's live file parsed line-by-line (`Err` = malformed line).
 struct DomainLines {
-    domain: String,
-    lines:  Vec<mulch::LenientLine>,
+    domain:    String,
+    /// Canonicalized (aliases applied — the lib seam most checks
+    /// judge over, mirroring the reference's pre-Ajv application).
+    lines:     Vec<mulch::LenientLine>,
+    /// The PRE-alias parse: `checkLegacyOutcome` reads raw bytes
+    /// (doctor.ts parses its own lines without `applyAliases`), so a
+    /// config whose aliases use `outcome` as a legacy name must not
+    /// hide or fake the warn (spec review 2026-10-17, mulch-b1cb).
+    raw_lines: Vec<mulch::LenientLine>,
 }
 
 /// Runs `doctor`: the report always prints (even with failures);
@@ -188,6 +195,7 @@ fn read_domains(store: &mulch::StoreFiles) -> Vec<DomainLines> {
         .into_iter()
         .map(|domain| DomainLines {
             lines: store.read_lenient(&domain),
+            raw_lines: mulch::read_lenient(&store.domain_path(&domain)),
             domain,
         })
         .collect()
@@ -300,10 +308,17 @@ fn jsonl_integrity(domains: &[DomainLines]) -> Check {
 }
 
 fn legacy_outcome(domains: &[DomainLines]) -> Check {
+    // Raw records (see `DomainLines::raw_lines`): the outcome key on
+    // disk is what the check judges, pre-alias.
     let bad: Vec<String> = domains
         .iter()
         .flat_map(|d| {
-            records_of(d)
+            d.raw_lines
+                .iter()
+                .filter_map(|line| match line {
+                    mulch::LenientLine::Record { line, record } => Some((*line, record)),
+                    mulch::LenientLine::Malformed { .. } => None,
+                })
                 .filter(|&(_, record)| mulch::legacy_outcome(record).is_some())
                 .map(|(line, _)| {
                     format!(
@@ -1390,13 +1405,14 @@ mod tests {
     #[test]
     fn governance_limits_tier_wording_and_worst_status_win() {
         let domain = |name: &str, records: usize| DomainLines {
-            domain: name.into(),
-            lines:  (1..=records)
+            domain:    name.into(),
+            lines:     (1..=records)
                 .map(|line| mulch::LenientLine::Record {
                     line,
                     record: serde_json::json!({"type": "pattern"}),
                 })
                 .collect(),
+            raw_lines: Vec::new(),
         };
         let governance = mulch::Governance {
             max_entries:  5,

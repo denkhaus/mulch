@@ -135,7 +135,10 @@ pub fn apply_aliases(record: &mut Value, aliases: &[(String, Vec<String>)]) {
                 _ => false,
             };
             if canonical_missing_or_empty {
-                let value = object.get(legacy).cloned().unwrap_or(Value::Null);
+                let value = object
+                    .get(legacy)
+                    .cloned()
+                    .expect("contains_key checked above");
                 object.insert(canonical.clone(), value);
             }
             object.shift_remove(legacy);
@@ -678,7 +681,7 @@ mod tests {
         );
         let keys: Vec<&str> = record
             .as_object()
-            .unwrap()
+            .expect("canonicalized object")
             .keys()
             .map(String::as_str)
             .collect();
@@ -743,7 +746,7 @@ mod tests {
         apply_aliases(&mut record, &aliases);
         let keys: Vec<&str> = record
             .as_object()
-            .unwrap()
+            .expect("canonicalized object")
             .keys()
             .map(String::as_str)
             .collect();

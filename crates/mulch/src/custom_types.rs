@@ -730,6 +730,37 @@ mod tests {
     }
 
     #[test]
+    fn json_stringify_renders_like_the_reference() {
+        // JSON.stringify shapes for the invalid-legacy-name message
+        // (probed vs ml 0.10.7, 2026-10-17).
+        assert_eq!(
+            json_stringify(&serde_yaml::from_str::<Yaml>("123").expect("yaml")),
+            "123"
+        );
+        assert_eq!(
+            json_stringify(&serde_yaml::from_str::<Yaml>("1.5").expect("yaml")),
+            "1.5"
+        );
+        assert_eq!(
+            json_stringify(&serde_yaml::from_str::<Yaml>("null").expect("yaml")),
+            "null"
+        );
+        assert_eq!(
+            json_stringify(&serde_yaml::from_str::<Yaml>("true").expect("yaml")),
+            "true"
+        );
+        assert_eq!(json_stringify(&Yaml::String(String::new())), "\"\"");
+        assert_eq!(
+            json_stringify(&serde_yaml::from_str::<Yaml>("[x, 2]").expect("yaml")),
+            "[\"x\",2]"
+        );
+        assert_eq!(
+            json_stringify(&serde_yaml::from_str::<Yaml>("{a: 1}").expect("yaml")),
+            "{\"a\":1}"
+        );
+    }
+
+    #[test]
     fn name_violations_carry_the_reference_wording() {
         assert_eq!(
             validate_err("0bad", "required: [x]\ndedup_key: x\nsummary: \"{x}\""),

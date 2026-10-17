@@ -841,7 +841,7 @@ fn custom_alias_invalid_config_matrix_matches_reference() {
     let base = "version: '1'\n\
 domains:\n  dev: {}\n\
 custom_types:\n  snippet:\n    required: [code, name]\n    dedup_key: code\n    id_key: code\n    summary: \"{name}\"\n    aliases:\n";
-    let cases: [(&str, &str); 9] = [
+    let cases: [(&str, &str); 11] = [
         ("not-a-map", "      - a\n"),
         ("key-undeclared", "      undeclared: [x]\n"),
         ("entry-empty", "      code: []\n"),
@@ -851,6 +851,16 @@ custom_types:\n  snippet:\n    required: [code, name]\n    dedup_key: code\n    
         ("builtin-collision", "      code: [resolution]\n"),
         ("current-field", "      code: [name]\n"),
         ("double-use", "      code: [zz]\n      name: [zz]\n"),
+        // A non-string legacy name renders via JSON.stringify (the
+        // one message family with a recursive renderer — pinned
+        // here end-to-end, unit-pinned in custom_types.rs).
+        ("invalid-name", "      code: [123]\n"),
+        // Multi-error configs surface the FIRST rule in map order
+        // (the undeclared key fires before the legacy-name rules).
+        (
+            "multi-error-order",
+            "      undeclared: [x]\n      code: [tags]\n",
+        ),
     ];
     for (tag, aliases_yaml) in cases {
         let config = format!(
@@ -868,4 +878,73 @@ custom_types:\n  snippet:\n    required: [code, name]\n    dedup_key: code\n    
         assert_eq!(ours_run.stdout, theirs_run.stdout, "{tag} stdout differs");
         assert_eq!(ours_run.stderr, theirs_run.stderr, "{tag} stderr differs");
     }
+}
+
+#[test]
+fn custom_alias_falsy_canonical_wins_end_to_end_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // A JS-falsy-but-non-empty canonical (0) WINS over the legacy
+    // value — but the canonical shape is then schema-invalid (the
+    // field is string-typed), so validate fails on BOTH twins. An
+    // accidental legacy-wins implementation would validate clean
+    // here (the end-to-end discriminator the unit tables lack).
+    let store = "{\"type\":\"snippet\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-10T10:00:00Z\",\"code\":0,\"legacycode\":\"L1\"}\n";
+    let ours = TempDir::new("ct-alias-falsy-ours");
+    let theirs = TempDir::new("ct-alias-falsy-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        write_seed_with_config(dir, ALIAS_CONFIG, &[]);
+        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), store).expect("alias store");
+    }
+    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    let theirs_run = run_in(&theirs.0, &ml, &["validate"]);
+    assert_eq!(ours_run.code, theirs_run.code, "codes differ");
+    assert_eq!(ours_run.stdout, theirs_run.stdout, "stdout differs");
+    assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr differs");
+    assert_eq!(
+        ours_run.code, 1,
+        "the falsy-canonical store must fail validation"
+    );
+}
+
+#[test]
+fn custom_alias_outcome_corner_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // `outcome` (singular) is a legal alias legacy name: the doctor
+    // legacy-outcome check reads RAW bytes (doctor.ts parses its own
+    // lines without applyAliases), so the warn + migration must fire
+    // even though the canonicalizing readers turn the key into
+    // `result` (spec review 2026-10-17).
+    let config = "version: '1'\n\
+domains:\n  dev: {}\n\
+custom_types:\n  note:\n    required: [result]\n    dedup_key: result\n    id_key: result\n    summary: \"{result}\"\n    aliases:\n      result: [outcome]\n";
+    let store = "{\"type\":\"note\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-10T10:00:00Z\",\"outcome\":{\"status\":\"success\"},\"result\":\"keep\"}\n";
+    let ours = TempDir::new("ct-alias-outcome-ours");
+    let theirs = TempDir::new("ct-alias-outcome-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        write_seed_with_config(dir, config, &[]);
+        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), store).expect("corner store");
+    }
+    for args in [&["doctor", "--fix"][..], &["validate"][..]] {
+        let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let theirs_run = run_in(&theirs.0, &ml, args);
+        assert_eq!(ours_run.code, theirs_run.code, "{args:?} codes differ");
+        assert_eq!(
+            strip_time_and_upgrade(&ours_run.stdout),
+            strip_time_and_upgrade(&theirs_run.stdout),
+            "{args:?} stdout differs"
+        );
+        assert_eq!(
+            ours_run.stderr, theirs_run.stderr,
+            "{args:?} stderr differs"
+        );
+    }
+    // The migration wrote the RAW shape (result kept verbatim,
+    // outcomes appended) — no alias canonicalization in this pass.
+    assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
 }
