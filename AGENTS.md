@@ -94,13 +94,13 @@ plain branches, one per agent/line; this repo's local loop lane is
 - **Landing local work:** `git push origin <branch>` + `gh pr merge <n>
   --auto --squash` into `main` — never a direct push to main (main keeps
   required-linear-history; squash is the only merge that lands).
-  Run PRs land on main the engine way; the local lane then follows with
-  `git fetch` + `git rebase origin/<branch>`.
+  Run PRs land on main the engine way; the local lane follows main with
+  `git fetch` + `git rebase origin/main`.
 - Fetch before reading tracker state when another machine may have moved
   the branch (the tracker view is branch-local), and compare
   `.iterate-state.json` against the lane's top commit before trusting
-  the worktree. Never pull/rebase/switch branches while a background
-  cargo runs (the tree is rewritten under you).
+  the worktree. WAIT for any background cargo to finish before you
+  pull/rebase/switch branches — it rewrites the tree under you.
 - The multi-agent setup runs on plain branches (one per agent/line). The
   `but` CLI and the `gitbutler/*` branches are retired — nothing may
   depend on them.

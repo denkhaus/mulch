@@ -138,10 +138,9 @@ architecture direction, milestone content, go/no-go):
   each one — or write down why not.
 - **Commit regularly** — after each coherent unit, never large WIP. All
   writes via plain git: `git add <explicit paths>` (never a repo-wide
-  `-A`) + `git commit -m "<msg>"`. Stage the tracker + expertise paths in
-  the SAME commit as the change they document: `git add .seeds .mulch
-  <files>` — **never `ml sync`** (it opens its own commit);
-  `seeds sync --status` / `--dry-run` stays the pending-change check.
+  `-A`) + `git commit -m "<msg>"`, batching `.seeds/` + `.mulch/` into
+  the same commit per AGENTS.md (never `ml sync`; `seeds sync --status`
+  / `--dry-run` is the pending-change check).
   LONG messages go through a file: `git commit -F /tmp/msg.txt` — inline
   `-m` strings with quotes/backticks get shell-mangled (sprint 25: the
   message lost its quoted parts and needed a reword).
@@ -255,8 +254,9 @@ Procedure (driven by Mulch; do not bloat the skill):
    decision`, evidence = the commit touching this skill) so future sessions
    see WHY the loop looks like this.
 5. Update the sprint counter and last-reflection pointer in the state file.
-6. Push the lane: `nu .fabro/scripts/push-gate.nu` (exit 0 = open), then
-   `git push origin iterate` — the sprint's closeout commit must reach
+6. Push the lane through the push gate exactly as AGENTS.md specifies
+   it (two layers, one unpiped cell) — `git push origin iterate` — the
+   sprint's closeout commit must reach
    `origin/iterate` so the work is available on other machines. PRs and
    landing to `main` stay out of scope (explicit user order only).
 
