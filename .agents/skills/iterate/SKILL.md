@@ -304,6 +304,12 @@ battery copy before delivering.
 
 ## State file (sprint counter)
 
+**The notes ARE the handoff.** There is no HANDOFF file (removed
+2026-10-17, user directive): seeds are the only source of issues, the
+state notes carry session state + a trailing `NEXT:` line, mulch
+carries knowledge, AGENTS.md + this skill carry the rules. Anything
+found in a handoff-shaped file belongs in one of those four.
+
 `.iterate-state.json` in the repo root (committed via git):
 
 ```json
