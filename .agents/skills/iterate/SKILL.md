@@ -10,13 +10,13 @@ review-fix round). Sprints are counted per project (state file below).
 
 **mulch's own development loop** (user directives 2026-10-03 and
 2026-10-06): mulch is a STANDALONE tool whose lib crate fabro natively
-embeds — this loop develops mulch on its own account, in this checkout
-on the plain `iterate` branch, committing via git, opening no PRs,
-assigning no seeds to `fabro`, and never touching `.fabro/workflows`.
-After every sprint closeout the LANE IS PUSHED to `origin/iterate`
-(through the push gate) so the work is available on other machines —
-pushing the branch is not landing. Landing local work to `main` happens
-only through the engine flow on an explicit user order. Remember the
+embeds — this loop develops mulch on its own account, directly on
+`main`, committing via git, opening no PRs, assigning no
+seeds to `fabro`, and never touching `.fabro/workflows`. After every
+sprint closeout `main` IS PUSHED to `origin/main` (through the push gate,
+fast-forward only) so the work is available on other machines — pushing
+is not reviewing: run PRs stay the engine's business and land only on an
+explicit user order. Remember the
 crate is an integration surface for fabro: lib API changes are
 integration-relevant.
 
@@ -62,13 +62,14 @@ policy, per AGENTS.md) governs all Rust code here — planning, writing, testing
   sessions leak into sprint diffs and reviews — commit or discard them on
   their own branch first. Never pull/rebase/switch branches while a
   background cargo runs (the tree is rewritten under you).
-- **LANE-STALENESS CHECK (sprint-29 lesson)**: a clean `git status`
-  does NOT mean the worktree is current — another machine may have
-  moved `origin/iterate`. `git fetch`, then compare the state file's
-  `sprints_completed` against the lane's top commit message BEFORE
-  trusting the tree; when behind: `git rebase origin/iterate` (never
-  while a background cargo runs, and never onto a dirty worktree —
-  commit or stash first).
+- **MAIN-STALENESS CHECK (the sprint-29 "lane staleness" lesson)**: a
+  clean `git status` does NOT mean the worktree is current — another
+  machine may have moved `origin/main`. `git fetch`, then compare the
+  state file's `sprints_completed` against `origin/main`'s top commit
+  message BEFORE trusting the tree; when behind: `git pull --ff-only`
+  (or `git rebase origin/main` when you already carry local commits),
+  never while a background cargo runs and never on a dirty worktree —
+  commit or stash first.
 - **REFLECTION GATE (hard)**: if the state file has
   `sprints_completed > sprints_reflected`, run the pending reflection
   (step 6) NOW, before `seeds ready`. A forgotten reflection blocks the next
@@ -254,11 +255,10 @@ Procedure (driven by Mulch; do not bloat the skill):
    decision`, evidence = the commit touching this skill) so future sessions
    see WHY the loop looks like this.
 5. Update the sprint counter and last-reflection pointer in the state file.
-6. Push the lane through the push gate exactly as AGENTS.md specifies
-   it (two layers, one unpiped cell) — `git push origin iterate` — the
-   sprint's closeout commit must reach
-   `origin/iterate` so the work is available on other machines. PRs and
-   landing to `main` stay out of scope (explicit user order only).
+6. Push `main` through the push gate exactly as AGENTS.md specifies it
+   (two layers, one unpiped cell, fast-forward only) — the sprint's
+   closeout commit must reach `origin/main` so the work is available on
+   other machines. Run PRs stay out of scope (explicit user order only).
 
 This skill is a LOCAL loop asset owned by this loop (user directive
 2026-10-03): it evolves through its own reflection procedure. The
@@ -292,7 +292,7 @@ files. Host integration: fmt+clippy over the folded tree, battery folds,
 ONE final integration commit (verify the file list with `git show --stat
 <hash>`). Reviewers stay strictly read-only; children write only their
 owned files + /tmp deliverables. Sprint-23 additions: (a) when seeds
-share ONE cross-chain constructor, the HOST pre-lands it on iterate
+share ONE cross-chain constructor, the HOST pre-lands it on `main`
 before spawning (children consume the landed API — no child-to-child
 dependencies); (b) delivered battery fixtures must be clippy-clean BY
 CONSTRUCTION — `-D warnings` covers tests, children cannot run clippy,

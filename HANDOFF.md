@@ -7,15 +7,18 @@ axes green; the checkout is PLAIN GIT now.
 ## Version control = plain git (the GitButler experiment is over)
 
 The experiment ended 2026-10-17 (teardown; main fast-forwarded to the
-iterate tip 247f9ac). ADR-0001 decision 2 carries the amended decision
-body; AGENTS.md's Version control + Push gate sections are the binding
-wording. What changed for the next agent:
+iterate tip 247f9ac). SAME DAY, later user directive: **no `iterate`
+BRANCH — work happens directly on `main`** (merged 4e43dd3, local
+`iterate` deleted; iterate is the SKILL that defines the dev flow).
+ADR-0001 decision 2 carries the amended decision body; AGENTS.md's
+Version control + Push gate sections are the binding wording. What
+changed for the next agent:
 
 - Session start: `ml prime` + `seeds prime` + `git status` — NOT
   `but status` (the `but` binary errors: "not currently on a
-  gitbutler/* branch"). Lane staleness: `git fetch`, compare
-  `.iterate-state.json` against the lane's top commit, then
-  `git rebase origin/iterate` (clean tree, no background cargo).
+  gitbutler/* branch"). Main staleness: `git fetch`, compare
+  `.iterate-state.json` against `origin/main`'s top commit, then
+  `git pull --ff-only` (clean tree, no background cargo).
 - Commits: plain `git add <paths> && git commit`, with `.seeds/` +
   `.mulch/` batched into the same commit; long messages via
   `git commit -F /tmp/msg.txt`; verify the landed file list with
@@ -23,7 +26,7 @@ wording. What changed for the next agent:
   `but status -fv` recipes retired with the tool).
 - Push: the AGENTS.md two-layer command in ONE unpiped cell —
   `nu .fabro/scripts/push-gate.nu` (exit 0), then `git push origin
-  iterate`.
+  main` (fast-forward only).
 - DELETED at this close (containment-checked first): local
   `gitbutler/workspace` (tip 66bed33 is an empty commit),
   `gitbutler/target` (contained in main), `chore/but-fork-6` (only the
@@ -31,7 +34,9 @@ wording. What changed for the next agent:
   them is a GATED push and was not in the seed's list:
   `origin/gitbutler/workspace`, `origin/mise-but-pin`,
   `origin/mise-pin-but-fork3`, `origin/mise-pin-but-fork5`,
-  `origin/vcs/gitbutler-mode`.
+  `origin/vcs/gitbutler-mode`. Also pending a gated push:
+  **`origin/iterate` deletion** (content is contained in main) — the
+  branch is gone locally as of the user directive above.
 
 ## Read first (standing context)
 
@@ -51,12 +56,12 @@ wording. What changed for the next agent:
   the closeout commit. Follow-up seed filed: **mulch-e2df**.
 - **PUSH PENDING**: the gate refused at this close (1 active run,
   `01M3AEHDGAT8BFZA0BZQJ6832H`). Retry `nu .fabro/scripts/push-gate.nu`
-  then `git push origin iterate` when it opens — everything is
-  committed locally, only `origin/iterate` (at 247f9ac) lags.
+  then `git push origin main` when it opens — everything is committed
+  locally, `origin/main` (at 2bd8bcd) lags the local sprint commits.
 
 ## Next steps (order)
 
-1. Push the lane when the gate opens (two-layer command above), then
+1. Push `main` when the gate opens (two-layer command above), then
    ORIENT as usual.
 2. **ARCH GATE @ 33** — improve-codebase-architecture (explorer
    subagent, HTML report on a localhost URL, grill the Strong-candidate

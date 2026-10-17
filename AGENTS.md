@@ -84,23 +84,26 @@ working.
 This is a plain-git checkout — the 2026-10-03..2026-10-17 GitButler
 experiment (virtual branches driven by `but`) ended on user directive,
 exercising its own documented revert condition (ADR-0001). `main` IS the
-product line and stays the merge target of run PRs. Local work lives on
-plain branches, one per agent/line; this repo's local loop lane is
-`iterate`.
+product line, the merge target of run PRs, AND the branch local work
+happens on — there is no separate loop lane (the `iterate` branch was
+removed 2026-10-17 on user directive: iterate is the SKILL that defines
+the dev flow, not a branch). Other agents/runs still take their own
+branch, one per agent/line.
 
 - Normal git applies: `git add` / `git commit` / `git switch` /
   `git fetch` / `git rebase`. Read-only inspection (`git log`,
   `git show`, `git diff`, `git fetch`) is always fine.
-- **Landing local work:** `git push origin <branch>` + `gh pr merge <n>
-  --auto --squash` into `main` — never a direct push to main (main keeps
-  required-linear-history; squash is the only merge that lands).
-  Run PRs land on main the engine way; the local lane follows main with
-  `git fetch` + `git rebase origin/main`.
-- Fetch before reading tracker state when another machine may have moved
-  the branch (the tracker view is branch-local), and compare
-  `.iterate-state.json` against the lane's top commit before trusting
-  the worktree. WAIT for any background cargo to finish before you
-  pull/rebase/switch branches — it rewrites the tree under you.
+- **Pushing the work:** local commits sit on `main` and go out with
+  `git push origin main` through the push gate below — fast-forward
+  only: `git fetch` + `git pull --ff-only` first (main keeps
+  required-linear-history, so a diverged main is never force-pushed).
+  Run PRs land on main the engine way (squash); this loop opens no PRs
+  of its own.
+- `git fetch` before reading tracker state when another machine may have
+  moved `main` (the tracker view is branch-local), and compare
+  `.iterate-state.json` against `origin/main`'s top commit before
+  trusting the worktree. WAIT for any background cargo to finish before
+  you pull/rebase/switch branches — it rewrites the tree under you.
 - The multi-agent setup runs on plain branches (one per agent/line). The
   `but` CLI and the `gitbutler/*` branches are retired — nothing may
   depend on them.
@@ -114,7 +117,7 @@ cell as the push — the lefthook pre-push hook is operator opt-in (one
 1. `nu .fabro/scripts/push-gate.nu` (exit 0 = open: no running
    conductor/develop/revisor pass on https://mirtuell.net AND no open
    run-PR on denkhaus/mulch; quota-parked runs do not refuse), then
-2. `git push origin <branch>` (the branch you are landing).
+2. `git push origin <branch>` (for this loop: `main`, fast-forward only).
 
 Never pipe the gate (`gate | tail && git push` reads the pipe member's
 exit code, not the gate's). `lefthook.yml` additionally wires the same
@@ -163,11 +166,12 @@ working mode (git commits + mulch + seeds + quality gates) always on,
 code-review after every sprint, improve-codebase-architecture every 3rd
 sprint, self-reflection evolving the skill at sprint close/session end.
 Sprint counter: `.iterate-state.json`. This loop is INDEPENDENT of the fabro
-develop line (user directive 2026-10-03): local-only on the plain
-`iterate` branch — no PRs and no main-landing without explicit user
-order, no `--assignee fabro`; all commits via `git`, with `.seeds/` +
-`.mulch/` staged in the same commit (never `ml sync`), and the lane
-pushed to `origin/iterate` through the push gate at every sprint close. Local-loop skills live under
+develop line (user directive 2026-10-03, branch shape amended
+2026-10-17): it runs DIRECTLY ON `main` — no loop-lane branch, no PRs of
+its own, no `--assignee fabro`; all commits via `git`, with `.seeds/` +
+`.mulch/` staged in the same commit (never `ml sync`), pushed to
+`origin/main` through the push gate at every sprint close. Local-loop
+skills live under
 `.agents/skills/` (iterate + repo-local rust-style-guide copy); the loop
 never loads skills from `.fabro/skills/` — that tree belongs to the
 autonomous fabro line.
