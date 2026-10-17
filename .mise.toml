@@ -17,13 +17,8 @@ bun = "1.4.0"
 # repo's own `mulch` binary replaces it at the self-hosting cutover.
 "npm:@os-eco/mulch-cli" = "0.10.7"
 
-# GitButler CLI (but) — pinned via http backend (no registry entry: GitHub
-# releases carry no assets; the artifact comes from releases.gitbutler.com,
-# see app.gitbutler.com/releases/version/<v>). 0.22.3-3234 is the build the
-# fabro GitButler experiment validated (2026-10-03). Same pin as the
-# global ~/.config/mise/config.toml entry; the per-repo pin makes the
-# dependency explicit for this checkout.
-"http:but" = { version = "0.22.3-fork.5", url = "https://github.com/denkhaus/gitbutler/releases/download/v0.22.3-fork.5/but-0.22.3-fork.5-x86_64-unknown-linux-gnu.tar.gz" }
+# The GitButler CLI (`but`) pin lived here until the experiment was
+# retired (2026-10-17, mulch-6817) — the checkout runs plain git now.
 "cargo:seeds" = "0.8.0"
 
 [settings.npm]

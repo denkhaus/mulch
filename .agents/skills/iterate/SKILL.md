@@ -1,6 +1,6 @@
 ---
 name: iterate
-description: 'The mulch LOCAL development loop (independent of the fabro develop line). Drive the project forward in sprints: grilling sessions with docs at decision points, implementation in working mode (but-commits, mulch, seeds, quality gates), automatic code-review after every sprint, improve-codebase-architecture after every 3rd sprint, and a self-reflection phase that evolves this skill from session learnings. Runs when the user says "iterate", "weiter", "mach weiter", or asks to advance the project.'
+description: 'The mulch LOCAL development loop (independent of the fabro develop line). Drive the project forward in sprints: grilling sessions with docs at decision points, implementation in working mode (git commits, mulch, seeds, quality gates), automatic code-review after every sprint, improve-codebase-architecture after every 3rd sprint, and a self-reflection phase that evolves this skill from session learnings. Runs when the user says "iterate", "weiter", "mach weiter", or asks to advance the project.'
 ---
 
 # Iterate — the mulch local development loop
@@ -11,7 +11,7 @@ review-fix round). Sprints are counted per project (state file below).
 **mulch's own development loop** (user directives 2026-10-03 and
 2026-10-06): mulch is a STANDALONE tool whose lib crate fabro natively
 embeds — this loop develops mulch on its own account, in this checkout
-on the `iterate` virtual branch, committing via `but`, opening no PRs,
+on the plain `iterate` branch, committing via git, opening no PRs,
 assigning no seeds to `fabro`, and never touching `.fabro/workflows`.
 After every sprint closeout the LANE IS PUSHED to `origin/iterate`
 (through the push gate) so the work is available on other machines —
@@ -58,18 +58,17 @@ policy, per AGENTS.md) governs all Rust code here — planning, writing, testing
 ## 1. Orient
 
 - `ml prime` + `seeds prime`
-- Start from a clean tree (`but status`): leftover changes from earlier
+- Start from a clean tree (`git status`): leftover changes from earlier
   sessions leak into sprint diffs and reviews — commit or discard them on
-  their own lane first. Never apply/unapply/update branches or `but pull`
-  while a background cargo runs (the tree is rewritten under you).
-- **LANE-STALENESS CHECK (sprint-29 lesson)**: a healthy `but status`
-  with "no changes" does NOT mean the worktree is current — another
-  machine may have moved `origin/iterate`. Compare the state file's
+  their own branch first. Never pull/rebase/switch branches while a
+  background cargo runs (the tree is rewritten under you).
+- **LANE-STALENESS CHECK (sprint-29 lesson)**: a clean `git status`
+  does NOT mean the worktree is current — another machine may have
+  moved `origin/iterate`. `git fetch`, then compare the state file's
   `sprints_completed` against the lane's top commit message BEFORE
-  trusting the tree; when behind: `but unapply <other applied lanes>`
-  first (the workspace-merge rebuild dies on fused `.mise.toml` hunks
-  otherwise), then `but branch update iterate`, and re-apply only lanes
-  that do not collide with the new base.
+  trusting the tree; when behind: `git rebase origin/iterate` (never
+  while a background cargo runs, and never onto a dirty worktree —
+  commit or stash first).
 - **REFLECTION GATE (hard)**: if the state file has
   `sprints_completed > sprints_reflected`, run the pending reflection
   (step 6) NOW, before `seeds ready`. A forgotten reflection blocks the next
@@ -111,7 +110,7 @@ architecture direction, milestone content, go/no-go):
   Grundsatz) gets its ADR in the SAME session — parking it seed-only costs
   the user a prompt.
 - Record outcomes: seeds ticket update/close, map/decision update, ADR
-  committed via `but`.
+  committed via git.
 
 ## 3. Sprint — working mode (ALWAYS on, every sprint)
 
@@ -138,29 +137,22 @@ architecture direction, milestone content, go/no-go):
   grep every COUNTERPART WAIT/CONSUMER of the thing it must reach and wire
   each one — or write down why not.
 - **Commit regularly** — after each coherent unit, never large WIP. All
-  writes via `but` (`but commit -b iterate -m "<msg>" <file-ids>` with
-  explicit file IDs); NEVER `git add/commit/push/...`. Take the IDs from
-  `but status -fv` (per-file hunk IDs) — grepping `but diff`'s box
-  headers misses files (3x this session); the commit-integrity check
-  below is the net that catches the misses.
-  LONG messages go through a file: `but commit -m "$(cat /tmp/msg.txt)"`
-  — inline `-m` strings with quotes/backticks get shell-mangled (sprint
-  25: the message lost its quoted parts and needed a reword).
-  **NEVER `ml sync`** under GitButler — it issues a plain git commit behind
-  the workspace's back. Instead: `seeds sync` (report-only under
-  `vcs_manager: gitbutler`) shows pending tracker paths, and `.mulch/`
-  changes land as explicit `but commit`s in the same batch.
-- **Commit-integrity check (sprint 20 lesson)**: `but status` can
-  UNDER-REPORT the dirty worktree — a touched file (records.rs) was invisible
-  at commit time, so the intended change silently missed its commit while the
-  message claimed it. List the intended files first (`git diff --name-only`
-  plus `but status`), and after the commit verify the real file list with
-  `git show --stat <hash>`. Never write counts into a message ("7 sites
-  collapsed") without counting the COMMITTED diff — spec reviewers check
-  exactly that claim. (Sprint 22 addition: `but diff`
-  lists ONE id per HUNK — a multi-hunk file needs every hunk id in the
-  commit call, or the commit lands partially and the integrity check is
-  what catches it.)
+  writes via plain git: `git add <explicit paths>` (never a repo-wide
+  `-A`) + `git commit -m "<msg>"`. Stage the tracker + expertise paths in
+  the SAME commit as the change they document: `git add .seeds .mulch
+  <files>` — **never `ml sync`** (it opens its own commit);
+  `seeds sync --status` / `--dry-run` stays the pending-change check.
+  LONG messages go through a file: `git commit -F /tmp/msg.txt` — inline
+  `-m` strings with quotes/backticks get shell-mangled (sprint 25: the
+  message lost its quoted parts and needed a reword).
+- **Commit-integrity check (sprint 20 lesson)**: a file can be invisible
+  at commit time (the but-era `but status` under-reported the dirty
+  worktree — records.rs never entered the commit while the message
+  claimed it). List the intended files first (`git status --short` plus
+  `git diff --name-only`), stage them by explicit path, and after the
+  commit verify the real file list with `git show --stat <hash>`. Never
+  write counts into a message ("7 sites collapsed") without counting the
+  COMMITTED diff — spec reviewers check exactly that claim.
 - **Mulch is the domain brain**: `ml record <domain> --type
   <convention|pattern|failure|decision|reference|guide>` for every learning
   (API dead-ends, format quirks, gate outcomes). Evidence:
@@ -206,16 +198,15 @@ BOUNDED (`sed -n`/`head`, never an unbounded cat of a large file), a stuck
 tool is ABANDONED after one retry — the verdict forms from what is already
 read — and SEND THE REPLY as soon as the verdict is formed: a reviewer that
 cannot complete SAYS so instead of hanging. Reviewer subagents are READ-ONLY
-(no `but`, no writes, no pushes): findings come back as the reply, the host
+(no commits, no writes, no pushes): findings come back as the reply, the host
 commits.
 
-**Hand reviewers the GIT hash, not the but id**: `but commit` prints a
-workspace commit id (`orm`, `ovv`) that `git show` cannot resolve — both
-sprint-20/21 reviewers had to hunt the hash themselves. Give them
-`git log --grep="<seed>" --format=%h -1` or "the sprint's single doctor/…
-commit", so the review starts on the right diff.
+**Hand reviewers the COMMIT hash**: give them `git log --grep="<seed>"
+--format=%h -1` or "the sprint's single doctor/… commit", so the review
+starts on the right diff (sprint-20/21 lesson: an id `git show` cannot
+resolve cost both reviewers a hunt).
 
-Aggregate both axes, fix findings, commit via `but`, then close the ticket
+Aggregate both axes, fix findings, commit via git, then close the ticket
 with `seeds close --reason` referencing the commits. (AGENTS.md's "never
 close by hand" binds the fabro develop line's runs — this local loop closes
 its own tickets explicitly.) Before the fold commit:
@@ -265,7 +256,7 @@ Procedure (driven by Mulch; do not bloat the skill):
    see WHY the loop looks like this.
 5. Update the sprint counter and last-reflection pointer in the state file.
 6. Push the lane: `nu .fabro/scripts/push-gate.nu` (exit 0 = open), then
-   `but push iterate` — the sprint's closeout commit must reach
+   `git push origin iterate` — the sprint's closeout commit must reach
    `origin/iterate` so the work is available on other machines. PRs and
    landing to `main` stay out of scope (explicit user order only).
 
@@ -283,36 +274,37 @@ consistency greps), research (reference `ml` behaviour probes), and
 independent implementation chunks. Spawn children in parallel, collect
 their replies, fold results in one pass.
 
-**Parallel-lane sprints (user directive 2026-10-11, proven sprint 22):**
-a multi-seed sprint's chain links run as SIMULTANEOUS subagents on their
-own GitButler lanes stacked above `iterate` (`but branch new <lane>
---above iterate`), in this same worktree. Binding protocol: DISJOINT
-file ownership per child — shared files (`tests/`, `README.md`,
-`.seeds/`, `.mulch/`) are host-folded from child deliveries under
-`/tmp/sprint22/<lane>/`; children commit their OWNED files via `but
-commit -b <lane>` with explicit IDs, never git/pull/push/`ml sync`;
-children run NO workspace fmt/clippy/qualitygate (host gates at
-integration) and wrap every long command in `timeout`; compile errors
-in files a child does not own are sibling WIP — wait 60-120s, retry
-(max 2), never fix foreign files. Host integration: fmt+clippy over the
-lanes, battery folds, then `but move <commit> -b iterate` per commit
-OLDEST-FIRST (change-IDs survive moves), then ONE integration commit
-(collect ALL hunk IDs — see the commit-integrity check). Reviewers stay
-strictly read-only; lane children write only their owned files + /tmp
-deliverables. Sprint-23 additions: (a) when seeds share ONE
-cross-lane constructor, the HOST pre-lands it on iterate before
-spawning (children consume the landed API — no lane-to-lane
+**Parallel-chain sprints (user directive 2026-10-11, proven sprint 22;
+the GitButler lane machinery behind it retired 2026-10-17):** a
+multi-seed sprint's chain links run as SIMULTANEOUS subagents in this
+one worktree. Binding protocol: DISJOINT file ownership per child —
+shared files (`tests/`, `README.md`, `.seeds/`, `.mulch/`) are
+host-folded from child deliveries under `/tmp/sprintNN/<child>/`;
+children NEVER touch git (no add/commit/pull/push/`ml sync`, no branch of
+their own): each child writes only its OWNED files, delivers the rest to
+its /tmp dir, and the HOST commits each delivery as it arrives
+(`git add <that child's paths> && git commit` — one commit per child,
+explicit paths only — see the commit-integrity check); children run NO
+workspace fmt/clippy/qualitygate (host gates at integration) and wrap
+every long command in `timeout`; compile errors in files a child does
+not own are sibling WIP — wait 60-120s, retry (max 2), never fix foreign
+files. Host integration: fmt+clippy over the folded tree, battery folds,
+ONE final integration commit (verify the file list with `git show --stat
+<hash>`). Reviewers stay strictly read-only; children write only their
+owned files + /tmp deliverables. Sprint-23 additions: (a) when seeds
+share ONE cross-chain constructor, the HOST pre-lands it on iterate
+before spawning (children consume the landed API — no child-to-child
 dependencies); (b) delivered battery fixtures must be clippy-clean BY
 CONSTRUCTION — `-D warnings` covers tests, children cannot run clippy,
 and hand-rolled string building in fixtures cost four gate iterations
 (push_str(&format!) -> format_collect -> write! -> writeln!): prefer
-`writeln!`/prebuilt strings, and have each lane run
+`writeln!`/prebuilt strings, and have each child run
 `cargo clippy -p mulch --all-targets -- -D warnings` on a SCRATCH
 battery copy before delivering.
 
 ## State file (sprint counter)
 
-`.iterate-state.json` in the repo root (committed via `but`):
+`.iterate-state.json` in the repo root (committed via git):
 
 ```json
 {

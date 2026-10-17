@@ -58,9 +58,11 @@ not GitHub Issues. Seed ids carry the prefix `mulch-`.
   --description "..."`); skip when nothing surfaced. Upserts by `--name`
   merge outcomes — amend the existing record instead of filing a second
   one for the same lesson.
-- **Under GitButler NEVER run `ml sync`** (it issues its own plain git
-  commit behind the workspace's back) — commit `.mulch/` changes
-  explicitly via `but commit` in the same batch.
+- **Commit `.mulch/` (and `.seeds/`) together with the change they
+  document** — `ml sync` / `seeds sync` open their own commits, so stage
+  the tracker + expertise paths explicitly in the same `git add` /
+  `git commit` batch (`seeds sync --status` / `--dry-run` remains the
+  pending-change check).
 
 ## Workflow assets
 
@@ -77,59 +79,48 @@ bound for file tools in runs; the shell reads and writes them normally
 (grep, sed, cat, python3 heredocs), and `seeds`, `ml`, `just` keep
 working.
 
-## Version control (GitButler experiment, user directive 2026-10-03)
+## Version control (plain git; GitButler experiment retired 2026-10-17)
 
-This checkout is a GitButler workspace (sits on `gitbutler/workspace`).
-The TARGET is `origin/main` — main IS the product line and stays the
-merge target of run PRs. Local work lives on APPLIED VIRTUAL BRANCHES
-(one per agent/line); gitbutler refuses applying the target itself, so
-no virtual branch is ever named `main`.
+This is a plain-git checkout — the 2026-10-03..2026-10-17 GitButler
+experiment (virtual branches driven by `but`) ended on user directive,
+exercising its own documented revert condition (ADR-0001). `main` IS the
+product line and stays the merge target of run PRs. Local work lives on
+plain branches, one per agent/line; this repo's local loop lane is
+`iterate`.
 
-- **All write operations go through `but`** (commit, push, branch,
-  history edit, PR). Never run `git add/commit/push/checkout/merge/
-  rebase/stash/cherry-pick` here. Read-only git inspection (`git log`,
-  `git show`, `git diff`, `git fetch`) stays allowed.
-- `but status` replaces `git branch --show-current` — the workspace is
-  healthy when the status parses and no commit is conflicted; any
-  number of applied virtual branches is normal (multi-agent).
-- **Landing local work:** `but push <branch>` + `but pr new <branch>`
-  + `gh pr merge <n> --auto --squash` into `main` — never a direct push
-  to main (forge auth completed 2026-10-03; gh was the interim leg).
-  NOTE: `but pr auto-merge` engages with merge-method MERGE, which
-  main's required-linear-history rule refuses — re-arm it with the gh
-  squash call (PR #3 lesson, 2026-10-03).
-  Run PRs land on main the engine way; the local workspace follows with
-  `but pull` (integrates the new target state, rebases applied
-  branches, removes merged-upstream ones).
-- Update a specific virtual branch from its own remote with
-  `but branch update <name>`; fetch target state before reading
-  tracker state when another machine may have moved it (the tracker
-  view is branch-local). Never apply/unapply/update branches or pull
-  while a background cargo runs (the tree is rewritten).
-- One-time bootstrap exception (root commit `235a70d`): gitbutler needs
-  an origin HEAD before `but setup` can set its target, so the EMPTY
-  root commit was created and pushed via plain git once — no content
-  ever lands that way again.
-- The experiment exists to run several agents as separate virtual
-  branches/stacks in one workspace WITHOUT git worktrees. Report
-  friction in the journal so the go/no-go stays factual. If the
-  experiment fails, revert the but-specific procedures to git wording.
+- Normal git applies: `git add` / `git commit` / `git switch` /
+  `git fetch` / `git rebase`. Read-only inspection (`git log`,
+  `git show`, `git diff`, `git fetch`) is always fine.
+- **Landing local work:** `git push origin <branch>` + `gh pr merge <n>
+  --auto --squash` into `main` — never a direct push to main (main keeps
+  required-linear-history; squash is the only merge that lands).
+  Run PRs land on main the engine way; the local lane then follows with
+  `git fetch` + `git rebase origin/<branch>`.
+- Fetch before reading tracker state when another machine may have moved
+  the branch (the tracker view is branch-local), and compare
+  `.iterate-state.json` against the lane's top commit before trusting
+  the worktree. Never pull/rebase/switch branches while a background
+  cargo runs (the tree is rewritten under you).
+- The multi-agent setup runs on plain branches (one per agent/line). The
+  `but` CLI and the `gitbutler/*` branches are retired — nothing may
+  depend on them.
 
 ## Push gate (two layers)
 
-`but push` does NOT run git pre-push hooks — the gate is a COMMAND run
-explicitly, unpiped, in the same cell as the push:
+Every push runs the gate as an explicit, unpiped COMMAND in the same
+cell as the push — the lefthook pre-push hook is operator opt-in (one
+`lefthook install` per checkout), so the command is the reliable layer:
 
 1. `nu .fabro/scripts/push-gate.nu` (exit 0 = open: no running
    conductor/develop/revisor pass on https://mirtuell.net AND no open
    run-PR on denkhaus/mulch; quota-parked runs do not refuse), then
-2. `but push <branch>` (the virtual branch you are landing).
+2. `git push origin <branch>` (the branch you are landing).
 
-Never pipe the gate (`gate | tail && but push` reads the pipe member's
+Never pipe the gate (`gate | tail && git push` reads the pipe member's
 exit code, not the gate's). `lefthook.yml` additionally wires the same
-gate as a git pre-push hook for plain-git pushes (operator escape
-`git push --no-verify` stays documented); operators activate it once per
-checkout with `lefthook install`.
+gate as a git pre-push hook (operator escape `git push --no-verify`
+stays documented); operators activate it once per checkout with
+`lefthook install`.
 
 INVARIANT: run sandboxes NEVER install hooks — a toolchain/bootstrap
 `lefthook install` or a `core.hooksPath` override would stall the whole
@@ -168,13 +159,15 @@ Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root; read before e
 
 Local development runs in sprints via the local `iterate` skill
 (`.agents/skills/iterate/SKILL.md`): grilling-with-docs at decision points,
-working mode (but-commits + mulch + seeds + quality gates) always on,
+working mode (git commits + mulch + seeds + quality gates) always on,
 code-review after every sprint, improve-codebase-architecture every 3rd
 sprint, self-reflection evolving the skill at sprint close/session end.
 Sprint counter: `.iterate-state.json`. This loop is INDEPENDENT of the fabro
-develop line (user directive 2026-10-03): local-only on the `iterate`
-virtual branch — no pushes, no PRs, no `--assignee fabro`; all commits via
-`but`, never `git` and never `ml sync`. Local-loop skills live under
+develop line (user directive 2026-10-03): local-only on the plain
+`iterate` branch — no PRs and no main-landing without explicit user
+order, no `--assignee fabro`; all commits via `git`, with `.seeds/` +
+`.mulch/` staged in the same commit (never `ml sync`), and the lane
+pushed to `origin/iterate` through the push gate at every sprint close. Local-loop skills live under
 `.agents/skills/` (iterate + repo-local rust-style-guide copy); the loop
 never loads skills from `.fabro/skills/` — that tree belongs to the
 autonomous fabro line.

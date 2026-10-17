@@ -1,7 +1,9 @@
-# ADR-0001: Bootstrap posture — shared toolchain image and GitButler landing flow
+# ADR-0001: Bootstrap posture — shared toolchain image and landing flow
 
 - Status: Accepted
 - Date: 2026-10-03
+- Amended: 2026-10-17 (mulch-6817) — decision 2 reverts to plain git;
+  the GitButler experiment ran 2026-10-03..2026-10-17
 - Deciders: user (grilling rounds 1-2, 2026-10-03), agent (bootstrap execution)
 - Related: ADR-0023 in denkhaus/fabro (parent record: native seeds & mulch), AGENTS.md (version control, push gate)
 
@@ -20,21 +22,27 @@ shape every day of work here and are not covered by the parent record.
    needs (new tool, new pin) are cross-repo changes landing in the seeds
    repo plus an environment repin — never a mulch-side Dockerfile. This
    repo therefore has no run-images/image-release recipes.
-2. **GitButler landing flow (experiment, user directive 2026-10-03).**
-   The checkout is a GitButler workspace; the TARGET is `origin/main`
-   (main IS the product line and stays the run-PR merge target). Local
-   work lives on applied virtual branches (one per agent/line — the
-   multi-agent, no-worktrees experiment) landing via
-   `but push` + PR + auto-merge (SQUASH — linear history is required on
-   main; `but pr auto-merge` engages with merge-method MERGE and must be
-   followed by `gh pr merge <n> --auto --squash`). The workspace follows
-   main via `but pull`. All VCS writes go through `but`;
-   `seeds sync` / `ml sync` are forbidden (own plain-git commits behind
-   the workspace) — tracker and expertise stores are committed
-   explicitly via `but commit` in the same batch. The push gate runs as
-   an explicit unpiped command in the same cell as the push. Revert
-   condition: if the experiment fails, the but-specific procedures
-   revert to plain-git wording.
+2. **Landing flow — plain git (amended 2026-10-17, mulch-6817).**
+   `main` IS the product line and the run-PR merge target; it keeps
+   required-linear-history, so the only landing is a squash
+   (`gh pr merge <n> --auto --squash`) — never a direct push to main.
+   Local work lives on plain branches (one per agent/line; this repo's
+   loop lane is `iterate`), committed with `git add` / `git commit` with
+   `.seeds/` and `.mulch/` staged in the SAME commit (tracker and
+   expertise stores must not open their own commits — `seeds sync` /
+   `ml sync` stay out of the batch flow). Landing: `git push origin
+   <branch>` + the squash merge above; the local lane follows main with
+   `git fetch` + `git rebase`. The push gate runs as an explicit unpiped
+   command in the same cell as every push (the lefthook pre-push hook is
+   the operator-opt-in second layer).
+   HISTORY: the 2026-10-03..2026-10-17 GitButler experiment replaced
+   this with virtual branches driven by `but` (`but push` + `but pr new`
+   + squash re-arm, workspace following main via `but pull`, all VCS
+   writes through `but`). Its own revert condition — "if the experiment
+   fails, the but-specific procedures revert to plain-git wording" —
+   fired on user directive 2026-10-17: teardown ran, main was
+   fast-forwarded to the iterate tip, and the but procedures plus the
+   `gitbutler/*` refs were retired (mulch-6817).
 
 ## Consequences
 
@@ -43,6 +51,6 @@ shape every day of work here and are not covered by the parent record.
   seeds repo.
 - Local landings always produce a PR (never a direct main push); run PRs
   are unaffected (the engine merges into main itself).
-- The one-time plain-git exception is the empty root commit (gitbutler
-  requires an origin HEAD before `but setup`); no content ever lands
-  via git again.
+- The empty root commit `235a70d` (bootstrap, needed so gitbutler could
+  set its target) stays a historical one-off — the experiment it served
+  is retired; no process depends on it.
