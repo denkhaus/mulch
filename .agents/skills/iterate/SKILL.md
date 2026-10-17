@@ -142,9 +142,14 @@ architecture direction, milestone content, go/no-go):
   `-A`) + `git commit -m "<msg>"`, batching `.seeds/` + `.mulch/` into
   the same commit per AGENTS.md (never `ml sync`; `seeds sync --status`
   / `--dry-run` is the pending-change check).
-  LONG messages go through a file: `git commit -F /tmp/msg.txt` — inline
-  `-m` strings with quotes/backticks get shell-mangled (sprint 25: the
-  message lost its quoted parts and needed a reword).
+  **Long or quoted arguments go through a FILE, never inline**: commit
+  with `git commit -F /tmp/msg.txt`, and pass `seeds close --reason` /
+  `ml record --rationale` as `"$(cat /tmp/x.txt)"` (one expansion, the
+  content is never re-evaluated). An inline double-quoted string runs
+  every backtick it contains AS A COMMAND (sprint 25: a commit message
+  lost its quoted parts; 2026-10-17 close: backticked words inside an
+  `ml record --rationale` executed a foreign CLI, corrupted both
+  records, and fired an UNGATED push).
 - **Commit-integrity check (sprint 20 lesson)**: a file can be invisible
   at commit time (the but-era `but status` under-reported the dirty
   worktree — records.rs never entered the commit while the message
