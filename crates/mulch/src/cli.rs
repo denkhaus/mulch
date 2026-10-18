@@ -455,18 +455,18 @@ pub(crate) struct DynamicFlags {
     entries: Vec<(&'static str, String, String)>,
 }
 
-/// Augments `record`/`edit` from the current store when argv invokes
-/// one of them: `--type`'s choice set becomes the registry's names
-/// and every undeclared custom field gains its `--<field>` flag.
-/// Returns the registry failure when the custom_types config is
-/// broken (the global config-error surface renders it — the same
-/// failure `open_store` would raise, earlier, like the reference's
-/// registry init).
+/// Augments the [`AUGMENTED`] subcommands from the current store
+/// when argv invokes one of them: a registry-gated choice set
+/// becomes the registry's names and every undeclared custom field
+/// gains its `--<field>` flag. Returns the registry failure when the
+/// custom_types config is broken (the global config-error surface
+/// renders it — the same failure `open_store` would raise, earlier,
+/// like the reference's registry init).
 pub(crate) fn augment(command: &mut clap::Command) -> Result<DynamicFlags, crate::output::Failure> {
     let Some(sub) = invoked_subcommand() else {
         return Ok(DynamicFlags::default());
     };
-    if sub != "record" && sub != "edit" {
+    if !AUGMENTED.iter().any(|row| row.sub == sub) {
         return Ok(DynamicFlags::default());
     }
     // a cwd-resolution failure stays with `open_store`'s rendering
@@ -492,28 +492,56 @@ pub(crate) fn augment(command: &mut clap::Command) -> Result<DynamicFlags, crate
     };
 
     let mut dynamic = DynamicFlags::default();
-    if let Some(record) = command.find_subcommand_mut("record") {
-        let choices: Vec<clap::builder::PossibleValue> = registry
-            .rows()
-            .iter()
-            .map(|row| clap::builder::PossibleValue::new(row.name.clone()))
-            .collect();
-        let mut taken = std::mem::take(record);
-        // the derive's static choice set becomes the registry's names
-        // (same id, same rejection wording family)
-        taken = taken.mut_arg("record_type", |arg| {
-            arg.value_parser(clap::builder::PossibleValuesParser::new(choices))
-        });
-        taken = register_custom_flags(taken, "record", &registry, &RECORD_FLAGS, &mut dynamic);
-        *record = taken;
-    }
-    if let Some(edit) = command.find_subcommand_mut("edit") {
-        let taken = std::mem::take(edit);
-        let rebuilt = register_custom_flags(taken, "edit", &registry, &EDIT_FLAGS, &mut dynamic);
-        *edit = rebuilt;
+    for row in AUGMENTED {
+        let Some(slot) = command.find_subcommand_mut(row.sub) else {
+            continue;
+        };
+        let mut taken = std::mem::take(slot);
+        if let Some(choices_arg) = row.choices_arg {
+            let choices: Vec<clap::builder::PossibleValue> = registry
+                .rows()
+                .iter()
+                .map(|r| clap::builder::PossibleValue::new(r.name.clone()))
+                .collect();
+            // the derive's static choice set becomes the registry's
+            // names (same id, same rejection wording family)
+            taken = taken.mut_arg(choices_arg, |arg| {
+                arg.value_parser(clap::builder::PossibleValuesParser::new(choices))
+            });
+        }
+        taken = register_custom_flags(taken, row.sub, &registry, row.declared_flags, &mut dynamic);
+        *slot = taken;
     }
     Ok(dynamic)
 }
+
+/// The per-subcommand augmentation table: which subcommands read the
+/// store's registry before parsing, and what each augments. A later
+/// registry-gated command (query/search `--type`, prune/archive) is
+/// a new row, not a new if-chain arm.
+struct AugmentRow {
+    sub:            &'static str,
+    /// Argument id whose choice set becomes the registry's names
+    /// (`record`'s positional); `None` = no registry-gated choices.
+    choices_arg:    Option<&'static str>,
+    /// The command's own flag names: a custom field with one of
+    /// these names reads the existing flag instead of getting a new
+    /// one (the reference's `declaredOptionNames` set).
+    declared_flags: &'static [&'static str],
+}
+
+const AUGMENTED: [AugmentRow; 2] = [
+    AugmentRow {
+        sub:            "record",
+        choices_arg:    Some("record_type"),
+        declared_flags: &RECORD_FLAGS,
+    },
+    AugmentRow {
+        sub:            "edit",
+        choices_arg:    None,
+        declared_flags: &EDIT_FLAGS,
+    },
+];
 
 /// Adds `--<field>` for every custom row field whose hyphenated name
 /// the subcommand does not already declare (first come, like the
@@ -570,15 +598,47 @@ pub(crate) fn inject_dynamic(cli: &mut Cli, matches: &clap::ArgMatches, dynamic:
     }
 }
 
-/// The first non-flag argv token (the subcommand position — every
-/// global flag is a boolean). `args_os` + lossy conversion: a
+/// Global flags that take a separate value token. The reference's
+/// only value-taking global today is `--format <format>`
+/// (cli.ts:130); `--format=x` carries its value inline and needs no
+/// skip.
+const VALUE_TAKING_GLOBALS: [&str; 1] = ["format"];
+
+/// The first non-flag argv token (the subcommand position). Boolean
+/// globals skip as-is; a [`VALUE_TAKING_GLOBALS`] long flag without
+/// `=` also swallows its value token, so `--format compact record`
+/// still resolves to `record`. `args_os` + lossy conversion: a
 /// non-UTF-8 argv must fall through to clap's parse error, not
 /// panic in the pre-parse scan.
 fn invoked_subcommand() -> Option<String> {
-    std::env::args_os()
-        .skip(1)
-        .find(|token| !token.to_string_lossy().starts_with('-'))
-        .map(|token| token.to_string_lossy().into_owned())
+    subcommand_from_argv(std::env::args_os().skip(1))
+}
+
+/// The scan law over an arbitrary token stream: skip flag tokens
+/// (any token starting with `-`); a bare long flag naming a
+/// value-taking global skips the next token too; the first
+/// non-flag token is the subcommand.
+fn subcommand_from_argv<I>(tokens: I) -> Option<String>
+where
+    I: Iterator<Item = std::ffi::OsString>,
+{
+    let mut tokens = tokens.peekable();
+    while let Some(token) = tokens.next() {
+        let token = token.to_string_lossy();
+        let Some(long) = token.strip_prefix("--") else {
+            if token.starts_with('-') {
+                continue;
+            }
+            return Some(token.into_owned());
+        };
+        if long.contains('=') {
+            continue;
+        }
+        if VALUE_TAKING_GLOBALS.contains(&long) {
+            tokens.next();
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -596,7 +656,8 @@ mod dynamic_flag_tests {
     #[test]
     fn declared_flag_lists_cover_the_derive_surface() {
         let command = Cli::command();
-        for (sub, declared) in [("record", &RECORD_FLAGS[..]), ("edit", &EDIT_FLAGS[..])] {
+        for row in &AUGMENTED {
+            let (sub, declared) = (row.sub, row.declared_flags);
             let mut longs: Vec<String> = command
                 .find_subcommand(sub)
                 .unwrap_or_else(|| panic!("{sub} subcommand missing"))
@@ -616,15 +677,16 @@ mod dynamic_flag_tests {
         }
     }
 
-    /// The pre-parse ([`invoked_subcommand`]) assumes every global
-    /// flag is a boolean: a value-taking global flag would swallow the
-    /// subcommand token, skip augmentation, and send a registry-gated
-    /// `--type` to the flag path's `expect`. Pins the derive's
-    /// top-level args to take no values.
+    /// The pre-parse's drift pin: a top-level arg that takes a value
+    /// must be listed in [`VALUE_TAKING_GLOBALS`], or its value token
+    /// would swallow the subcommand position, skip augmentation, and
+    /// send a registry-gated `--type` to the flag path's `expect`
+    /// (the law pinned against the reference's `--format compact
+    /// record ... --type <custom>`, which records fine).
     #[test]
-    fn global_flags_take_no_values() {
+    fn value_taking_globals_are_listed() {
         let command = Cli::command();
-        let value_taking: Vec<String> = command
+        let unlisted: Vec<String> = command
             .get_arguments()
             .filter(|arg| {
                 matches!(
@@ -632,11 +694,68 @@ mod dynamic_flag_tests {
                     clap::ArgAction::Set | clap::ArgAction::Append
                 )
             })
-            .map(|arg| arg.get_id().to_string())
+            .filter_map(clap::Arg::get_long_and_visible_aliases)
+            .flatten()
+            .map(std::string::ToString::to_string)
+            .filter(|long| !VALUE_TAKING_GLOBALS.contains(&long.as_str()))
             .collect();
         assert!(
-            value_taking.is_empty(),
-            "value-taking top-level args break the augment pre-parse: {value_taking:?}"
+            unlisted.is_empty(),
+            "top-level --{unlisted:?} takes a value but the pre-parse does not skip it"
+        );
+    }
+
+    /// The scan law over synthetic argv: value-taking globals
+    /// (`--format <val>`), inline `--format=val`, boolean globals,
+    /// and the no-subcommand tail.
+    #[test]
+    fn subcommand_scan_skips_value_taking_globals() {
+        use std::ffi::OsString;
+        let argv = |parts: &[&str]| {
+            parts
+                .iter()
+                .map(OsString::from)
+                .collect::<Vec<_>>()
+                .into_iter()
+        };
+        assert_eq!(
+            subcommand_from_argv(argv(&["--format", "compact", "record", "dev"])),
+            Some("record".into())
+        );
+        assert_eq!(
+            subcommand_from_argv(argv(&["--format=compact", "record", "dev"])),
+            Some("record".into())
+        );
+        assert_eq!(
+            subcommand_from_argv(argv(&["--json", "-q", "edit", "dev", "mx-1"])),
+            Some("edit".into())
+        );
+        // a flag after the subcommand never reaches the scan
+        assert_eq!(
+            subcommand_from_argv(argv(&["record", "--format", "compact"])),
+            Some("record".into())
+        );
+        // value flag with no subcommand after it: clap owns the error
+        assert_eq!(subcommand_from_argv(argv(&["--format", "compact"])), None);
+    }
+
+    /// A non-UTF-8 argv token falls through lossy: a flag-ish one is
+    /// skipped, a positional one resolves lossily — the parse error
+    /// stays clap's.
+    #[cfg(unix)]
+    #[test]
+    fn subcommand_scan_takes_non_utf8_lossy() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+        let flagish = OsString::from_vec(vec![0x2d, 0xff, 0x2d, 0xff]);
+        assert_eq!(
+            subcommand_from_argv([flagish, "record".into()].into_iter()),
+            Some("record".into())
+        );
+        let positional = OsString::from_vec(vec![0xff, 0xfe]);
+        assert_eq!(
+            subcommand_from_argv([positional].into_iter()),
+            Some("\u{fffd}\u{fffd}".into())
         );
     }
 }
