@@ -20,81 +20,92 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
-use mulch::REGISTRY;
 use serde_json::Value;
 
-/// One per-type rendering row, parallel to [`REGISTRY`] order (the
-/// reference's `TypeDefinition` format hooks).
+/// One per-builtin rendering row (the reference's specialized
+/// `TypeDefinition` format hooks); section titles live on the
+/// registry rows, not here.
 struct TypeRender {
-    /// The markdown section heading (e.g. "Conventions").
-    section_title: &'static str,
     /// `formatMarkdown`: the whole section block, "" for no records.
-    markdown:      fn(&[Value], bool) -> String,
+    markdown:     fn(&[Value], bool) -> String,
     /// `formatCompactLine`: one record's compact bullet WITHOUT the
     /// annotation suffix (the family appends it); takes `now` for
     /// the classification-age rendering.
-    compact_line:  fn(&Value, Timestamp) -> String,
+    compact_line: fn(&Value, Timestamp) -> String,
     /// `formatXml`: the record's inner element lines (4-space indent).
-    xml_lines:     fn(&Value) -> Vec<String>,
+    xml_lines:    fn(&Value) -> Vec<String>,
     /// `plainSection`: "Title:" + bullets + trailing "" (no records
     /// → no lines).
-    plain:         fn(&[Value]) -> Vec<String>,
+    plain:        fn(&[Value]) -> Vec<String>,
 }
 
 /// The six built-ins in registry order.
 static RENDER_TABLE: [TypeRender; 6] = [
     TypeRender {
-        section_title: "Conventions",
-        markdown:      markdown_conventions,
-        compact_line:  compact_convention,
-        xml_lines:     xml_convention,
-        plain:         plain_conventions,
+        markdown:     markdown_conventions,
+        compact_line: compact_convention,
+        xml_lines:    xml_convention,
+        plain:        plain_conventions,
     },
     TypeRender {
-        section_title: "Patterns",
-        markdown:      markdown_patterns,
-        compact_line:  compact_pattern,
-        xml_lines:     xml_pattern,
-        plain:         plain_patterns,
+        markdown:     markdown_patterns,
+        compact_line: compact_pattern,
+        xml_lines:    xml_pattern,
+        plain:        plain_patterns,
     },
     TypeRender {
-        section_title: "Known Failures",
-        markdown:      markdown_failures,
-        compact_line:  compact_failure,
-        xml_lines:     xml_failure,
-        plain:         plain_failures,
+        markdown:     markdown_failures,
+        compact_line: compact_failure,
+        xml_lines:    xml_failure,
+        plain:        plain_failures,
     },
     TypeRender {
-        section_title: "Decisions",
-        markdown:      markdown_decisions,
-        compact_line:  compact_decision,
-        xml_lines:     xml_decision,
-        plain:         plain_decisions,
+        markdown:     markdown_decisions,
+        compact_line: compact_decision,
+        xml_lines:    xml_decision,
+        plain:        plain_decisions,
     },
     TypeRender {
-        section_title: "References",
-        markdown:      markdown_references,
-        compact_line:  compact_reference,
-        xml_lines:     xml_reference,
-        plain:         plain_references,
+        markdown:     markdown_references,
+        compact_line: compact_reference,
+        xml_lines:    xml_reference,
+        plain:        plain_references,
     },
     TypeRender {
-        section_title: "Guides",
-        markdown:      markdown_guides,
-        compact_line:  compact_guide,
-        xml_lines:     xml_guide,
-        plain:         plain_guides,
+        markdown:     markdown_guides,
+        compact_line: compact_guide,
+        xml_lines:    xml_guide,
+        plain:        plain_guides,
     },
 ];
 
-/// The render row for a record type (registry order; None for
-/// unregistered types — families skip those like the reference's
-/// `registry.get` miss).
-fn row(record_type: &str) -> Option<&'static TypeRender> {
-    REGISTRY
-        .iter()
-        .position(|spec| spec.name == record_type)
-        .map(|index| &RENDER_TABLE[index])
+/// The specialized builtin hooks, name-keyed (the reference's own
+/// `switch (def.name)` shape — registry order never matters here).
+fn builtin_render(name: &str) -> Option<&'static TypeRender> {
+    Some(match name {
+        "convention" => &RENDER_TABLE[0],
+        "pattern" => &RENDER_TABLE[1],
+        "failure" => &RENDER_TABLE[2],
+        "decision" => &RENDER_TABLE[3],
+        "reference" => &RENDER_TABLE[4],
+        "guide" => &RENDER_TABLE[5],
+        _ => return None,
+    })
+}
+
+/// The render row for a record type over the MERGED registry: the
+/// six builtins keep their specialized hooks, customs render through
+/// the generic hooks built from their [`mulch::Row`] (registry/custom.ts).
+/// `None` for unregistered types — families skip those like the
+/// reference's `registry.get` miss.
+enum RenderRow<'a> {
+    Builtin(&'static TypeRender),
+    Custom(&'a mulch::Row),
+}
+
+fn render_row<'a>(registry: &'a mulch::Registry, record_type: &str) -> Option<RenderRow<'a>> {
+    let row = registry.row(record_type)?;
+    Some(builtin_render(record_type).map_or(RenderRow::Custom(row), RenderRow::Builtin))
 }
 
 // ---- the format atoms (format-helpers.ts) ----
@@ -297,6 +308,7 @@ fn xml_attr_escape(text: &str) -> String {
 /// `formatDomainExpertise` (markdown default): the `## domain`
 /// header plus one section per registry type with records.
 pub(crate) fn format_domain_expertise(
+    registry: &mulch::Registry,
     domain: &str,
     records: &[Value],
     last_updated: Option<Timestamp>,
@@ -306,15 +318,18 @@ pub(crate) fn format_domain_expertise(
 ) -> String {
     let updated = updated_suffix(last_updated, now);
     let mut sections = Vec::new();
-    for spec in REGISTRY {
+    // registry order: the six builtins canonical, then customs in
+    // config order (the reference's enabled() walk)
+    for row in registry.rows() {
         let subset: Vec<Value> = records
             .iter()
-            .filter(|r| r.get("type").and_then(Value::as_str) == Some(spec.name))
+            .filter(|r| r.get("type").and_then(Value::as_str) == Some(row.name.as_str()))
             .cloned()
             .collect();
-        let block = (row(spec.name)
-            .expect("registry parallel to RENDER_TABLE")
-            .markdown)(&subset, full);
+        let block = builtin_render(&row.name).map_or_else(
+            || markdown_custom(registry, row, &subset, full),
+            |builtin| (builtin.markdown)(&subset, full),
+        );
         if !block.is_empty() {
             sections.push(annotate_markdown_block(block, annotations));
         }
@@ -329,6 +344,7 @@ pub(crate) fn format_domain_expertise(
 /// `formatDomainExpertiseCompact`: the header plus one bullet per
 /// record in STORE order (registry miss → skip).
 pub(crate) fn format_domain_expertise_compact(
+    registry: &mulch::Registry,
     domain: &str,
     records: &[Value],
     last_updated: Option<Timestamp>,
@@ -338,14 +354,19 @@ pub(crate) fn format_domain_expertise_compact(
     let updated = updated_suffix(last_updated, now);
     let mut lines = vec![format!("## {domain} ({} records{updated})", records.len())];
     for record in records {
-        let Some(r#struct) = row(record
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default())
-        else {
+        let Some(render) = render_row(
+            registry,
+            record
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        ) else {
             continue;
         };
-        let mut line = (r#struct.compact_line)(record, now);
+        let mut line = match render {
+            RenderRow::Builtin(builtin) => (builtin.compact_line)(record, now),
+            RenderRow::Custom(row) => compact_custom(registry, row, record, now),
+        };
         if let Some(why) = annotation_for(record, annotations) {
             let _ = write!(line, " — {why}");
         }
@@ -356,6 +377,7 @@ pub(crate) fn format_domain_expertise_compact(
 
 /// `formatDomainExpertiseXml`.
 pub(crate) fn format_domain_expertise_xml(
+    registry: &mulch::Registry,
     domain: &str,
     records: &[Value],
     last_updated: Option<Timestamp>,
@@ -371,11 +393,13 @@ pub(crate) fn format_domain_expertise_xml(
         records.len()
     )];
     for record in records {
-        let Some(render) = row(record
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default())
-        else {
+        let Some(render) = render_row(
+            registry,
+            record
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        ) else {
             continue;
         };
         let id_attr = record
@@ -396,7 +420,10 @@ pub(crate) fn format_domain_expertise_xml(
         lines.push(format!(
             "  <{tag}{id_attr} classification=\"{classification}\"{why_attr}>"
         ));
-        lines.extend((render.xml_lines)(record));
+        lines.extend(match render {
+            RenderRow::Builtin(builtin) => (builtin.xml_lines)(record),
+            RenderRow::Custom(row) => xml_custom_lines(row, record),
+        });
         lines.extend(xml_common_elements(record));
         lines.push(format!("  </{tag}>"));
     }
@@ -407,6 +434,7 @@ pub(crate) fn format_domain_expertise_xml(
 /// `formatDomainExpertisePlain`: `[domain] N records` plus per-type
 /// sections (registry order), trailing blanks trimmed.
 pub(crate) fn format_domain_expertise_plain(
+    registry: &mulch::Registry,
     domain: &str,
     records: &[Value],
     last_updated: Option<Timestamp>,
@@ -420,16 +448,21 @@ pub(crate) fn format_domain_expertise_plain(
         format!("[{domain}] {} records{updated}", records.len()),
         String::new(),
     ];
-    for spec in REGISTRY {
+    for spec in registry.rows() {
+        // customs are INVISIBLE in plain (reference plainSection's
+        // default arm — they still count in the header above)
+        let Some(builtin) = builtin_render(&spec.name) else {
+            continue;
+        };
         let subset: Vec<Value> = records
             .iter()
-            .filter(|r| r.get("type").and_then(Value::as_str) == Some(spec.name))
+            .filter(|r| r.get("type").and_then(Value::as_str) == Some(spec.name.as_str()))
             .cloned()
             .collect();
         if subset.is_empty() {
             continue;
         }
-        for line in (row(spec.name).expect("registry parallel").plain)(&subset) {
+        for line in (builtin.plain)(&subset) {
             lines.push(annotate_plain_line(line, annotations));
         }
     }
@@ -976,6 +1009,112 @@ fn plain_guides(records: &[Value]) -> Vec<String> {
     out
 }
 
+// ---- the generic custom hooks (registry/custom.ts) ----
+
+/// `custom.ts formatMarkdown`: `### <sectionTitle>` + one generic
+/// bullet per record — summary bold (NOT truncated), ` — ` +
+/// `field: value` pairs over the declared fields (null AND "" skip;
+/// the summary's own source fields REPEAT in the detail; files
+/// never appear in the detail), files parens after the detail, then
+/// the shared meta suffix.
+fn markdown_custom(
+    registry: &mulch::Registry,
+    row: &mulch::Row,
+    records: &[Value],
+    full: bool,
+) -> String {
+    if records.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![format!("### {}", row.section_title)];
+    for record in records {
+        let mut line = format!(
+            "- {}**{}**",
+            id_tag(record),
+            mulch::record_summary(registry, record)
+        );
+        let mut detail = Vec::new();
+        for field in row.payload.iter().chain(row.optional.iter()) {
+            if row.files_array.as_deref() == Some(field.as_str()) {
+                continue;
+            }
+            let Some(value) = record.get(field) else {
+                continue;
+            };
+            if value.is_null() || value.as_str() == Some("") {
+                continue;
+            }
+            detail.push(format!("{field}: {}", mulch::value_text(value)));
+        }
+        if !detail.is_empty() {
+            let _ = write!(line, " — {}", detail.join("; "));
+        }
+        if let Some(files) = row
+            .files_array
+            .as_deref()
+            .and_then(|field| files_list_field(record, field))
+        {
+            let _ = write!(line, " ({files})");
+        }
+        line.push_str(&record_meta(record, full));
+        lines.push(line);
+    }
+    lines.join("\n")
+}
+
+/// `custom.ts formatCompactLine`: `- [type] truncate(summary)` +
+/// files parens + the shared meta/outcome/links suffixes (TWO paren
+/// groups when files exist).
+fn compact_custom(
+    registry: &mulch::Registry,
+    row: &mulch::Row,
+    record: &Value,
+    now: Timestamp,
+) -> String {
+    let summary = mulch::js_truncate(&mulch::record_summary(registry, record), 100);
+    let files = row
+        .files_array
+        .as_deref()
+        .and_then(|field| files_list_field(record, field))
+        .map_or_else(String::new, |files| format!(" ({files})"));
+    format!(
+        "- [{}] {}{}{}{}{}",
+        row.name,
+        summary,
+        files,
+        compact_meta(record, now),
+        outcome_suffix(record),
+        links_suffix(record)
+    )
+}
+
+/// `custom.ts formatXml`: one `<field>` line per DECLARED field
+/// (payload-then-optional order, files included): arrays join
+/// `", "`, only null/absent skip — `""` and `[]` render EMPTY
+/// elements (probe bytes; markdown skips both).
+fn xml_custom_lines(row: &mulch::Row, record: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    for field in row.payload.iter().chain(row.optional.iter()) {
+        let Some(value) = record.get(field) else {
+            continue;
+        };
+        if let Value::Array(items) = value {
+            let joined = items
+                .iter()
+                .map(|item| xml_escape(&mulch::value_text(item)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("    <{field}>{joined}</{field}>"));
+        } else if !value.is_null() {
+            lines.push(format!(
+                "    <{field}>{}</{field}>",
+                xml_escape(&mulch::value_text(value))
+            ));
+        }
+    }
+    lines
+}
+
 // ---- shared field access ----
 
 /// A string field, "" when absent/non-string. The rendered fields are
@@ -998,6 +1137,23 @@ fn files_list(record: &Value) -> String {
         .and_then(Value::as_array)
         .filter(|files| !files.is_empty())
         .map_or_else(String::new, |files| {
+            files
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+}
+
+/// The comma-joined string-array field, `None` when absent/empty —
+/// the files-paren source for rows whose files field is named
+/// (`files_array`).
+fn files_list_field(record: &Value, field: &str) -> Option<String> {
+    record
+        .get(field)
+        .and_then(Value::as_array)
+        .filter(|files| !files.is_empty())
+        .map(|files| {
             files
                 .iter()
                 .filter_map(Value::as_str)
@@ -1043,12 +1199,24 @@ mod render_gold_tests {
         "2026-10-13T15:19:55.000Z".parse().expect("capture now")
     }
 
+    fn builtins() -> mulch::Registry {
+        mulch::Registry::builtins()
+    }
+
     /// Golden pins: live reference bytes (ml 0.10.7, 2026-10-13) for
     /// the six-type store, one per format family. `last_updated` was
     /// the just-written file mtime → "just now".
     #[test]
     fn markdown_family_matches_the_reference_bytes() {
-        let got = format_domain_expertise("d", &records(), Some(now()), false, None, now());
+        let got = format_domain_expertise(
+            &builtins(),
+            "d",
+            &records(),
+            Some(now()),
+            false,
+            None,
+            now(),
+        );
         assert_eq!(
             got,
             "## d (6 records, updated just now)\n\n### Conventions\n- [mx-111111] Conv one content. Second sentence here! And more words to push past the one hundred character mark for truncation.\n\n### Patterns\n- [mx-222222] **Pat One**: Pattern description here (src/a.rs, src/b.rs)\n\n### Known Failures\n- [mx-333333] Fail desc\n  → Fix res\n\n### Decisions\n- [mx-444444] **Decide <X> & Co**: Because Y\n\n### References\n- [mx-555555] **Ref One**: Ref desc [relates to: mulch:mx-111111; supersedes: mulch-abc]\n\n### Guides\n- [mx-666666] **Guide One**: Guide desc"
@@ -1057,7 +1225,8 @@ mod render_gold_tests {
 
     #[test]
     fn compact_family_matches_the_reference_bytes() {
-        let got = format_domain_expertise_compact("d", &records(), Some(now()), None, now());
+        let got =
+            format_domain_expertise_compact(&builtins(), "d", &records(), Some(now()), None, now());
         assert_eq!(
             got,
             "## d (6 records, updated just now)\n- [convention] Conv one content. (mx-111111, tactical 285d ago)\n- [pattern] Pat One: Pattern description here (src/a.rs, src/b.rs) (mx-222222, foundational, ★1.5) [~ (2x)]\n- [failure] Fail desc → Fix res (mx-333333, undefined 281d ago)\n- [decision] Decide <X> & Co: Because Y (mx-444444, undefined 280d ago)\n- [reference] Ref One: Ref desc (mx-555555, undefined 279d ago) [relates to: mulch:mx-111111; supersedes: mulch-abc]\n- [guide] Guide One: Guide desc (mx-666666, undefined 278d ago)"
@@ -1066,7 +1235,8 @@ mod render_gold_tests {
 
     #[test]
     fn xml_family_matches_the_reference_bytes() {
-        let got = format_domain_expertise_xml("d", &records(), Some(now()), None, now());
+        let got =
+            format_domain_expertise_xml(&builtins(), "d", &records(), Some(now()), None, now());
         assert_eq!(
             got,
             "<domain name=\"d\" entries=\"6\" updated=\"just now\">\n  <convention id=\"mx-111111\" classification=\"tactical\">\n    Conv one content. Second sentence here! And more words to push past the one hundred character mark for truncation.\n    <tags>alpha, beta</tags>\n  </convention>\n  <pattern id=\"mx-222222\" classification=\"foundational\">\n    <name>Pat One</name>\n    <description>Pattern description here</description>\n    <files>src/a.rs, src/b.rs</files>\n    <outcome status=\"success\" duration=\"42\" agent=\"ra\"></outcome>\n    <outcome status=\"partial\"></outcome>\n  </pattern>\n  <failure id=\"mx-333333\" classification=\"undefined\">\n    <description>Fail desc</description>\n    <resolution>Fix res</resolution>\n  </failure>\n  <decision id=\"mx-444444\" classification=\"undefined\">\n    <title>Decide &lt;X&gt; &amp; Co</title>\n    <rationale>Because Y</rationale>\n  </decision>\n  <reference id=\"mx-555555\" classification=\"undefined\">\n    <name>Ref One</name>\n    <description>Ref desc</description>\n    <relates_to>mulch:mx-111111</relates_to>\n    <supersedes>mulch-abc</supersedes>\n  </reference>\n  <guide id=\"mx-666666\" classification=\"undefined\">\n    <name>Guide One</name>\n    <description>Guide desc</description>\n  </guide>\n</domain>"
@@ -1075,7 +1245,8 @@ mod render_gold_tests {
 
     #[test]
     fn plain_family_matches_the_reference_bytes() {
-        let got = format_domain_expertise_plain("d", &records(), Some(now()), None, now());
+        let got =
+            format_domain_expertise_plain(&builtins(), "d", &records(), Some(now()), None, now());
         assert_eq!(
             got,
             "[d] 6 records (updated just now)\n\nConventions:\n  - [mx-111111] Conv one content. Second sentence here! And more words to push past the one hundred character mark for truncation.\n\nPatterns:\n  - [mx-222222] Pat One: Pattern description here (src/a.rs, src/b.rs)\n\nKnown Failures:\n  - [mx-333333] Fail desc\n    Fix: Fix res\n\nDecisions:\n  - [mx-444444] Decide <X> & Co: Because Y\n\nReferences:\n  - [mx-555555] Ref One: Ref desc [relates to: mulch:mx-111111; supersedes: mulch-abc]\n\nGuides:\n  - [mx-666666] Guide One: Guide desc"
@@ -1088,15 +1259,42 @@ mod render_gold_tests {
     fn annotations_render_per_family() {
         let mut why = HashMap::new();
         why.insert("mx-111111".to_string(), "file match".to_string());
-        let markdown =
-            format_domain_expertise("d", &records(), Some(now()), false, Some(&why), now());
+        let markdown = format_domain_expertise(
+            &builtins(),
+            "d",
+            &records(),
+            Some(now()),
+            false,
+            Some(&why),
+            now(),
+        );
         assert!(markdown.contains("truncation. — file match"));
-        let compact =
-            format_domain_expertise_compact("d", &records(), Some(now()), Some(&why), now());
+        let compact = format_domain_expertise_compact(
+            &builtins(),
+            "d",
+            &records(),
+            Some(now()),
+            Some(&why),
+            now(),
+        );
         assert!(compact.contains("285d ago) — file match"), "{compact}");
-        let plain = format_domain_expertise_plain("d", &records(), Some(now()), Some(&why), now());
+        let plain = format_domain_expertise_plain(
+            &builtins(),
+            "d",
+            &records(),
+            Some(now()),
+            Some(&why),
+            now(),
+        );
         assert!(plain.contains("truncation.  (file match)"));
-        let xml = format_domain_expertise_xml("d", &records(), Some(now()), Some(&why), now());
+        let xml = format_domain_expertise_xml(
+            &builtins(),
+            "d",
+            &records(),
+            Some(now()),
+            Some(&why),
+            now(),
+        );
         assert!(xml.contains(r#"classification="tactical" why="file match""#));
     }
 
@@ -1104,7 +1302,8 @@ mod render_gold_tests {
     /// classification + evidence + tags brackets ahead of the links.
     #[test]
     fn verbose_meta_renders_classification_evidence_tags() {
-        let got = format_domain_expertise("d", &records(), Some(now()), true, None, now());
+        let got =
+            format_domain_expertise(&builtins(), "d", &records(), Some(now()), true, None, now());
         assert!(
             got.contains(
                 "truncation. (tactical) [commit: abc1234, issue: M-7] [tags: alpha, beta]"
@@ -1148,17 +1347,186 @@ mod render_gold_tests {
         // full-meta tags: same gate
         assert!(record_meta(&record, true).contains("[tags: ]"));
         // unparsable recorded_at: the reference's Invalid-Date template
-        let compact_line =
-            format_domain_expertise_compact("d", std::slice::from_ref(&record), None, None, now());
+        let compact_line = format_domain_expertise_compact(
+            &builtins(),
+            "d",
+            std::slice::from_ref(&record),
+            None,
+            None,
+            now(),
+        );
         assert!(compact_line.contains("tactical NaNd ago"), "{compact_line}");
     }
 
-    /// The RENDER_TABLE stays parallel to REGISTRY (row() never misses
-    /// for a registry type).
+    /// The builtin dispatch: every builtin registry name resolves to
+    /// its specialized row; nothing else does (customs render through
+    /// the generic hooks instead — the reference's switch shape).
     #[test]
-    fn render_table_covers_the_registry() {
-        for spec in REGISTRY {
-            assert!(row(spec.name).is_some(), "no render row for {}", spec.name);
+    fn builtin_render_covers_exactly_the_builtins() {
+        for spec in mulch::REGISTRY {
+            assert!(
+                builtin_render(spec.name).is_some(),
+                "no builtin row for {}",
+                spec.name
+            );
         }
+        assert!(builtin_render("recipe").is_none());
+        assert!(builtin_render("").is_none());
+    }
+
+    // ---- the generic custom hooks (registry/custom.ts law, probed
+    // live 2026-10-18, /tmp/sprint34/c1-probes) ----
+
+    fn custom_config() -> &'static str {
+        // config order: zzz before deploy (markdown sections follow
+        // CONFIG order, not alphabetical — the F-store law)
+        r#"
+version: '1'
+domains:
+  probe: {}
+custom_types:
+  zzz_note:
+    required: [content]
+    optional: [note]
+    dedup_key: content
+    summary: "{content}"
+  deploy_note:
+    required: [service, action]
+    optional: [files, rollback]
+    dedup_key: service
+    summary: "{service}: {action}"
+    extracts_files: true
+  run_step:
+    extends: pattern
+    optional: [page_index]
+    section_title: 123
+  legacy:
+    extends: pattern
+"#
+    }
+
+    fn custom_registry() -> mulch::Registry {
+        let config = mulch::Config::parse(custom_config()).expect("config parses");
+        mulch::Registry::from_config(&config).expect("custom types validate")
+    }
+
+    fn custom_records() -> Vec<Value> {
+        serde_json::from_str(
+            r#"
+[
+  {"type":"pattern","name":"Pat One","description":"Pat desc","id":"mx-222222","classification":"foundational","recorded_at":"2026-01-02T10:00:00.000Z"},
+  {"type":"zzz_note","content":"Zeta note first. Second sentence pushes on past the hundred character boundary for the truncate law to fire and add the ellipsis!","note":"","id":"mx-zzz001","classification":"tactical","recorded_at":"2026-01-03T10:00:00.000Z"},
+  {"type":"deploy_note","service":"api","action":"restart pods","rollback":"kubectl undo","files":["k8s/api.yml","deploy.sh"],"id":"mx-dep001","classification":"foundational","recorded_at":"2026-01-04T10:00:00.000Z","outcomes":[{"status":"success","recorded_at":"2026-01-05T10:00:00.000Z","duration":80},{"status":"failure","recorded_at":"2026-01-06T10:00:00.000Z","duration":80,"agent":"ra"}]},
+  {"type":"deploy_note","service":"web","action":"roll","files":[],"rollback":"","id":"mx-dep002","classification":"tactical","recorded_at":"2026-01-07T10:00:00.000Z"},
+  {"type":"run_step","name":"RS","description":"x","page_index":null,"id":"mx-rs0001","recorded_at":"2026-01-08T10:00:00.000Z"},
+  {"type":"legacy","name":"LG","description":"y","id":"mx-lg0001","recorded_at":"2026-01-09T10:00:00.000Z"}
+]
+"#,
+        )
+        .expect("fixture parses")
+    }
+
+    /// Markdown: builtins first, then customs in CONFIG order
+    /// (zzz before deploy); the title chain (default `Zzz_notes`,
+    /// yaml-display `123`, extends-fallback `Patterns`); the generic
+    /// bullet (summary bold UNTRUNCATED and REPEATED in the detail,
+    /// ` — ` + `field: value` pairs, "" skipped, files parens after
+    /// the detail).
+    #[test]
+    fn markdown_custom_sections_match_the_law() {
+        let got = format_domain_expertise(
+            &custom_registry(),
+            "probe",
+            &custom_records(),
+            Some(now()),
+            false,
+            None,
+            now(),
+        );
+        let zeta = "Zeta note first. Second sentence pushes on past the hundred character boundary for the truncate law to fire and add the ellipsis!";
+        assert_eq!(
+            got,
+            format!(
+                "## probe (6 records, updated just now)\n\n\
+                 ### Patterns\n- [mx-222222] **Pat One**: Pat desc\n\n\
+                 ### Zzz_notes\n- [mx-zzz001] **{zeta}** — content: {zeta}\n\n\
+                 ### Deploy_notes\n- [mx-dep001] **api: restart pods** — service: api; action: restart pods; rollback: kubectl undo (k8s/api.yml, deploy.sh)\n- [mx-dep002] **web: roll** — service: web; action: roll\n\n\
+                 ### 123\n- [mx-rs0001] **RS** — name: RS; description: x\n\n\
+                 ### Patterns\n- [mx-lg0001] **LG** — name: LG; description: y"
+            )
+        );
+    }
+
+    /// Compact: disk order; the sentence-boundary truncate
+    /// (`Zeta note first.`); files parens BEFORE the meta parens;
+    /// foundational has no age; ★ over the confirmation score; the
+    /// outcome bracket carries the LAST entry but the TOTAL count.
+    #[test]
+    fn compact_custom_lines_match_the_law() {
+        let got = format_domain_expertise_compact(
+            &custom_registry(),
+            "probe",
+            &custom_records(),
+            Some(now()),
+            None,
+            now(),
+        );
+        assert_eq!(
+            got,
+            "## probe (6 records, updated just now)\n\
+             - [pattern] Pat One: Pat desc (mx-222222, foundational)\n\
+             - [zzz_note] Zeta note first. (mx-zzz001, tactical 283d ago)\n\
+             - [deploy_note] api: restart pods (k8s/api.yml, deploy.sh) (mx-dep001, foundational, ★1) [✗ 80ms @ra (2x)]\n\
+             - [deploy_note] web: roll (mx-dep002, tactical 279d ago)\n\
+             - [run_step] RS (mx-rs0001, undefined 278d ago)\n\
+             - [legacy] LG (mx-lg0001, undefined 277d ago)"
+        );
+    }
+
+    /// XML: one element per DECLARED field (payload-then-optional,
+    /// files included), arrays joined ", "; only null skips — `""`
+    /// and `[]` render EMPTY elements (markdown skips both).
+    #[test]
+    fn xml_custom_elements_match_the_law() {
+        let got = format_domain_expertise_xml(
+            &custom_registry(),
+            "probe",
+            &custom_records(),
+            Some(now()),
+            None,
+            now(),
+        );
+        let zeta = "Zeta note first. Second sentence pushes on past the hundred character boundary for the truncate law to fire and add the ellipsis!";
+        assert_eq!(
+            got,
+            format!(
+                "<domain name=\"probe\" entries=\"6\" updated=\"just now\">\n\
+                   \x20 <pattern id=\"mx-222222\" classification=\"foundational\">\n    <name>Pat One</name>\n    <description>Pat desc</description>\n  </pattern>\n\
+                   \x20 <zzz_note id=\"mx-zzz001\" classification=\"tactical\">\n    <content>{zeta}</content>\n    <note></note>\n  </zzz_note>\n\
+                   \x20 <deploy_note id=\"mx-dep001\" classification=\"foundational\">\n    <service>api</service>\n    <action>restart pods</action>\n    <files>k8s/api.yml, deploy.sh</files>\n    <rollback>kubectl undo</rollback>\n    <outcome status=\"success\" duration=\"80\"></outcome>\n    <outcome status=\"failure\" duration=\"80\" agent=\"ra\"></outcome>\n  </deploy_note>\n\
+                   \x20 <deploy_note id=\"mx-dep002\" classification=\"tactical\">\n    <service>web</service>\n    <action>roll</action>\n    <files></files>\n    <rollback></rollback>\n  </deploy_note>\n\
+                   \x20 <run_step id=\"mx-rs0001\" classification=\"undefined\">\n    <name>RS</name>\n    <description>x</description>\n  </run_step>\n\
+                   \x20 <legacy id=\"mx-lg0001\" classification=\"undefined\">\n    <name>LG</name>\n    <description>y</description>\n  </legacy>\n\
+                 </domain>"
+            )
+        );
+    }
+
+    /// Plain: customs are INVISIBLE (the reference plainSection
+    /// default arm) — they still count in the header.
+    #[test]
+    fn plain_customs_are_invisible_but_counted() {
+        let got = format_domain_expertise_plain(
+            &custom_registry(),
+            "probe",
+            &custom_records(),
+            Some(now()),
+            None,
+            now(),
+        );
+        assert_eq!(
+            got,
+            "[probe] 6 records (updated just now)\n\nPatterns:\n  - [mx-222222] Pat One: Pat desc"
+        );
     }
 }

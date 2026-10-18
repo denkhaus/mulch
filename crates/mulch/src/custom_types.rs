@@ -55,6 +55,11 @@ pub(crate) struct CustomTypeCfg {
     pub(crate) compact:        Option<Yaml>,
     pub(crate) extracts_files: Option<bool>,
     pub(crate) files_field:    Option<String>,
+    /// Raw `section_title` value: present-not-nullish wins as its
+    /// display string (JS `??` — probe: `section_title: 123` renders
+    /// `### 123`, `""` renders `### `), absent falls to the parent's
+    /// builtin title, then `Capitalize(name)+"s"`.
+    pub(crate) section_title:  Option<Yaml>,
     /// Raw `aliases` value: the map shape, the entry arrays, and the
     /// legacy-name rules are validation law (probe matrix
     /// 2026-10-17, mulch-b1cb).
@@ -118,6 +123,7 @@ fn cfg_from_yaml(value: &Yaml) -> CustomTypeCfg {
     };
     CustomTypeCfg {
         extends_raw:    get("extends").cloned(),
+        section_title:  get("section_title").cloned(),
         required:       field_list("required"),
         optional:       field_list("optional"),
         dedup_key:      get("dedup_key").cloned(),
@@ -528,8 +534,25 @@ pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> crate::ids::Row {
             .collect()
     });
 
+    // `cfg.section_title ?? parent?.sectionTitle ?? Capitalize(name)+"s"`
+    // (custom.ts `defaultSectionTitle`: only char 0 uppercased,
+    // underscores kept, naive +s — probe: `status` → `Statuss`).
+    let mut chars = name.chars();
+    let default_title = match chars.next() {
+        Some(first) => format!("{}{}s", first.to_uppercase(), chars.as_str()),
+        None => "s".to_string(),
+    };
+    let section_title = cfg
+        .section_title
+        .as_ref()
+        .filter(|raw| !matches!(raw, Yaml::Null))
+        .map(yaml_display)
+        .or_else(|| parent.map(|spec| spec.section_title.to_string()))
+        .unwrap_or(default_title);
+
     crate::ids::Row {
         name: name.to_string(),
+        section_title,
         payload: required,
         optional,
         id_key,

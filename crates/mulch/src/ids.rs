@@ -20,19 +20,22 @@ pub const PAYLOAD_TYPES: [&str; 6] = [
 /// to — this table (mulch-a3de; `PAYLOAD_TYPES` is the pinned list).
 pub struct TypeSpec {
     /// The type name (registry order = the reference's fixed order).
-    pub name:     &'static str,
+    pub name:          &'static str,
+    /// The markdown section heading (reference `sectionTitle`; the
+    /// parent fallback for `extends` customs).
+    pub section_title: &'static str,
     /// Payload fields in canonical write order.
-    pub payload:  &'static [&'static str],
+    pub payload:       &'static [&'static str],
     /// The id/dedup key field.
-    pub id_key:   &'static str,
+    pub id_key:        &'static str,
     /// Whether duplicates upsert (named types) or skip (anonymous).
-    pub named:    bool,
+    pub named:         bool,
     /// The reference branch's `optional` field list (fields the type
     /// declares but does not require; anything else is additional).
-    pub optional: &'static [&'static str],
+    pub optional:      &'static [&'static str],
     /// The `extracts_files` field (a string array in the schema),
     /// when the builtin has one.
-    pub files:    Option<&'static str>,
+    pub files:         Option<&'static str>,
 }
 
 /// How a record's one-line summary renders (the reference's
@@ -70,34 +73,39 @@ pub enum SummaryPart {
 pub struct Row {
     /// The type name (builtins in the reference's fixed order first,
     /// then customs in config order).
-    pub name:        String,
+    pub name:          String,
+    /// The markdown section heading: the builtin's title, or the
+    /// custom's `section_title` ?? parent's ?? Capitalize(name)+"s"
+    /// (reference `custom.ts` `defaultSectionTitle` — markdown only;
+    /// compact/xml/plain never read it).
+    pub section_title: String,
     /// Required fields in schema/write order (parent-first for
     /// customs).
-    pub payload:     Vec<String>,
+    pub payload:       Vec<String>,
     /// The optional field list.
-    pub optional:    Vec<String>,
+    pub optional:      Vec<String>,
     /// The id key field (`content_hash` reads an absent field — the
     /// id hashes the type and an empty value).
-    pub id_key:      String,
+    pub id_key:        String,
     /// The dedup field; `None` is the never-matching `content_hash`
     /// mode.
-    pub dedup:       Option<String>,
+    pub dedup:         Option<String>,
     /// Whether duplicates upsert (named) or skip (anonymous):
     /// builtins per the static table, customs when their dedup key
     /// is a field (reference `isNamedType`).
-    pub named:       bool,
+    pub named:         bool,
     /// A builtin row (doctor's registry counts).
-    pub builtin:     bool,
+    pub builtin:       bool,
     /// The field that is a string array instead of a plain string
     /// (`extracts_files` resolved with `files_field`).
-    pub files_array: Option<String>,
+    pub files_array:   Option<String>,
     /// How the record's summary line renders.
-    pub summary:     SummaryLaw,
+    pub summary:       SummaryLaw,
     /// Canonical field → legacy names, config-declared order
     /// (custom types only): applied at the read seams so disk
     /// records keep working after a field rename (reference
     /// `applyAliases`, mulch-b1cb).
-    pub aliases:     Vec<(String, Vec<String>)>,
+    pub aliases:       Vec<(String, Vec<String>)>,
 }
 
 /// The merged registry: the six builtins plus the config's
@@ -165,19 +173,20 @@ impl Registry {
 impl Row {
     fn from_spec(spec: &TypeSpec) -> Self {
         Self {
-            name:        spec.name.to_string(),
-            payload:     spec.payload.iter().map(|f| (*f).to_string()).collect(),
-            optional:    spec.optional.iter().map(|f| (*f).to_string()).collect(),
-            id_key:      spec.id_key.to_string(),
-            dedup:       Some(spec.id_key.to_string()),
-            named:       spec.named,
-            builtin:     true,
-            files_array: spec.files.map(str::to_string),
-            summary:     SummaryLaw::Field {
+            name:          spec.name.to_string(),
+            section_title: spec.section_title.to_string(),
+            payload:       spec.payload.iter().map(|f| (*f).to_string()).collect(),
+            optional:      spec.optional.iter().map(|f| (*f).to_string()).collect(),
+            id_key:        spec.id_key.to_string(),
+            dedup:         Some(spec.id_key.to_string()),
+            named:         spec.named,
+            builtin:       true,
+            files_array:   spec.files.map(str::to_string),
+            summary:       SummaryLaw::Field {
                 field:    spec.id_key.to_string(),
                 truncate: matches!(spec.name, "convention" | "failure"),
             },
-            aliases:     Vec::new(),
+            aliases:       Vec::new(),
         }
     }
 }
@@ -185,52 +194,58 @@ impl Row {
 /// The six built-in types in the reference's fixed order.
 pub const REGISTRY: [TypeSpec; 6] = [
     TypeSpec {
-        name:     "convention",
-        payload:  &["content"],
-        id_key:   "content",
-        named:    false,
-        optional: &[],
-        files:    None,
+        name:          "convention",
+        section_title: "Conventions",
+        payload:       &["content"],
+        id_key:        "content",
+        named:         false,
+        optional:      &[],
+        files:         None,
     },
     TypeSpec {
-        name:     "pattern",
-        payload:  &["name", "description"],
-        id_key:   "name",
-        named:    true,
-        optional: &["files"],
-        files:    Some("files"),
+        name:          "pattern",
+        section_title: "Patterns",
+        payload:       &["name", "description"],
+        id_key:        "name",
+        named:         true,
+        optional:      &["files"],
+        files:         Some("files"),
     },
     TypeSpec {
-        name:     "failure",
-        payload:  &["description", "resolution"],
-        id_key:   "description",
-        named:    false,
-        optional: &[],
-        files:    None,
+        name:          "failure",
+        section_title: "Known Failures",
+        payload:       &["description", "resolution"],
+        id_key:        "description",
+        named:         false,
+        optional:      &[],
+        files:         None,
     },
     TypeSpec {
-        name:     "decision",
-        payload:  &["title", "rationale"],
-        id_key:   "title",
-        named:    true,
-        optional: &["date"],
-        files:    None,
+        name:          "decision",
+        section_title: "Decisions",
+        payload:       &["title", "rationale"],
+        id_key:        "title",
+        named:         true,
+        optional:      &["date"],
+        files:         None,
     },
     TypeSpec {
-        name:     "reference",
-        payload:  &["name", "description"],
-        id_key:   "name",
-        named:    true,
-        optional: &["files"],
-        files:    Some("files"),
+        name:          "reference",
+        section_title: "References",
+        payload:       &["name", "description"],
+        id_key:        "name",
+        named:         true,
+        optional:      &["files"],
+        files:         Some("files"),
     },
     TypeSpec {
-        name:     "guide",
-        payload:  &["name", "description"],
-        id_key:   "name",
-        named:    true,
-        optional: &[],
-        files:    None,
+        name:          "guide",
+        section_title: "Guides",
+        payload:       &["name", "description"],
+        id_key:        "name",
+        named:         true,
+        optional:      &[],
+        files:         None,
     },
 ];
 
