@@ -86,7 +86,10 @@ policy, per AGENTS.md) governs all Rust code here — planning, writing, testing
   to the develop line — leave them; this loop claims tickets WITHOUT
   `--assignee`. The user's explicit pick outranks priority order. Several
   ready and the pick is not obvious? Record pick + reason on the CHOSEN
-  ticket (`seeds update <id> --description`) so the rationale survives the
+  ticket (`seeds update <id> --append-description "$(cat /tmp/x.txt)"` —
+  `seeds update` has `--append-description`/`--set-description`/
+  `--replace-in-description`, never `--description`; long text through a
+  file, per the quoted-argument rule) so the rationale survives the
   session.
 - No ticket fits the frontier? Create one via a grilling session (step 2) or
   from an out-of-scope finding (working mode).
