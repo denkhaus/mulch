@@ -288,6 +288,28 @@ impl StoreFiles {
         }
     }
 
+    /// The soft-archive file of a domain (`.mulch/archive/
+    /// <domain>.jsonl`; the archive command's write side — 7c55 —
+    /// owns creating it, `restore` consumes it).
+    pub fn archive_path(&self, domain: &str) -> PathBuf {
+        self.root.join("archive").join(format!("{domain}.jsonl"))
+    }
+
+    /// Reads a domain's soft-archive (`readArchiveFile`: the same
+    /// line law as live reads — `#` banner and blank lines skip,
+    /// aliases apply — but ALWAYS unknown-type tolerant, the escape
+    /// hatch hard-wired for archived records). `Ok(vec![])` when no
+    /// archive exists.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::MalformedLine`] for unparsable lines,
+    /// [`Error::NotAnObject`] for scalar/`null` lines,
+    /// [`Error::Read`] for I/O failures.
+    pub fn read_archive(&self, domain: &str) -> Result<Vec<LineRecord>> {
+        crate::records::read_strict(&self.registry, &self.archive_path(domain), true)
+    }
+
     /// Rewrites a domain compactly (canonical; 0 bytes when empty).
     ///
     /// # Errors

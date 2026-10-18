@@ -18,6 +18,7 @@ mod error;
 mod ids;
 pub mod jsval;
 pub mod lock;
+pub mod query;
 mod records;
 pub mod schema;
 pub mod scoring;
@@ -38,6 +39,7 @@ pub use jsval::{
     js_key_sorted, js_length, js_round_u64, js_string, js_truncate, parse_non_negative_number,
     truthy, truthy_str, value_text,
 };
+pub use query::{DomainSpec, RecordFilter, UnknownDomain, domain_set};
 pub use records::{
     Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, UpsertPlan, apply_aliases,
     apply_aliases_for, assign_missing_id, find_duplicate, legacy_entry, legacy_outcome,
