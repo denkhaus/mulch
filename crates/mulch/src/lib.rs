@@ -12,12 +12,16 @@
 //! decay in [`stale`]); CLI parity and the self-hosting cutover are
 //! tracked in this repo's Seeds tracker (seed ids `mulch-…`).
 
+pub mod bm25;
+pub mod budget;
 mod config;
 mod custom_types;
 mod error;
+pub mod git_context;
 mod ids;
 pub mod jsval;
 pub mod lock;
+pub mod prime_ranking;
 pub mod query;
 mod records;
 pub mod schema;

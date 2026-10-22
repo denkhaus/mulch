@@ -202,13 +202,29 @@ fn is_sentence_punctuation(unit: u16) -> bool {
 }
 
 /// The ECMAScript `\s` set (unicode escape table of the spec's
-/// `\s` class).
-fn is_js_whitespace(unit: u16) -> bool {
+/// `\s` class), as chars: the tokenize/trim/`\s` consumers work on
+/// chars, the UTF-16 truncate below works on code units.
+pub fn is_ecmascript_whitespace(ch: char) -> bool {
     matches!(
-        unit,
-        0x09..=0x0D | 0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F
-            | 0x3000 | 0xFEFF
+        ch,
+        '\u{09}'..='\u{0D}'
+            | '\u{20}'
+            | '\u{A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
     )
+}
+
+/// The ECMAScript `\s` set over UTF-16 code units.
+fn is_js_whitespace(unit: u16) -> bool {
+    // Every char in the set is BMP — the unit is the char.
+    char::from_u32(u32::from(unit)).is_some_and(is_ecmascript_whitespace)
 }
 
 /// JS object enumeration order over `(key, value)` pairs: integer-like
