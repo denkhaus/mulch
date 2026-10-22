@@ -11,22 +11,9 @@ use std::path::Path;
 use mulch::{StoreFiles, StoreLocation};
 use serde_json::Value;
 
-struct TempDir(std::path::PathBuf);
+mod common;
 
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("mulch-archive-{tag}-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        Self(dir)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
-}
+use common::TempDir;
 
 fn store_in(dir: &Path, custom_types: &str) -> StoreFiles {
     std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");

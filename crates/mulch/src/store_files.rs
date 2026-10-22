@@ -307,6 +307,7 @@ impl StoreFiles {
     /// [`Error::NotAnObject`] for scalar/`null` lines,
     /// [`Error::Read`] for I/O failures.
     pub fn read_archive(&self, domain: &str) -> Result<Vec<LineRecord>> {
+        // `true` = the hard-wired unknown-type tolerance above.
         crate::records::read_strict(&self.registry, &self.archive_path(domain), true)
     }
 

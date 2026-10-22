@@ -42,22 +42,10 @@ pub(crate) fn run_in(dir: &Path, program: &Path, args: &[&str]) -> Run {
     }
 }
 
-pub(crate) struct TempDir(pub(crate) PathBuf);
+#[path = "../common/mod.rs"]
+mod common;
 
-impl TempDir {
-    pub(crate) fn new(tag: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!("mulch-parity-{tag}-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        Self(dir)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
-}
+pub(crate) use common::TempDir;
 
 /// Replaces volatile ISO timestamps with a stable marker.
 pub(crate) fn normalize(text: &str) -> String {

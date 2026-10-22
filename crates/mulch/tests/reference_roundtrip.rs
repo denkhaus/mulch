@@ -44,23 +44,9 @@ fn ml(dir: &Path, args: &[&str]) -> String {
     text
 }
 
-struct TempDir(PathBuf);
+mod common;
 
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("mulch-roundtrip-{tag}-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        Self(dir)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
-}
+use common::TempDir;
 
 const NOW: &str = "2026-10-03T10:12:14.018Z";
 

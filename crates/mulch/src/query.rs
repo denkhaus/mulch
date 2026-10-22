@@ -145,42 +145,45 @@ pub struct UnknownDomain {
 ///
 /// [`UnknownDomain`] for a name not in `domains`.
 pub fn domain_set(domains: &[String], spec: &DomainSpec) -> Result<Vec<String>, UnknownDomain> {
-    let available = || domains.to_vec();
+    let known = |name: &str| domains.iter().any(|domain| domain == name);
+    let unknown = |name: &str| UnknownDomain {
+        domain:    name.to_string(),
+        available: domains.to_vec(),
+    };
     match spec {
         DomainSpec::All => Ok(domains.to_vec()),
         DomainSpec::One(name) => {
-            if domains.iter().any(|domain| domain == name) {
+            if known(name) {
                 Ok(vec![name.clone()])
             } else {
-                Err(UnknownDomain {
-                    domain:    name.clone(),
-                    available: available(),
-                })
+                Err(unknown(name))
             }
         }
         DomainSpec::Union {
             domains: wanted,
             exclude,
         } => {
-            let mut out: Vec<String> = Vec::new();
+            // The reference treats an empty union as every domain
+            // (prime.ts: `unique.length > 0 ? unique : Object.keys`),
+            // so bare `prime` primes everything — exclusions still
+            // filter the all-set afterwards.
+            let mut out: Vec<String> = if wanted.is_empty() {
+                domains.to_vec()
+            } else {
+                Vec::with_capacity(wanted.len())
+            };
             for name in wanted {
                 if out.contains(name) {
                     continue;
                 }
-                if !domains.iter().any(|domain| domain == name) {
-                    return Err(UnknownDomain {
-                        domain:    name.clone(),
-                        available: available(),
-                    });
+                if !known(name) {
+                    return Err(unknown(name));
                 }
                 out.push(name.clone());
             }
             for name in exclude {
-                if !domains.iter().any(|domain| domain == name) {
-                    return Err(UnknownDomain {
-                        domain:    name.clone(),
-                        available: available(),
-                    });
+                if !known(name) {
+                    return Err(unknown(name));
                 }
             }
             out.retain(|name| !exclude.contains(name));
@@ -360,12 +363,21 @@ mod tests {
             domain_set(&domains(), &unknown_exclude).unwrap_err().domain,
             "gone"
         );
-        // empty union: nothing (the CLI's no-domains wordings fire there)
+        // empty union: EVERY domain in config order (prime.ts's
+        // `unique.length > 0 ? unique : Object.keys` — bare prime
+        // primes everything), exclusions filter the all-set
         let empty = DomainSpec::Union {
             domains: vec![],
             exclude: vec![],
         };
-        assert_eq!(domain_set(&domains(), &empty).unwrap(), []
-            as [std::string::String; 0]);
+        assert_eq!(domain_set(&domains(), &empty).unwrap(), domains());
+        let empty_but_excluded = DomainSpec::Union {
+            domains: vec![],
+            exclude: vec!["zeta".into()],
+        };
+        assert_eq!(domain_set(&domains(), &empty_but_excluded).unwrap(), [
+            "alpha".to_string(),
+            "mid".to_string()
+        ]);
     }
 }
