@@ -26,7 +26,7 @@
     reason = "16da prep (mulch-21d9): the adapter lands ahead of its consumers"
 )]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One git environment: every call runs in [`GitContext::cwd`],
 /// mirroring the reference's per-call `execFileSync` with an
@@ -43,6 +43,14 @@ impl GitContext {
     pub(crate) fn process_cwd() -> Self {
         Self {
             cwd: std::env::current_dir().unwrap_or_default(),
+        }
+    }
+
+    /// The same adapter pinned to an explicit directory (prime's
+    /// auto-scope resolves against its own cwd).
+    pub(crate) fn at(cwd: &Path) -> Self {
+        Self {
+            cwd: cwd.to_path_buf(),
         }
     }
 

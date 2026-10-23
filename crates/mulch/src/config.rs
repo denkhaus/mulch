@@ -79,10 +79,24 @@ pub struct TierWeights {
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct Prime {
     /// `full` or `manifest`; unset means the reference auto-flips.
-    pub default_mode: Option<String>,
+    pub default_mode:  Option<String>,
     /// Trust-tier ranking weights; unset fields keep their default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tier_weights: Option<TierWeights>,
+    pub tier_weights:  Option<TierWeights>,
+    /// Session-close footer preset (`prime.session_close`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_close: Option<SessionClose>,
+}
+
+/// `prime.session_close` block, typed. `custom` (when non-empty)
+/// wins over `style`; an absent/unknown style falls back to the
+/// reference's `conditional` preset.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct SessionClose {
+    /// `conditional` (default), `minimal`, `directive`, or `none`.
+    pub style:  Option<String>,
+    /// Raw footer text shipped verbatim.
+    pub custom: Option<String>,
 }
 
 /// `search` optional knob block, typed.

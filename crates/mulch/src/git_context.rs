@@ -118,6 +118,78 @@ pub fn filter_by_context(records: &[Value], changed_files: &[String]) -> Vec<Val
         .collect()
 }
 
+/// `activeContextHasSignal`: any changed file or tracker value is
+/// enough to scope.
+pub fn active_context_has_signal(ctx: &crate::prime_ranking::ActiveContext) -> bool {
+    !ctx.changed_files.is_empty() || ctx.trackers.iter().any(|(_, value)| !value.is_empty())
+}
+
+/// `filterByActiveContext` (prime's slice-2 auto-scope): tracker
+/// evidence matches first, then anchorless records stay universal,
+/// then the file/`dir_anchors` laws from [`filter_by_context`].
+pub fn filter_by_active_context(
+    records: &[Value],
+    ctx: &crate::prime_ranking::ActiveContext,
+) -> Vec<Value> {
+    let tracker = |name: &str| {
+        ctx.trackers
+            .iter()
+            .find(|(tracker, _)| *tracker == name)
+            .map(|(_, value)| value.as_str())
+    };
+    records
+        .iter()
+        .filter(|record| {
+            let evidence = record.get("evidence");
+            let evidence_field = |field: &str| {
+                evidence
+                    .and_then(|e| e.get(field))
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+            };
+            if ["seeds", "gh", "linear", "bead"].iter().any(|name| {
+                let active = tracker(name).filter(|value| !value.is_empty());
+                match (evidence_field(name), active) {
+                    (Some(found), Some(active)) => found == active,
+                    _ => false,
+                }
+            }) {
+                return true;
+            }
+            let files = record.get("files").and_then(Value::as_array);
+            let anchors = record.get("dir_anchors").and_then(Value::as_array);
+            let has_files = files.is_some_and(|f| !f.is_empty());
+            let has_anchors = anchors.is_some_and(|a| !a.is_empty());
+            if !has_files && !has_anchors {
+                return true;
+            }
+            if has_files
+                && files.is_some_and(|files| {
+                    files
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|file| file_matches_any(file, &ctx.changed_files))
+                })
+            {
+                return true;
+            }
+            if has_anchors
+                && anchors.is_some_and(|anchors| {
+                    anchors.iter().filter_map(Value::as_str).any(|anchor| {
+                        ctx.changed_files
+                            .iter()
+                            .any(|changed| file_lives_under_dir(changed, anchor))
+                    })
+                })
+            {
+                return true;
+            }
+            false
+        })
+        .cloned()
+        .collect()
+}
+
 /// `matchFilesToDomains` over the store: config-order domains,
 /// strict reads (`readExpertiseFile`: malformed lines and
 /// unregistered types fail unless `allow_unknown`), registry-driven

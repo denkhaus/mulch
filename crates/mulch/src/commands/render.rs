@@ -108,10 +108,29 @@ fn render_row<'a>(registry: &'a mulch::Registry, record_type: &str) -> Option<Re
     Some(builtin_render(record_type).map_or(RenderRow::Custom(row), RenderRow::Builtin))
 }
 
+/// `estimateRecordText`: the per-record compact line the token
+/// budget estimates over; unregistered types (reachable only under
+/// `--allow-unknown-types`) render as `[<type>]`.
+pub(crate) fn estimate_record_text(
+    registry: &mulch::Registry,
+    record: &Value,
+    now: Timestamp,
+) -> String {
+    let record_type = record
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    match render_row(registry, record_type) {
+        Some(RenderRow::Builtin(builtin)) => (builtin.compact_line)(record, now),
+        Some(RenderRow::Custom(row)) => compact_custom(registry, row, record, now),
+        None => format!("[{record_type}]"),
+    }
+}
+
 // ---- the format atoms (format-helpers.ts) ----
 
 /// `formatTimeAgo`: relative age, minute-granular.
-fn time_ago(then: Timestamp, now: Timestamp) -> String {
+pub(crate) fn time_ago(then: Timestamp, now: Timestamp) -> String {
     #[expect(
         clippy::cast_sign_loss,
         clippy::cast_possible_truncation,

@@ -1,5 +1,6 @@
 //! Command implementations, one module per parity-slice command.
 
+mod active_work;
 mod add;
 mod delete;
 mod delete_domain;
