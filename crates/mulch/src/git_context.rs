@@ -17,13 +17,13 @@
 //!   relevant; otherwise any file match or any dir anchor containing a changed
 //!   file wins. Both fields are read literally (not through the registry).
 //! - `matchFilesToDomains` iterates domains in CONFIG order, reads each
-//!   leniently, collects files only from types whose registry row extracts
-//!   files, and reports matched changed files in CHANGED order; a changed file
-//!   matches the first domain file that satisfies the suffix law.
+//!   strictly (`readExpertiseFile`: malformed lines and unregistered types are
+//!   errors unless bypassed), collects files only from types whose registry row
+//!   extracts files, and reports matched changed files in CHANGED order; a
+//!   changed file matches the first domain file that satisfies the suffix law.
 
 use serde_json::Value;
 
-use crate::LenientLine;
 use crate::ids::Registry;
 use crate::store_files::StoreFiles;
 
@@ -119,13 +119,23 @@ pub fn filter_by_context(records: &[Value], changed_files: &[String]) -> Vec<Val
 }
 
 /// `matchFilesToDomains` over the store: config-order domains,
-/// lenient reads, registry-driven file extraction.
-pub fn match_files_to_domains(store: &StoreFiles, changed_files: &[String]) -> DomainFileMatches {
+/// strict reads (`readExpertiseFile`: malformed lines and
+/// unregistered types fail unless `allow_unknown`), registry-driven
+/// file extraction.
+///
+/// # Errors
+///
+/// The strict read's [`crate::Error`] (malformed line, unknown type).
+pub fn match_files_to_domains(
+    store: &StoreFiles,
+    changed_files: &[String],
+    allow_unknown: bool,
+) -> Result<DomainFileMatches, crate::Error> {
     let mut out = DomainFileMatches::default();
     let mut matched: std::collections::HashSet<&String> = std::collections::HashSet::new();
 
     for domain in store.domains() {
-        let domain_files = domain_file_set(store, &domain);
+        let domain_files = domain_file_set(store, &domain, allow_unknown)?;
         let mut domain_matched = Vec::new();
         for changed in changed_files {
             let hits = domain_files.iter().any(|domain_file| {
@@ -150,25 +160,26 @@ pub fn match_files_to_domains(store: &StoreFiles, changed_files: &[String]) -> D
         .filter(|changed| !matched.contains(changed))
         .cloned()
         .collect();
-    out
+    Ok(out)
 }
 
 /// The distinct file paths a domain's records declare, from types
 /// whose registry row extracts files (`def.filesField`).
-fn domain_file_set(store: &StoreFiles, domain: &str) -> Vec<String> {
+fn domain_file_set(
+    store: &StoreFiles,
+    domain: &str,
+    allow_unknown: bool,
+) -> Result<Vec<String>, crate::Error> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut files = Vec::new();
-    for line in store.read_lenient(domain) {
-        let LenientLine::Record { record, .. } = line else {
-            continue;
-        };
-        collect_registry_files(store.registry(), &record, |file| {
+    for line in store.read_records(domain, allow_unknown)? {
+        collect_registry_files(store.registry(), &line.record, |file| {
             if seen.insert(file.to_string()) {
                 files.push(file.to_string());
             }
         });
     }
-    files
+    Ok(files)
 }
 
 /// Reads a record's files through its registry row: the type must
