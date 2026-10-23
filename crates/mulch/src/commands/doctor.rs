@@ -1458,6 +1458,7 @@ mod tests {
             timing:                false,
             allow_unknown_types:   false,
             allow_domain_mismatch: false,
+            format:                None,
         };
         let failure = no_store_report(&opts);
         assert_eq!(failure.code, 1);
@@ -1501,6 +1502,7 @@ mod tests {
             timing:                false,
             allow_unknown_types:   false,
             allow_domain_mismatch: false,
+            format:                None,
         };
         let failure = no_store_report(&opts);
         assert_eq!(failure.code, 1);
