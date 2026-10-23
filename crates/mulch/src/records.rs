@@ -525,6 +525,81 @@ pub fn resolve_record_id(
     }
 }
 
+/// The truncating summary laws' failure: the reference's TypeError
+/// (`text.length` on a missing or non-string required field — JSC
+/// renders the same message for `undefined` and for non-strings).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SummaryNotAString;
+
+impl std::fmt::Display for SummaryNotAString {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "undefined is not an object (evaluating 'text.length')"
+        )
+    }
+}
+
+/// The registry summary as the reference's raw JS value
+/// (`getRecordSummary` without the string coercion):
+/// `Ok(None)` is `undefined` — plain output renders the word, JSON
+/// output omits the key — non-string values pass through verbatim,
+/// and the truncating laws (`convention`/`failure`) fail with their
+/// TypeError when the field is missing or not a string.
+///
+/// [`record_summary`] stays the string-coercing view for the call
+/// sites that render today's shapes.
+pub fn record_summary_value(
+    registry: &Registry,
+    record: &Value,
+) -> std::result::Result<Option<Value>, SummaryNotAString> {
+    let kind = crate::ids::effective_type(record.get("type").and_then(Value::as_str));
+    match registry.row(kind) {
+        Some(Row {
+            summary: SummaryLaw::Template(parts),
+            ..
+        }) => {
+            let text = parts
+                .iter()
+                .map(|part| match part {
+                    SummaryPart::Literal(text) => text.clone(),
+                    SummaryPart::Field(field) => {
+                        record
+                            .get(field)
+                            .map_or(String::new(), |value| match value {
+                                Value::String(text) => text.clone(),
+                                other => crate::jsval::value_text(other),
+                            })
+                    }
+                })
+                .collect();
+            Ok(Some(Value::String(text)))
+        }
+        Some(Row {
+            summary:
+                SummaryLaw::Field {
+                    field,
+                    truncate: shorten,
+                },
+            ..
+        }) => match (record.get(field), *shorten) {
+            (None, false) => Ok(None),
+            (Some(value), false) => Ok(Some(value.clone())),
+            (Some(Value::String(text)), true) => Ok(Some(Value::String(js_truncate(text, 60)))),
+            (_, true) => Err(SummaryNotAString),
+        },
+        // Unknown types keep the content fallback string (the
+        // throw-on-unknown surface belongs to the commands).
+        None => Ok(Some(Value::String(
+            record
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ))),
+    }
+}
+
 /// Reference per-type summary (`getRecordSummary`).
 pub fn record_summary(registry: &Registry, record: &Value) -> String {
     let kind = crate::ids::effective_type(record.get("type").and_then(Value::as_str));

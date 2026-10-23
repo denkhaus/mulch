@@ -198,15 +198,17 @@ pub(crate) enum Command {
     /// Show recently added or updated expertise records (mulch-16da).
     Ready {
         /// Maximum number of records to show.
-        #[arg(long, default_value = "10")]
+        // allow_hyphen_values: commander hands `-1` to the command's
+        // own parse (probed); clap would abort pre-dispatch.
+        #[arg(long, default_value = "10", allow_hyphen_values = true)]
         limit: String,
 
         /// Limit to a specific domain.
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         domain: Option<String>,
 
         /// Show records from the last duration (e.g. 24h, 7d, 2w).
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         since: Option<String>,
     },
 

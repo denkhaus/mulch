@@ -29,7 +29,9 @@ pub mod scoring;
 pub mod stale;
 mod store_files;
 
-pub use config::{Config, Governance, Prime, SUPPORTED_VERSION, Search, ShelfLife, TierWeights};
+pub use config::{
+    Config, Governance, Prime, SUPPORTED_VERSION, Search, SessionClose, ShelfLife, TierWeights,
+};
 pub use error::{Error, Result};
 pub use ids::{
     PAYLOAD_TYPES, REGISTRY, Registry, Row, SummaryLaw, SummaryPart, TypeSpec, effective_type,
@@ -45,10 +47,10 @@ pub use jsval::{
 };
 pub use query::{DomainSpec, RecordFilter, UnknownDomain, domain_set};
 pub use records::{
-    Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, UpsertPlan, apply_aliases,
-    apply_aliases_for, assign_missing_id, find_duplicate, legacy_entry, legacy_outcome,
-    merge_outcomes, read_lenient, read_strict, record_summary, resolve_record_id, upsert_plan,
-    write_records,
+    Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, SummaryNotAString, UpsertPlan,
+    apply_aliases, apply_aliases_for, assign_missing_id, find_duplicate, legacy_entry,
+    legacy_outcome, merge_outcomes, read_lenient, read_strict, record_summary,
+    record_summary_value, resolve_record_id, upsert_plan, write_records,
 };
 pub use schema::CLASSIFICATIONS;
 pub use scoring::{apply_confirmation_boost, confirmation_score};
