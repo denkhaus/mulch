@@ -139,12 +139,18 @@ expectation (the parity rule: never silently):
   reference byte-for-byte.
 - **`delete-domain` cancels on EOF** (closed stdin) instead of blocking
   forever; `--yes` and `--json` behave like the reference.
-- **`--format` does not exist yet.** It belongs to the
-  record-rendering commands (`query`, `prime`, `search`, …) and joins
-  with its parity slice (`mulch-16da`). Per-command `--help` wording
-  also differs (clap renderer; the reference reuses its root template
-  with the command name swapped in) — help text lists only
-  implemented commands either way.
+- **`--format` is global with the reference's four-choice set**
+  (`markdown|compact|xml|plain`; the `ids` form the reference's
+  query/search help advertises is not parseable through the flag
+  there either). Per-command `--help` wording differs (clap renderer;
+  the reference reuses its root template with the command name
+  swapped in) — help text lists only implemented commands either way.
+- **`prime` does not run `pre-prime` hooks.** The reference executes
+  the config's `hooks.pre-prime` list (block/mutate semantics) before
+  rendering; this port has no hook engine yet, so a config that
+  declares hooks surfaces them in the project-contract block only.
+  Expectation: identical output for hook-less configs; hook-bearing
+  configs skip the scripts (hooks parity is tracked in Seeds).
 - **Three doctor checks evaluate as unconditional pass** on clean
   stores only: `domain-violations`, `domain-rules-compatibility`,
   `decay-config`. Their warn/fail semantics land with the later
@@ -188,13 +194,39 @@ expectation (the parity rule: never silently):
   hard-deleted, the domain file left empty, the domain stays
   registered. Expectation: fixes print as `Pruned`/`Removed` lines and
   the exit code stays the PRE-fix check result.
-- **The missing-flags `Retry` hint (and its `--json` `Example:` form)
-  names THIS binary**: we echo `mulch record …` where the reference's
-  `buildRetryCommand` hardcodes its own name (`ml record …`). Every
-  other byte of the hint — flag order, quoting, placeholders — stays
-  reference-identical. The shipped binary never promotes the tool it
-  replaces (user directive 2026-10-13); the battery normalizes the
-  binary name for its byte comparisons and pins ours explicitly.
+- **Self-referential command strings name THIS binary, everywhere**
+  (user directive 2026-10-13): the missing-flags `Retry` hint (and its
+  `--json` `Example:` form), `prime`'s whole workflow text (headers,
+  quick references, session-close footers, manifest, contract — every
+  `ml <cmd>` the reference's text bodies carry), the unknown-domain
+  hints of `query`/`search`/`rank`/`prime`, the no-domains lines of
+  `status`/`query`, and `move`'s archived/required-fields messages all
+  say `mulch <cmd>` where the reference says `ml <cmd>`. Every other
+  byte stays reference-identical; the batteries promote the reference
+  side for byte comparisons and pin ours explicitly.
+
+- **`ready` ordering of invalid dates is stable, not JSC's.** The
+  reference sorts with `(a, b) => new Date(b).getTime() - new Date(a)
+  .getTime()`; when either side is an invalid date the comparator
+  returns `NaN`, and JSC's `Array#sort` then produces an
+  algorithm-specific order (probed: five alternating valid/NaN rows
+  come out `A B E C D`). We use a stable sort where an invalid date
+  compares equal, which is exact for every all-valid store and for
+  the small (n <= 4) and all-NaN fixtures the battery pins.
+  Expectation: deterministic insertion order for invalid-date ties,
+  never a crash.
+- **No ANSI colour, ever.** The reference colours `ready` (and its
+  siblings) through chalk when a TTY or `FORCE_COLOR` is present;
+  piped output is plain, which is what the batteries compare. We
+  never emit ANSI, under any environment. Expectation: byte parity on
+  piped output.
+- **Domain flags do not walk the JS prototype chain.** The reference
+  checks `domain in config.domains`, so `--domain
+  constructor|toString|hasOwnProperty|valueOf` is accepted (empty
+  output, exit 0) and `--domain __proto__` reaches the name
+  validator. We report the unknown domain (exit 1). Applies to
+  `ready` and `rank` alike. Expectation: a domain must be a
+  configured key.
 
 ## Status
 

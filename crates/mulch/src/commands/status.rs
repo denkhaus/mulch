@@ -50,7 +50,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     } else {
         let mut text = String::from("Mulch Status\n============\n\n");
         if domain_lines.is_empty() {
-            text.push_str("No domains configured. Run `ml add <domain>` to get started.");
+            text.push_str("No domains configured. Run `mulch add <domain>` to get started.");
         } else {
             text.push_str(&domain_lines.join("\n"));
         }

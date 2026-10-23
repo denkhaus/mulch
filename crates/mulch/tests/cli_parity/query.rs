@@ -56,10 +56,16 @@ fn assert_same(ours: &TempDir, theirs: &TempDir, ml: &Path, args: &[&str]) {
     let our = run_in(&ours.0, Path::new(mulch_bin()), args);
     let their = run_in(&theirs.0, ml, args);
     assert_eq!(our.code, their.code, "rc differs for {args:?}");
-    assert_eq!(our.stdout, their.stdout, "stdout differs for {args:?}");
+    // ours promotes THIS binary's name (user directive 2026-10-13);
+    // promote theirs for the byte comparison.
+    assert_eq!(
+        our.stdout,
+        promote_theirs(&their.stdout),
+        "stdout differs for {args:?}"
+    );
     assert_eq!(
         normalize_dir(&our.stderr, &ours.0),
-        normalize_dir(&their.stderr, &theirs.0),
+        normalize_dir(&promote_theirs(&their.stderr), &theirs.0),
         "stderr differs for {args:?}"
     );
 }
@@ -237,9 +243,11 @@ fn query_domain_failures_match() {
     let (ours, theirs) = twin_seeded("q-dom", Some(CORPUS_CONFIG), &[], &[]);
     corpus(&ours.0);
     corpus(&theirs.0);
-    // the hint keeps the reference's `ml add` wording (the reference
-    // drifts per command; the promote law covers the Retry echo only)
+    // our hint promotes THIS binary (pinned below); the comparison
+    // reverses it
     assert_same(&ours, &theirs, &ml, &["query", "nope"]);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["query", "nope"]);
+    assert!(our.stderr.contains("Hint: Run `mulch add nope`"));
     assert_same(&ours, &theirs, &ml, &["--json", "query", "nope"]);
     // no domain and no --all: the usage error, plain and json
     assert_same(&ours, &theirs, &ml, &["query"]);

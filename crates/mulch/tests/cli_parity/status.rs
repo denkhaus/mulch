@@ -43,7 +43,13 @@ fn status_fresh_store_matches() {
     let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
     let theirs_run = run_in(&theirs.0, &ml, &["status"]);
     assert_eq!(ours_run.code, theirs_run.code);
-    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    // ours promotes `mulch add` where the reference says `ml add`
+    assert_eq!(ours_run.stdout, promote_theirs(&theirs_run.stdout));
+    assert!(
+        ours_run
+            .stdout
+            .contains("No domains configured. Run `mulch add <domain>` to get started.")
+    );
 
     let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["status", "--json"]);
     let theirs_json = run_in(&theirs.0, &ml, &["status", "--json"]);

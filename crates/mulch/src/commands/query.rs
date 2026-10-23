@@ -14,9 +14,9 @@
 //! - The no-store wording is the readConfig throw ("to set up this project"),
 //!   not the catch's ENOENT branch — the thrown error carries no `code`, so the
 //!   generic arm renders it.
-//! - The unknown-domain hint keeps the reference's `ml add` (the reference
-//!   drifts per command — search says `mulch add`; the promote law covers the
-//!   Retry echo only, README DEVIATIONS).
+//! - The unknown-domain hint and the no-domains line promote THIS binary (user
+//!   directive 2026-10-13: no `ml` references ship); the battery reverses the
+//!   promotion for byte comparisons.
 
 use jiff::Timestamp;
 use mulch::{DomainSpec, RecordFilter};
@@ -48,7 +48,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &QueryArgs) -> Result<(), Failure> {
             } else {
                 print_line(
                     false,
-                    "No domains configured. Run `ml add <domain>` to get started.",
+                    "No domains configured. Run `mulch add <domain>` to get started.",
                 );
             }
             return Ok(());
@@ -119,7 +119,7 @@ fn unknown_domain_failure(domain: &str, available: &[String]) -> Failure {
     fields.insert("error".into(), Value::String(one_line.clone()));
     Failure {
         message:            format!(
-            "Error: {one_line}\nHint: Run `ml add {domain}` to create this domain, or check .mulch/mulch.config.yaml"
+            "Error: {one_line}\nHint: Run `mulch add {domain}` to create this domain, or check .mulch/mulch.config.yaml"
         ),
         code:               EXIT_ERROR,
         envelope:           failure_envelope("query", fields),

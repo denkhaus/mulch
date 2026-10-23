@@ -294,7 +294,79 @@ pub(crate) fn normalize_dir(text: &str, dir: &Path) -> String {
     text.replace(&dir.display().to_string(), "<DIR>")
 }
 
-/// Asserts both stderr streams equal the expected reference text.
+/// The promote law's command list (render.rs `promote_mulch`).
+const PROMOTED_COMMANDS: [&str; 27] = [
+    "init",
+    "add",
+    "record",
+    "edit",
+    "query",
+    "setup",
+    "prime",
+    "onboard",
+    "status",
+    "validate",
+    "prune",
+    "archive",
+    "restore",
+    "search",
+    "rank",
+    "outcome",
+    "doctor",
+    "ready",
+    "sync",
+    "delete",
+    "delete-domain",
+    "move",
+    "learn",
+    "compact",
+    "config",
+    "diff",
+    "upgrade",
+];
+
+/// Applies the promote law to the REFERENCE's output for byte
+/// comparisons (user directive 2026-10-13: our binary says
+/// `mulch <cmd>` wherever the reference's text says `ml <cmd>`; where
+/// the reference itself already prints `mulch <cmd>` both sides
+/// agree, so promoting their side is the safe direction). The
+/// deviation itself is pinned per battery.
+pub(crate) fn promote_theirs(text: &str) -> String {
+    let mut out = text.to_string();
+    for command in PROMOTED_COMMANDS {
+        let from = format!("ml {command}");
+        let to = format!("mulch {command}");
+        // replace on word boundaries only (`html record` stays):
+        // split, swap the exact-token parts, rejoin.
+        let mut result = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        while let Some(hit) = rest.find(&from) {
+            let before_ok = rest[..hit]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+            let after = &rest[hit + from.len()..];
+            let after_ok = after
+                .chars()
+                .next()
+                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+            if before_ok && after_ok {
+                result.push_str(&rest[..hit]);
+                result.push_str(&to);
+            } else {
+                result.push_str(&rest[..hit + from.len()]);
+            }
+            rest = &rest[hit + from.len()..];
+        }
+        result.push_str(rest);
+        out = result;
+    }
+    out
+}
+
+/// Asserts both stderr streams equal the expected text. `expected`
+/// is OUR wording; the reference's `ml <cmd>` self-references are
+/// promoted before comparing (user directive 2026-10-13).
 pub(crate) fn assert_same_stderr(
     ours: &TempDir,
     our: &Run,
@@ -304,9 +376,9 @@ pub(crate) fn assert_same_stderr(
 ) {
     assert_eq!(normalize_dir(&our.stderr, &ours.0), expected, "our stderr");
     assert_eq!(
-        normalize_dir(&their.stderr, &theirs.0),
+        promote_theirs(&normalize_dir(&their.stderr, &theirs.0)),
         expected,
-        "reference stderr"
+        "reference stderr (promoted)"
     );
 }
 

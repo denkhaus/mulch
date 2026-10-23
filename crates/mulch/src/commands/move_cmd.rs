@@ -67,7 +67,7 @@ pub(super) fn run(
         let shown = record_id.clone().unwrap_or_else(|| id.to_string());
         return Err(Failure::handled_on_stderr(
             "move",
-            format!("Error: Record {shown} is archived. Run `ml restore {shown}` first."),
+            format!("Error: Record {shown} is archived. Run `mulch restore {shown}` first."),
         ));
     }
 
@@ -124,7 +124,7 @@ pub(super) fn run(
             return Err(Failure::handled_on_stderr(
                 "move",
                 format!(
-                    "Error: Record is missing field(s) required by target domain \"{target}\": {fields}. Edit the record (`ml edit {shown}`) before moving."
+                    "Error: Record is missing field(s) required by target domain \"{target}\": {fields}. Edit the record (`mulch edit {shown}`) before moving."
                 ),
             ));
         }

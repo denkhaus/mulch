@@ -173,7 +173,7 @@ fn move_refuses_archived_records_like_reference() {
         return;
     };
     let seed = format!("{ARCHIVED_ALPHA_ONE}\n");
-    let message = "Error: Record mx-1bb21d is archived. Run `ml restore mx-1bb21d` first.\n";
+    let message = "Error: Record mx-1bb21d is archived. Run `mulch restore mx-1bb21d` first.\n";
     for (index, args) in [
         &["move", "alpha", "mx-1bb21d", "beta"] as &[&str],
         &["move", "alpha", "mx-1bb21d", "beta", "--force"],
@@ -215,7 +215,7 @@ fn move_refuses_archived_records_like_reference() {
         &their,
         &error_envelope(
             "move",
-            "Record mx-1bb21d is archived. Run `ml restore mx-1bb21d` first.",
+            "Record mx-1bb21d is archived. Run `mulch restore mx-1bb21d` first.",
         ),
     );
 }
@@ -227,7 +227,7 @@ fn move_required_fields_gate_matches_reference() {
         return;
     };
     let seed = format!("{ALPHA_ONE}\n");
-    let message = "Record is missing field(s) required by target domain \"beta\": \"owner\". Edit the record (`ml edit mx-1bb21d`) before moving.";
+    let message = "Record is missing field(s) required by target domain \"beta\": \"owner\". Edit the record (`mulch edit mx-1bb21d`) before moving.";
     // `--force` bypasses allowed_types only; required_fields always holds.
     for (index, args) in [
         &["move", "alpha", "mx-1bb21d", "beta"] as &[&str],
