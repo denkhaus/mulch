@@ -185,11 +185,13 @@ pub(crate) enum Command {
         record_type: Option<String>,
 
         /// Return at most N records.
-        #[arg(long, default_value = "10")]
+        // allow_hyphen_values: commander passes `-1` to the command's
+        // own parse (probed); clap would abort pre-dispatch.
+        #[arg(long, default_value = "10", allow_hyphen_values = true)]
         limit: String,
 
         /// Exclude records whose confirmation score is below N.
-        #[arg(long = "min-score", default_value = "0")]
+        #[arg(long = "min-score", default_value = "0", allow_hyphen_values = true)]
         min_score: String,
     },
 
@@ -212,7 +214,9 @@ pub(crate) enum Command {
     /// learnings (mulch-16da).
     Learn {
         /// Git ref to diff against.
-        #[arg(long, default_value = "HEAD~1")]
+        // allow_hyphen_values: commander passes `-ref` verbatim
+        // (probed); clap would abort pre-dispatch.
+        #[arg(long, default_value = "HEAD~1", allow_hyphen_values = true)]
         since: String,
     },
 
@@ -428,6 +432,9 @@ pub(crate) struct EditOutcomeFlags {
 /// choices on `--type` — a free string, unlike search/rank).
 #[derive(Debug, Args)]
 pub(crate) struct QueryArgs {
+    /// Expertise domain to query.
+    pub(crate) domain: Option<String>,
+
     /// Filter by record type.
     #[arg(long = "type")]
     pub(crate) record_type: Option<String>,
