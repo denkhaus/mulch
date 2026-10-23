@@ -12,6 +12,11 @@ just = "1.58.0"
 bun = "1.4.0"
 "aqua:nushell/nushell" = "0.115.0"
 "aqua:BurntSushi/ripgrep" = "15.2.0"
+# The pre-push gate's activator (lefthook.yml is repo config, so the
+# binary is repo-pinned too — keeps `just bootstrap` self-contained).
+# The binary alone installs no hooks; the operator opt-in stays the
+# bootstrap recipe, and runs never call it (see lefthook.yml).
+lefthook = "2.1.14"
 # Bootstrap phase remainder (ADR-0023 in denkhaus/fabro): the jayminwest
 # mulch CLI, the read+write compatible expertise target, until this
 # repo's own `mulch` binary replaces it at the self-hosting cutover.
@@ -19,7 +24,7 @@ bun = "1.4.0"
 
 # The GitButler CLI (`but`) pin lived here until the experiment was
 # retired (2026-10-17, mulch-6817) — the checkout runs plain git now.
-"cargo:seeds" = "0.8.0"
+"cargo:seeds" = "0.10.0"
 
 [settings.npm]
 # Non-TTY installs abort on the default backend's interactive approval
