@@ -128,7 +128,7 @@ pub(super) fn build_record(
     if let Some(files_field) = &row.files_array
         && !record.contains_key(files_field.as_str())
     {
-        let context = context_files();
+        let context = crate::commands::git_context::GitContext::process_cwd().context_files();
         if !context.is_empty() {
             record.insert(files_field.as_str().into(), strings_value(&context));
         }
@@ -279,53 +279,8 @@ fn strings_value(items: &[String]) -> Value {
     Value::Array(items.iter().map(|i| Value::String(i.clone())).collect())
 }
 
-/// The reference's `getContextFiles` (utils/git-context.ts): staged
-/// plus unstaged changed file names, deduped and sorted; no git
-/// repository (or git failure) means no files. Untracked files never
-/// appear — the source is `git diff --name-only [--cached]`.
-fn context_files() -> Vec<String> {
-    let mut files: Vec<String> = Vec::new();
-    for staged in [true, false] {
-        // each call is independent (the reference's two try/catch
-        // blocks): a failed staged read keeps whatever the unstaged
-        // one collected
-        let mut command = std::process::Command::new("git");
-        command.args(["diff", "--name-only"]);
-        if staged {
-            command.arg("--cached");
-        }
-        let Ok(output) = command.output() else {
-            continue;
-        };
-        if !output.status.success() {
-            continue;
-        }
-        let Ok(text) = String::from_utf8(output.stdout) else {
-            continue;
-        };
-        for file in text.lines().filter(|line| !line.is_empty()) {
-            if !files.iter().any(|seen| seen == file) {
-                files.push(file.to_string());
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
-/// Auto-populated git evidence: the full HEAD sha when cwd is a git
-/// repository (reference probe: full 40-char sha; absent outside git).
-fn git_head() -> Option<String> {
-    std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .and_then(|out| String::from_utf8(out.stdout).ok())
-        .map(|sha| sha.trim().to_string())
-}
-
-/// Builds the evidence object: user flags, git commit fallback.
+/// Builds the evidence object: user flags, git commit fallback
+/// (the subprocess law lives on the GitContext seam now, mulch-21d9).
 pub(super) fn evidence_map(args: &RecordArgs) -> Option<Map<String, Value>> {
     let mut evidence = Map::new();
     let pairs: [(&str, &Option<String>); 7] = [
@@ -346,7 +301,7 @@ pub(super) fn evidence_map(args: &RecordArgs) -> Option<Map<String, Value>> {
         }
     }
     if !evidence.contains_key("commit")
-        && let Some(sha) = git_head()
+        && let Some(sha) = crate::commands::git_context::GitContext::process_cwd().head_sha()
     {
         evidence.insert("commit".into(), Value::String(sha));
     }

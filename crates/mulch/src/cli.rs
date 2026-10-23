@@ -32,6 +32,18 @@ pub(crate) struct GlobalOpts {
     /// Tolerate records violating per-domain type/field rules.
     #[arg(long, global = true)]
     pub allow_domain_mismatch: bool,
+
+    /// Output format for record-rendering commands. The value set is
+    /// the reference commander's GLOBAL choice list (cli.ts:130);
+    /// the `ids` form query/search help advertises is not parseable
+    /// through this flag (`--format ids` rejects, probed 2026-10-23).
+    #[arg(
+        long,
+        global = true,
+        value_name = "format",
+        value_parser = ["markdown", "compact", "xml", "plain"]
+    )]
+    pub format: Option<String>,
 }
 
 /// mulch — structured expertise management (native implementation).
@@ -154,6 +166,58 @@ pub(crate) enum Command {
         #[arg(long)]
         fix: bool,
     },
+
+    /// Query records across domains (mulch-16da).
+    Query(Box<QueryArgs>),
+
+    /// Search expertise records across domains (mulch-16da).
+    Search(Box<SearchArgs>),
+
+    /// Rank records by confirmation-frequency score (highest first)
+    /// (mulch-16da).
+    Rank {
+        /// Limit ranking to a specific domain.
+        domain: Option<String>,
+
+        /// Record type (the choice set is the store's registry —
+        /// filled in by [`augment`], rank.ts).
+        #[arg(long = "type")]
+        record_type: Option<String>,
+
+        /// Return at most N records.
+        #[arg(long, default_value = "10")]
+        limit: String,
+
+        /// Exclude records whose confirmation score is below N.
+        #[arg(long = "min-score", default_value = "0")]
+        min_score: String,
+    },
+
+    /// Show recently added or updated expertise records (mulch-16da).
+    Ready {
+        /// Maximum number of records to show.
+        #[arg(long, default_value = "10")]
+        limit: String,
+
+        /// Limit to a specific domain.
+        #[arg(long)]
+        domain: Option<String>,
+
+        /// Show records from the last duration (e.g. 24h, 7d, 2w).
+        #[arg(long)]
+        since: Option<String>,
+    },
+
+    /// Show changed files and suggest domains for recording
+    /// learnings (mulch-16da).
+    Learn {
+        /// Git ref to diff against.
+        #[arg(long, default_value = "HEAD~1")]
+        since: String,
+    },
+
+    /// Prime a session with relevant expertise (mulch-16da).
+    Prime(Box<PrimeArgs>),
 }
 
 /// Flags of `mulch record` (reference surface).
@@ -360,6 +424,150 @@ pub(crate) struct EditOutcomeFlags {
     pub(crate) agent: Option<String>,
 }
 
+/// Flags of `mulch query` (reference surface: query.ts declares NO
+/// choices on `--type` — a free string, unlike search/rank).
+#[derive(Debug, Args)]
+pub(crate) struct QueryArgs {
+    /// Filter by record type.
+    #[arg(long = "type")]
+    pub(crate) record_type: Option<String>,
+
+    /// Filter by classification.
+    #[arg(
+        long,
+        value_parser = ["foundational", "tactical", "observational"]
+    )]
+    pub(crate) classification: Option<String>,
+
+    /// Filter by associated file path (substring match).
+    #[arg(long)]
+    pub(crate) file: Option<String>,
+
+    /// Filter by outcome status.
+    #[arg(long = "outcome-status", value_parser = ["success", "failure"])]
+    pub(crate) outcome_status: Option<String>,
+
+    /// Sort results by confirmation-frequency score (highest first).
+    #[arg(long = "sort-by-score")]
+    pub(crate) sort_by_score: bool,
+
+    /// Show all domains.
+    #[arg(long)]
+    pub(crate) all: bool,
+}
+
+/// Flags of `mulch search` (reference surface, search.ts).
+#[derive(Debug, Args)]
+pub(crate) struct SearchArgs {
+    /// Search string (case-insensitive substring match).
+    pub(crate) query: Option<String>,
+
+    /// Limit search to a specific domain.
+    #[arg(long)]
+    pub(crate) domain: Option<String>,
+
+    /// Record type (the choice set is the store's registry —
+    /// filled in by [`augment`], search.ts:72).
+    #[arg(long = "type")]
+    pub(crate) record_type: Option<String>,
+
+    /// Filter by tag.
+    #[arg(long)]
+    pub(crate) tag: Option<String>,
+
+    /// Filter by classification.
+    #[arg(
+        long,
+        value_parser = ["foundational", "tactical", "observational"]
+    )]
+    pub(crate) classification: Option<String>,
+
+    /// Filter by associated file path (substring match).
+    #[arg(long)]
+    pub(crate) file: Option<String>,
+
+    /// Filter by outcome status.
+    #[arg(
+        long = "outcome-status",
+        value_parser = ["success", "failure", "partial"]
+    )]
+    pub(crate) outcome_status: Option<String>,
+
+    /// Sort results by confirmation-frequency score (highest first).
+    #[arg(long = "sort-by-score")]
+    pub(crate) sort_by_score: bool,
+
+    /// Disable confirmation-frequency boost on BM25 ranking (pure
+    /// BM25).
+    #[arg(long = "no-boost")]
+    pub(crate) no_boost: bool,
+
+    /// Include soft-archived records from .mulch/archive/ (excluded
+    /// by default).
+    #[arg(long)]
+    pub(crate) archived: bool,
+}
+
+/// Flags of `mulch prime` (reference surface, prime.ts: the
+/// positional `[domains...]` scopes the output; --budget's default
+/// lives in the command, not clap).
+#[derive(Debug, Args)]
+pub(crate) struct PrimeArgs {
+    /// Optional domain(s) to scope output to.
+    pub(crate) domains: Vec<String>,
+
+    /// Alias for --format compact.
+    #[arg(long)]
+    pub(crate) compact: bool,
+
+    /// Alias for --format markdown (full record details).
+    #[arg(long)]
+    pub(crate) full: bool,
+
+    /// Emit a domain index instead of full records (for monolith
+    /// projects).
+    #[arg(long)]
+    pub(crate) manifest: bool,
+
+    /// Domain(s) to include.
+    #[arg(long = "domain")]
+    pub(crate) domain: Vec<String>,
+
+    /// Domain(s) to exclude.
+    #[arg(long = "exclude-domain")]
+    pub(crate) exclude_domain: Vec<String>,
+
+    /// Filter records to only those relevant to changed files.
+    #[arg(long)]
+    pub(crate) context: bool,
+
+    /// Filter records to only those relevant to specified files.
+    #[arg(long)]
+    pub(crate) files: Vec<String>,
+
+    /// Opt out of auto-context-scope and emit the full corpus (full
+    /// mode only; manifest mode is unaffected).
+    #[arg(long)]
+    pub(crate) all: bool,
+
+    /// Export output to a file.
+    #[arg(long)]
+    pub(crate) export: Option<String>,
+
+    /// Token budget for output (default: 4000).
+    #[arg(long)]
+    pub(crate) budget: Option<String>,
+
+    /// Disable token budget limit.
+    #[arg(long = "no-limit")]
+    pub(crate) no_limit: bool,
+
+    /// Emit JSON summary of records that would be primed (id, type,
+    /// domain, tokens) without rendering content.
+    #[arg(long = "dry-run")]
+    pub(crate) dry_run: bool,
+}
+
 /// Outcome flags of `record --outcome-*` and the `outcome` command.
 #[derive(Debug, Args)]
 pub(crate) struct OutcomeFlags {
@@ -447,6 +655,24 @@ const EDIT_FLAGS: [&str; 14] = [
     "outcome-agent",
 ];
 
+/// `search`'s own flag names (same law as [`RECORD_FLAGS`]; search
+/// only gates `--type`'s choices on the registry — it registers NO
+/// dynamic custom-field flags).
+const SEARCH_FLAGS: [&str; 9] = [
+    "domain",
+    "type",
+    "tag",
+    "classification",
+    "file",
+    "outcome-status",
+    "sort-by-score",
+    "no-boost",
+    "archived",
+];
+
+/// `rank`'s own flag names (same law as [`SEARCH_FLAGS`]).
+const RANK_FLAGS: [&str; 3] = ["type", "limit", "min-score"];
+
 /// The custom flags registered onto the command tree:
 /// (subcommand, flag id, field name) rows, consumed by
 /// [`inject_dynamic`] after parsing.
@@ -509,7 +735,10 @@ pub(crate) fn augment(command: &mut clap::Command) -> Result<DynamicFlags, crate
                 arg.value_parser(clap::builder::PossibleValuesParser::new(choices))
             });
         }
-        taken = register_custom_flags(taken, row.sub, &registry, row.declared_flags, &mut dynamic);
+        if row.custom_flags {
+            taken =
+                register_custom_flags(taken, row.sub, &registry, row.declared_flags, &mut dynamic);
+        }
         *slot = taken;
     }
     Ok(dynamic)
@@ -517,8 +746,8 @@ pub(crate) fn augment(command: &mut clap::Command) -> Result<DynamicFlags, crate
 
 /// The per-subcommand augmentation table: which subcommands read the
 /// store's registry before parsing, and what each augments. A later
-/// registry-gated command (query/search `--type`, prune/archive) is
-/// a new row, not a new if-chain arm.
+/// registry-gated command (prune/archive) is a new row, not a new
+/// if-chain arm.
 struct AugmentRow {
     sub:            &'static str,
     /// Argument id whose choice set becomes the registry's names
@@ -528,18 +757,37 @@ struct AugmentRow {
     /// these names reads the existing flag instead of getting a new
     /// one (the reference's `declaredOptionNames` set).
     declared_flags: &'static [&'static str],
+    /// Whether the reference registers dynamic custom-field flags on
+    /// this subcommand: record.ts/edit.ts do; search/rank only gate
+    /// `--type`'s choices on the registry and declare no field
+    /// flags of their own.
+    custom_flags:   bool,
 }
 
-const AUGMENTED: [AugmentRow; 2] = [
+const AUGMENTED: [AugmentRow; 4] = [
     AugmentRow {
         sub:            "record",
         choices_arg:    Some("record_type"),
         declared_flags: &RECORD_FLAGS,
+        custom_flags:   true,
     },
     AugmentRow {
         sub:            "edit",
         choices_arg:    None,
         declared_flags: &EDIT_FLAGS,
+        custom_flags:   true,
+    },
+    AugmentRow {
+        sub:            "search",
+        choices_arg:    Some("record_type"),
+        declared_flags: &SEARCH_FLAGS,
+        custom_flags:   false,
+    },
+    AugmentRow {
+        sub:            "rank",
+        choices_arg:    Some("record_type"),
+        declared_flags: &RANK_FLAGS,
+        custom_flags:   false,
     },
 ];
 

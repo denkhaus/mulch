@@ -5,11 +5,18 @@ mod delete;
 mod delete_domain;
 mod doctor;
 mod edit;
+mod git_context;
 mod init;
+mod learn;
 mod move_cmd;
 mod outcome;
+mod prime;
+mod query;
+mod rank;
+mod ready;
 mod record;
 mod render;
+mod search;
 mod status;
 mod validate;
 
@@ -149,6 +156,32 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
             *dry_run,
             *force,
         ),
+        Command::Query(args) => query::run(&cli.opts, args),
+        Command::Search(args) => search::run(&cli.opts, args),
+        Command::Rank {
+            domain,
+            record_type,
+            limit,
+            min_score,
+        } => rank::run(
+            &cli.opts,
+            domain.as_deref(),
+            record_type.as_deref(),
+            limit,
+            min_score,
+        ),
+        Command::Ready {
+            limit,
+            domain,
+            since,
+        } => ready::run(
+            &cli.opts,
+            limit.as_str(),
+            domain.as_deref(),
+            since.as_deref(),
+        ),
+        Command::Learn { since } => learn::run(&cli.opts, since),
+        Command::Prime(args) => prime::run(&cli.opts, args),
     }
 }
 
