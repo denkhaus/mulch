@@ -525,34 +525,57 @@ pub fn resolve_record_id(
     }
 }
 
-/// The truncating summary laws' failure: the reference's TypeError
-/// (`text.length` on a missing or non-string required field — JSC
-/// renders the same message for `undefined` and for non-strings).
+/// The truncating summary laws' failures — the reference's
+/// `truncate(text, 60)` TypeErrors, byte-pinned (probed 2026-10-24):
+/// `.length` throws on `undefined` (a missing field) and on `null`,
+/// and every other length-less or over-long value falls through to
+/// `.search`, which does not exist on non-strings (an array of at
+/// most 60 elements passes through untouched — `length <= 60`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SummaryNotAString;
+pub enum SummaryError {
+    /// `text.length` on `undefined`: the field is missing.
+    UndefinedLength,
+    /// `text.length` on `null`.
+    NullLength,
+    /// `text.search` on numbers, booleans, objects, and arrays
+    /// longer than 60.
+    NotSearchable,
+}
 
-impl std::fmt::Display for SummaryNotAString {
+impl std::fmt::Display for SummaryError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "undefined is not an object (evaluating 'text.length')"
-        )
+        let text = match self {
+            Self::UndefinedLength => "undefined is not an object (evaluating 'text.length')",
+            Self::NullLength => "null is not an object (evaluating 'text.length')",
+            Self::NotSearchable => {
+                "text.search is not a function. (In 'text.search(/[.!?]\\s/)', 'text.search' is undefined)"
+            }
+        };
+        formatter.write_str(text)
     }
 }
+
+impl std::error::Error for SummaryError {}
 
 /// The registry summary as the reference's raw JS value
 /// (`getRecordSummary` without the string coercion):
 /// `Ok(None)` is `undefined` — plain output renders the word, JSON
 /// output omits the key — non-string values pass through verbatim,
-/// and the truncating laws (`convention`/`failure`) fail with their
-/// TypeError when the field is missing or not a string.
+/// and the truncating laws (`convention`/`failure`) fail with the
+/// reference's `truncate` TypeErrors ([`SummaryError`]; an array of
+/// at most 60 elements passes through, like `length <= 60`).
 ///
 /// [`record_summary`] stays the string-coercing view for the call
 /// sites that render today's shapes.
+///
+/// # Errors
+///
+/// [`SummaryError`] for the truncating laws' `truncate` failures —
+/// see the enum's probe-pinned message law.
 pub fn record_summary_value(
     registry: &Registry,
     record: &Value,
-) -> std::result::Result<Option<Value>, SummaryNotAString> {
+) -> std::result::Result<Option<Value>, SummaryError> {
     let kind = crate::ids::effective_type(record.get("type").and_then(Value::as_str));
     match registry.row(kind) {
         Some(Row {
@@ -585,8 +608,16 @@ pub fn record_summary_value(
         }) => match (record.get(field), *shorten) {
             (None, false) => Ok(None),
             (Some(value), false) => Ok(Some(value.clone())),
+            (None, true) => Err(SummaryError::UndefinedLength),
+            (Some(Value::Null), true) => Err(SummaryError::NullLength),
             (Some(Value::String(text)), true) => Ok(Some(Value::String(js_truncate(text, 60)))),
-            (_, true) => Err(SummaryNotAString),
+            // `length <= 60` passes arrays through untouched; longer
+            // ones fall through to `.search` with the other
+            // length-less values.
+            (Some(value @ Value::Array(items)), true) if items.len() <= 60 => {
+                Ok(Some(value.clone()))
+            }
+            (_, true) => Err(SummaryError::NotSearchable),
         },
         // Unknown types keep the content fallback string (the
         // throw-on-unknown surface belongs to the commands).

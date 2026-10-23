@@ -78,42 +78,44 @@ pub fn file_matches_any(file: &str, changed_files: &[String]) -> bool {
         .any(|changed| changed == file || changed.ends_with(file) || file.ends_with(changed))
 }
 
+/// One anchored record's match law (the shared tail of
+/// [`filter_by_context`] and [`filter_by_active_context`]): a
+/// `files` entry suffix-matches a changed file, or a `dir_anchors`
+/// entry contains one.
+fn anchors_match(record: &Value, changed_files: &[String]) -> bool {
+    let files = record.get("files").and_then(Value::as_array);
+    let anchors = record.get("dir_anchors").and_then(Value::as_array);
+    if files.is_some_and(|files| {
+        files
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|file| file_matches_any(file, changed_files))
+    }) {
+        return true;
+    }
+    anchors.is_some_and(|anchors| {
+        anchors.iter().filter_map(Value::as_str).any(|anchor| {
+            changed_files
+                .iter()
+                .any(|changed| file_lives_under_dir(changed, anchor))
+        })
+    })
+}
+
+/// Whether the record carries file or dir anchors at all
+/// (anchorless records are universal in both filters).
+fn is_anchored(record: &Value) -> bool {
+    let files = record.get("files").and_then(Value::as_array);
+    let anchors = record.get("dir_anchors").and_then(Value::as_array);
+    files.is_some_and(|f| !f.is_empty()) || anchors.is_some_and(|a| !a.is_empty())
+}
+
 /// `filterByContext`: anchorless records stay; anchored records
 /// need one match.
 pub fn filter_by_context(records: &[Value], changed_files: &[String]) -> Vec<Value> {
     records
         .iter()
-        .filter(|record| {
-            let files = record.get("files").and_then(Value::as_array);
-            let anchors = record.get("dir_anchors").and_then(Value::as_array);
-            let has_files = files.is_some_and(|f| !f.is_empty());
-            let has_anchors = anchors.is_some_and(|a| !a.is_empty());
-            if !has_files && !has_anchors {
-                return true;
-            }
-            if has_files
-                && files.is_some_and(|files| {
-                    files
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .any(|file| file_matches_any(file, changed_files))
-                })
-            {
-                return true;
-            }
-            if has_anchors
-                && anchors.is_some_and(|anchors| {
-                    anchors.iter().filter_map(Value::as_str).any(|anchor| {
-                        changed_files
-                            .iter()
-                            .any(|changed| file_lives_under_dir(changed, anchor))
-                    })
-                })
-            {
-                return true;
-            }
-            false
-        })
+        .filter(|record| !is_anchored(record) || anchors_match(record, changed_files))
         .cloned()
         .collect()
 }
@@ -156,35 +158,7 @@ pub fn filter_by_active_context(
             }) {
                 return true;
             }
-            let files = record.get("files").and_then(Value::as_array);
-            let anchors = record.get("dir_anchors").and_then(Value::as_array);
-            let has_files = files.is_some_and(|f| !f.is_empty());
-            let has_anchors = anchors.is_some_and(|a| !a.is_empty());
-            if !has_files && !has_anchors {
-                return true;
-            }
-            if has_files
-                && files.is_some_and(|files| {
-                    files
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .any(|file| file_matches_any(file, &ctx.changed_files))
-                })
-            {
-                return true;
-            }
-            if has_anchors
-                && anchors.is_some_and(|anchors| {
-                    anchors.iter().filter_map(Value::as_str).any(|anchor| {
-                        ctx.changed_files
-                            .iter()
-                            .any(|changed| file_lives_under_dir(changed, anchor))
-                    })
-                })
-            {
-                return true;
-            }
-            false
+            !is_anchored(record) || anchors_match(record, &ctx.changed_files)
         })
         .cloned()
         .collect()
@@ -210,12 +184,9 @@ pub fn match_files_to_domains(
         let domain_files = domain_file_set(store, &domain, allow_unknown)?;
         let mut domain_matched = Vec::new();
         for changed in changed_files {
-            let hits = domain_files.iter().any(|domain_file| {
-                changed == domain_file
-                    || changed.ends_with(domain_file)
-                    || domain_file.ends_with(changed)
-            });
-            if hits {
+            // The both-direction suffix law, one seam
+            // ([`file_matches_any`]).
+            if file_matches_any(changed, &domain_files) {
                 domain_matched.push(changed.clone());
                 matched.insert(changed);
             }

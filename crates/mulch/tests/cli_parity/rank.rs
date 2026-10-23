@@ -7,8 +7,8 @@
 use std::path::Path;
 
 use super::support::{
-    CONFIG_TAIL, TempDir, error_envelope, mulch_bin, normalize_dir, reference_ml, run_in,
-    twin_seeded,
+    CONFIG_TAIL, TempDir, error_envelope, mulch_bin, normalize_dir, promote_theirs, reference_ml,
+    run_in, twin_seeded,
 };
 
 /// The ranking fixture: three domains in config order (zeta first —
@@ -60,12 +60,6 @@ fn rank_twins(tag: &str) -> (TempDir, TempDir) {
     )
 }
 
-/// Our self-referential hint names THIS binary (promote law, user
-/// directive 2026-10-13); byte comparisons normalize the name.
-fn promote_ours(text: &str) -> String {
-    text.replace("`mulch add", "`ml add")
-}
-
 /// One rank invocation in both twins: asserts channel-split byte
 /// equality (stderr path-normalized per side) and returns our run.
 fn assert_rank_parity(ml: &Path, tag: &str, args: &[&str]) -> super::support::Run {
@@ -74,13 +68,13 @@ fn assert_rank_parity(ml: &Path, tag: &str, args: &[&str]) -> super::support::Ru
     let their = run_in(&theirs.0, ml, args);
     assert_eq!(our.code, their.code, "{args:?} exit code");
     assert_eq!(
-        promote_ours(&our.stdout),
-        their.stdout,
+        our.stdout,
+        promote_theirs(&their.stdout),
         "{args:?} stdout (ours promoted)"
     );
     assert_eq!(
-        promote_ours(&normalize_dir(&our.stderr, &ours.0)),
-        normalize_dir(&their.stderr, &theirs.0),
+        normalize_dir(&our.stderr, &ours.0),
+        normalize_dir(&promote_theirs(&their.stderr), &theirs.0),
         "{args:?} stderr"
     );
     our
@@ -287,7 +281,7 @@ fn rank_empty_no_store_and_unknown_domain_match() {
         let their = run_in(&theirs.0, &ml, &["rank", "nosuch"]);
         assert_eq!(our.code, their.code);
         assert_eq!(our.stdout, their.stdout);
-        assert_eq!(promote_ours(&our.stderr), their.stderr);
+        assert_eq!(our.stderr, promote_theirs(&their.stderr));
         assert_eq!(
             our.stderr,
             "Error: Domain \"nosuch\" not found in config. Available domains: zeta, mid, alpha\n\
@@ -320,7 +314,7 @@ fn rank_empty_no_store_and_unknown_domain_match() {
             "{}",
             our.stderr
         );
-        assert_eq!(promote_ours(&our.stderr), their.stderr);
+        assert_eq!(our.stderr, promote_theirs(&their.stderr));
     }
     // `--type` gates on the registry: our clap wording is the
     // documented deviation; the choice set and exit code pin.
@@ -425,7 +419,7 @@ fn rank_strict_read_errors_match_reference() {
     assert!(our.stdout.contains("Top 4 records"));
     assert!(our.stdout.contains("Z One"));
     assert_eq!(our.stderr, "Error: Unknown record type: zzzcustom\n");
-    assert_eq!(promote_ours(&our.stderr), their.stderr);
+    assert_eq!(our.stderr, promote_theirs(&their.stderr));
 
     let our = run_in(&ours.0, Path::new(mulch_bin()), &[
         "--allow-unknown-types",

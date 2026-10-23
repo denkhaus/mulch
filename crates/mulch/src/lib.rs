@@ -47,7 +47,7 @@ pub use jsval::{
 };
 pub use query::{DomainSpec, RecordFilter, UnknownDomain, domain_set};
 pub use records::{
-    Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, SummaryNotAString, UpsertPlan,
+    Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, SummaryError, UpsertPlan,
     apply_aliases, apply_aliases_for, assign_missing_id, find_duplicate, legacy_entry,
     legacy_outcome, merge_outcomes, read_lenient, read_strict, record_summary,
     record_summary_value, resolve_record_id, upsert_plan, write_records,

@@ -402,10 +402,22 @@ fn ready_summary_raw_values_match() {
     let nocontent = format!(
         "{{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"{at}\",\"id\":\"mx-dddd03\"}}\n"
     );
+    let nullcontent = format!(
+        "{{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"{at}\",\"content\":null,\"id\":\"mx-dddd04\"}}\n"
+    );
+    let arraycontent = format!(
+        "{{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"{at}\",\"content\":[1,2],\"id\":\"mx-dddd05\"}}\n"
+    );
+    let numcontent = format!(
+        "{{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"{at}\",\"content\":5,\"id\":\"mx-dddd06\"}}\n"
+    );
     for (tag, seed) in [
         ("noname", noname.as_str()),
         ("numeric", numeric.as_str()),
         ("nocontent", nocontent.as_str()),
+        ("nullcontent", nullcontent.as_str()),
+        ("arraycontent", arraycontent.as_str()),
+        ("numcontent", numcontent.as_str()),
     ] {
         let (ours, theirs) = twin_seeded(&format!("ready-sum-{tag}"), None, &[("zeta", seed)], &[]);
         let our = run_in(&ours.0, Path::new(mulch_bin()), &["ready"]);
@@ -456,6 +468,43 @@ fn ready_summary_raw_values_match() {
             "undefined is not an object (evaluating 'text.length')"
         )
     );
+
+    // The truncating law's other three TypeError shapes (probed
+    // 2026-10-24, /tmp/te1..6): `null` fails at `.length`, every
+    // other length-less value at `.search`, and an array of at most
+    // 60 elements passes through (`length <= 60`) — plain renders
+    // `String(array)`, json carries the raw array.
+    let (ours, _) = twin_seeded(
+        "ready-sum-pin4",
+        None,
+        &[("zeta", nullcontent.as_str())],
+        &[],
+    );
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["ready"]);
+    assert_eq!(our.code, 1);
+    assert_eq!(
+        our.stderr,
+        "Error: null is not an object (evaluating 'text.length')\n"
+    );
+    let (ours, _) = twin_seeded("ready-sum-pin5", None, &[("zeta", numcontent.as_str())], &[
+    ]);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["ready"]);
+    assert_eq!(our.code, 1);
+    assert_eq!(
+        our.stderr,
+        "Error: text.search is not a function. (In 'text.search(/[.!?]\\s/)', 'text.search' is undefined)\n"
+    );
+    let (ours, _) = twin_seeded(
+        "ready-sum-pin6",
+        None,
+        &[("zeta", arraycontent.as_str())],
+        &[],
+    );
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["ready"]);
+    assert_eq!(our.code, 0);
+    assert!(our.stdout.ends_with("1,2\n"), "{}", our.stdout);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "ready"]);
+    assert!(our.stdout.contains("\"summary\": ["), "{}", our.stdout);
 }
 
 #[test]

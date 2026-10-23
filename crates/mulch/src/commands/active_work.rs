@@ -59,7 +59,7 @@ pub(crate) fn resolve_active_work(cwd: &Path) -> ActiveWork {
             Some(ids) => single(ids.into_iter()),
             None => single(branch_matches(&branch, IdPattern::Seeds).into_iter()),
         },
-        gh:     match resolve_gh(&branch) {
+        gh:     match resolve_gh(&branch, cwd) {
             Some(hit) => Some(hit),
             None => single(
                 branch_matches(&branch, IdPattern::Gh)
@@ -100,13 +100,13 @@ fn issue_file_ids(path: &Path) -> Option<Vec<String>> {
 
 /// `ghResolver`'s `gh pr view` probe: only a digits-only answer
 /// resolves; any failure falls through to the branch.
-fn resolve_gh(branch: &str) -> Option<String> {
+fn resolve_gh(branch: &str, cwd: &Path) -> Option<String> {
     if branch.is_empty() {
         return None;
     }
     let output = std::process::Command::new("gh")
         .args(["pr", "view", "--json", "number", "--jq", ".number"])
-        .current_dir(std::env::current_dir().ok()?)
+        .current_dir(cwd)
         .output()
         .ok()?;
     if !output.status.success() {
