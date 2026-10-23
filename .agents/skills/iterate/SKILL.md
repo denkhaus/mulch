@@ -118,6 +118,17 @@ architecture direction, milestone content, go/no-go):
 
 ## 3. Sprint — working mode (ALWAYS on, every sprint)
 
+- **THREE SEEDS PER SPRINT (user directive 2026-10-24)**: a sprint
+  claims and closes at least THREE seeds — otherwise we review more
+  than we build. Plan the bundle at ORIENT (pick a main seed plus
+  riders: preps, folds, small bugs from the same family); a sprint
+  with fewer than three closable seeds is a planning defect, not a
+  small sprint. Big waves still count as one seed of the three
+  (their riders come from the same family).
+- **Comments are ENGLISH ONLY (user directive 2026-10-24)**: code
+  comments, doc comments, commit messages, seeds texts, and mulch
+  records — every durable artifact. Session conversation may be
+  German; what the repo keeps is not.
 - **Claim**: `seeds update <id> --status in_progress` — never with
   `--assignee fabro` (that is the user's ownership switch for the develop
   line).
