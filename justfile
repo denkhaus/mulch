@@ -3,6 +3,17 @@
 default:
     @just --list
 
+# One-time checkout bootstrap (OPERATORS ONLY): trust + install the
+# mise toolset (.mise.toml) and activate the lefthook pre-push gate.
+# All three steps are idempotent. INVARIANT (lefthook.yml / AGENTS.md):
+# run sandboxes NEVER install hooks — this recipe is the operator's
+# explicit once-per-checkout opt-in; never call it from a run,
+# toolchain image, or CI config.
+bootstrap:
+    mise trust
+    mise install
+    lefthook install
+
 # Build all workspace crates (debug profile).
 build:
     cargo build --workspace
