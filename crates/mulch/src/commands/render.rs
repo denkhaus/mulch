@@ -129,30 +129,24 @@ pub(crate) fn estimate_record_text(
 
 // ---- the format atoms (format-helpers.ts) ----
 
-/// `formatTimeAgo`: relative age, minute-granular.
+/// `formatTimeAgo`: relative age, minute-granular — the lib law's
+/// Timestamp-typed facade (call sites pass parsed stamps: file mtimes,
+/// `last_updated`). The old clamp+trunc body was outcome-equivalent
+/// to the lib's ms-floor math on every input (future stamps and
+/// bucket boundaries included — pinned in
+/// `time_ago_boundaries_match_the_lib_law`).
 pub(crate) fn time_ago(then: Timestamp, now: Timestamp) -> String {
     #[expect(
-        clippy::cast_sign_loss,
-        clippy::cast_possible_truncation,
-        reason = "clamped non-negative ages; mirrors Math.floor semantics"
+        clippy::cast_precision_loss,
+        reason = "epoch milliseconds are exact in f64 below 2^53"
     )]
-    let diff_ms = ((now - then)
-        .total(jiff::Unit::Millisecond)
-        .unwrap_or(0.0)
-        .max(0.0)) as u64;
-    let minutes = diff_ms / 60_000;
-    if minutes < 1 {
-        "just now".into()
-    } else if minutes < 60 {
-        format!("{minutes}m ago")
-    } else {
-        let hours = diff_ms / 3_600_000;
-        if hours < 24 {
-            format!("{hours}h ago")
-        } else {
-            format!("{}d ago", diff_ms / 86_400_000)
-        }
-    }
+    let recorded = then.as_millisecond() as f64;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "epoch milliseconds are exact in f64 below 2^53"
+    )]
+    let current = now.as_millisecond() as f64;
+    mulch::time_ago(Some(recorded), current)
 }
 
 /// `formatEvidence`: the commit/date/issue/file bracket (the other
@@ -262,7 +256,11 @@ fn id_tag(record: &Value) -> String {
 
 /// `compactMeta`'s classification+age part: foundational renders bare,
 /// every other classification (including the coerced `undefined` of a
-/// missing field) renders with the recorded_at age.
+/// missing field) renders with the recorded_at age. The age parse is
+/// the lib's constructor law (`new Date(x)` — date-only strings,
+/// space separators, zone-less civil time all parse); an invalid date
+/// renders the reference's Invalid-Date template: `NaNd ago`
+/// (Math.floor(NaN) falls through every bound).
 fn classification_age(record: &Value, now: Timestamp) -> String {
     let classification = record
         .get("classification")
@@ -271,14 +269,16 @@ fn classification_age(record: &Value, now: Timestamp) -> String {
     if classification == "foundational" {
         return classification.into();
     }
-    // an unparsable recorded_at renders the reference's Invalid-Date
-    // template: `NaNd ago` (Math.floor(NaN) falls through every bound)
-    let age = record
-        .get("recorded_at")
-        .and_then(Value::as_str)
-        .and_then(|raw| raw.parse::<Timestamp>().ok())
-        .map_or_else(|| "NaNd ago".into(), |then| time_ago(then, now));
-    format!("{classification} {age}")
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "epoch milliseconds are exact in f64 below 2^53"
+    )]
+    let now_ms = now.as_millisecond() as f64;
+    format!(
+        "{} {}",
+        classification,
+        mulch::time_ago(mulch::date_ms(record), now_ms)
+    )
 }
 
 /// `compactMeta`: id + classification/age + the confirmation star.
@@ -290,8 +290,10 @@ fn compact_meta(record: &Value, now: Timestamp) -> String {
     parts.push(classification_age(record, now));
     let score = mulch::confirmation_score(record);
     if score > 0.0 {
-        // Number.isInteger ? ★N : ★N.toFixed(1) — scores are always
-        // integral or half-integral, so one decimal is exact
+        // Number.isInteger ? ★N : ★N.toFixed(1) — a DISPLAY decision,
+        // not a Value build, so the fract check stays (mulch::js_number
+        // is for the latter); scores are always integral or
+        // half-integral, so one decimal is exact
         #[expect(
             clippy::cast_possible_truncation,
             reason = "fract()==0 makes the cast exact (Number.isInteger)"
@@ -311,14 +313,16 @@ fn compact_meta(record: &Value, now: Timestamp) -> String {
     format!(" ({})", parts.join(", "))
 }
 
-/// `xmlEscape` / `xmlAttrEscape`.
-fn xml_escape(text: &str) -> String {
+/// `xmlEscape` (format-helpers.ts): the XML text atoms. One owner
+/// since mulch-7bc2 — prime/format.rs imports this copy.
+pub(crate) fn xml_escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
 
-fn xml_attr_escape(text: &str) -> String {
+/// `xmlAttrEscape`: the text law plus the double-quote.
+pub(crate) fn xml_attr_escape(text: &str) -> String {
     xml_escape(text).replace('"', "&quot;")
 }
 
@@ -1375,6 +1379,42 @@ mod render_gold_tests {
             now(),
         );
         assert!(compact_line.contains("tactical NaNd ago"), "{compact_line}");
+    }
+
+    /// The Timestamp-typed `time_ago` facade delegates to the lib law
+    /// byte-neutrally at the edges: future stamps clamp to `just now`
+    /// (the old body's `.max(0.0)` and the lib's floor-of-negative both
+    /// land under the minute bound) and every bucket boundary floors
+    /// like the reference's `Math.floor`. The parse unification rides
+    /// along: a date-only `recorded_at` renders its UTC-midnight age
+    /// through `classification_age` (the lib constructor law).
+    #[test]
+    fn time_ago_boundaries_match_the_lib_law() {
+        let now: Timestamp = "2026-10-13T15:19:55.500Z".parse().expect("now");
+        let at = |offset_ms: i64| {
+            now.checked_add(jiff::Span::new().milliseconds(offset_ms))
+                .expect("offset in range")
+        };
+        // future stamps and the sub-minute band
+        assert_eq!(time_ago(at(1), now), "just now");
+        assert_eq!(time_ago(at(-59_999), now), "just now");
+        // minute boundaries (the .500 base crosses sub-seconds too)
+        assert_eq!(time_ago(at(-60_000), now), "1m ago");
+        assert_eq!(time_ago(at(-3_599_999), now), "59m ago");
+        assert_eq!(time_ago(at(-3_600_000), now), "1h ago");
+        assert_eq!(time_ago(at(-86_399_999), now), "23h ago");
+        assert_eq!(time_ago(at(-86_400_000), now), "1d ago");
+
+        // the classification-age parse is the constructor law now:
+        // date-only means UTC midnight, not `NaNd ago`
+        let corner: Value =
+            serde_json::from_str(r#"{"classification":"tactical","recorded_at":"2020-01-01"}"#)
+                .expect("corner fixture parses");
+        let midnight: Timestamp = "2020-01-01T00:00:00Z".parse().expect("midnight");
+        assert_eq!(
+            classification_age(&corner, now),
+            format!("tactical {}", time_ago(midnight, now))
+        );
     }
 
     /// The builtin dispatch: every builtin registry name resolves to

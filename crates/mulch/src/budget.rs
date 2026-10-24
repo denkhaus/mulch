@@ -11,9 +11,11 @@
 //!   keeps `indexOf`'s -1 and sorts before everything — reference parity, not a
 //!   typo to fix), then confirmation score descending, then recency (newest
 //!   first).
-//! - An unparsable `recorded_at` yields `NaN` time; `NaN` compares as equal
-//!   (the JS comparator returns NaN → 0), so such records fall through to the
-//!   stable order instead of sorting by time.
+//! - `recorded_at` parses through the shared lib law (`new Date(x).getTime()`,
+//!   mulch-c5c4 — non-ISO shapes parse like the reference); an unparsable value
+//!   yields `NaN` time; `NaN` compares as equal (the JS comparator returns NaN
+//!   → 0), so such records fall through to the stable order instead of sorting
+//!   by time.
 //! - The walk is greedy in priority order and CONTINUES after a record does not
 //!   fit — later, cheaper records may still fit.
 
@@ -104,15 +106,13 @@ fn compare_records(a: &Value, b: &Value) -> std::cmp::Ordering {
         .unwrap_or(Ordering::Equal)
 }
 
-/// `new Date(r.recorded_at).getTime()` as f64 milliseconds;
-/// unparsable/missing dates are `None` (the JS `NaN`).
+/// `new Date(r.recorded_at).getTime()` — the lib's constructor law
+/// (mulch-c5c4 upgrade: non-ISO strings — date-only, the space
+/// separator, zone-less civil time — plus numbers, null, and booleans
+/// now PARSE where this approximation used to read `None`);
+/// `None` is the JS `NaN` (the comparator's equal-everything arm).
 fn recorded_ms(record: &Value) -> Option<f64> {
-    record
-        .get("recorded_at")
-        .and_then(Value::as_str)?
-        .parse::<jiff::Timestamp>()
-        .ok()
-        .map(|ts| ts.as_millisecond() as f64)
+    crate::date_ms(record)
 }
 
 /// `applyBudget`: greedily keep records that fit, in priority

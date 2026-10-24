@@ -700,3 +700,88 @@ fn prime_empty_store_matches() {
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["prime", "--manifest"]);
     assert!(our.stdout.contains("- **dev**: 0 records"));
 }
+
+// ---- mulch-c5c4: the time-law corners (probed live 2026-10-24,
+// /tmp/sprint37/childB/probes) ----
+
+/// The `recorded_at` shapes the old strict-ISO approximations
+/// rejected — date-only (UTC midnight), the JSC space separator,
+/// zone-less civil time — parse through the lib's `new Date(x)`
+/// constructor law now (compact ages, `Recent` surface reasons, and
+/// the budget's recency tiebreak). Ancient-side 2020 stamps keep the
+/// day buckets stable for the test duration; the fresh zone-less
+/// stamp (30h ago, derived from the clock, comfortably inside the
+/// 24–48h day-one band) drives the recency arm. The tight `--budget`
+/// store makes the ordering comparator byte-visible: identical
+/// type/classification/score with the date-only (ancient) record
+/// FIRST in corpus — recency must flip corpus order and keep the
+/// ISO-fresh record (the pre-upgrade approximation read the date-only
+/// stamp as NaN and kept the corpus-first one).
+#[test]
+fn prime_time_law_corners_match() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // zone-less civil stamp 30h old: both sides read it in the
+    // process time zone (ECMA-262 local-time branch), so the
+    // differential holds in any zone
+    let fresh_civil = (jiff::Timestamp::now() - jiff::Span::new().hours(30))
+        .to_zoned(jiff::tz::TimeZone::system())
+        .strftime("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    let fresh_line = format!(
+        r#"{{"type":"decision","classification":"tactical","recorded_at":"{fresh_civil}","title":"Fresh zone-less","rationale":"recency arm","id":"mx-900009"}}"#
+    );
+    let corner_seed = [
+        r#"{"type":"convention","classification":"tactical","recorded_at":"2020-01-02T12:00:00.000Z","content":"iso control","id":"mx-900001"}"#,
+        r#"{"type":"convention","classification":"tactical","recorded_at":"2020-01-01","content":"date only corner","id":"mx-900002"}"#,
+        r#"{"type":"convention","classification":"tactical","recorded_at":"2020-01-01 12:00:00Z","content":"space separator corner","id":"mx-900003"}"#,
+        r#"{"type":"convention","classification":"tactical","recorded_at":"2020-01-01T12:00:00","content":"zone-less corner","id":"mx-900004"}"#,
+        r#"{"type":"pattern","classification":"foundational","recorded_at":"2020-01-01","name":"Foundational date-only","description":"bare classification","id":"mx-900005"}"#,
+        r#"{"type":"failure","classification":"tactical","recorded_at":"2020-01-01T12:00:00","description":"zone-less failure","resolution":"r","id":"mx-900006"}"#,
+        r#"{"type":"reference","classification":"tactical","recorded_at":"2020-01-01","name":"Date-only ref","description":"d","id":"mx-900007"}"#,
+        r#"{"type":"guide","classification":"tactical","recorded_at":"2020-01-01 12:00:00Z","name":"Space-sep guide","description":"d","id":"mx-900008"}"#,
+        fresh_line.as_str(),
+    ]
+    .join("\n")
+        + "\n";
+    for (tag, args) in [
+        ("compact", vec!["prime", "--all"]),
+        ("full", vec!["prime", "--all", "--full"]),
+        ("xml", vec!["prime", "--all", "--format", "xml"]),
+        ("verbose", vec!["prime", "--all", "--verbose"]),
+    ] {
+        let (ours, theirs) =
+            twin_seeded(&format!("c5c4-{tag}"), None, &[("dev", &corner_seed)], &[]);
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_in(&theirs.0, &ml, &args);
+        assert_eq!(our.code, their.code, "{tag} exit code");
+        assert_eq!(our.stdout, promote_theirs(&their.stdout), "{tag} stdout");
+        assert_eq!(
+            normalize_dir(&our.stderr, &ours.0),
+            normalize_dir(&promote_theirs(&their.stderr), &theirs.0),
+            "{tag} stderr"
+        );
+    }
+
+    // The budget tiebreak: 30 tokens fit exactly one of the two
+    // equal-priority conventions.
+    let budget_seed = concat!(
+        r#"{"type":"convention","classification":"tactical","recorded_at":"2020-01-01","content":"date only old first in corpus","id":"mx-910001"}"#,
+        "\n",
+        r#"{"type":"convention","classification":"tactical","recorded_at":"2026-10-20T10:00:00.000Z","content":"iso fresh second in corpus","id":"mx-910002"}"#,
+        "\n",
+    );
+    let (ours, theirs) = twin_seeded("c5c4-budget", None, &[("dev", budget_seed)], &[]);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "prime", "--all", "--budget", "30",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["prime", "--all", "--budget", "30"]);
+    assert_eq!(our.code, their.code);
+    assert_eq!(our.stdout, promote_theirs(&their.stdout));
+    // recency, not corpus order, picks the survivor
+    assert!(our.stdout.contains("iso fresh second in corpus"));
+    assert!(!our.stdout.contains("date only old first in corpus"));
+    assert!(our.stdout.contains("... and 1 more record across 1 domain"));
+}

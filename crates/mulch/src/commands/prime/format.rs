@@ -13,7 +13,7 @@
 use jiff::Timestamp;
 use serde_json::{Map, Value};
 
-use crate::commands::render::{promote_mulch, time_ago};
+use crate::commands::render::{promote_mulch, time_ago, xml_attr_escape, xml_escape};
 
 /// One manifest row: a configured domain's unfiltered counts.
 #[derive(Clone, Debug)]
@@ -1018,16 +1018,4 @@ fn directive_session_close(format: &str) -> String {
         ]
         .join("\n"),
     }
-}
-
-/// XML text escaping (the reference `xmlEscape`).
-fn xml_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-/// XML attribute escaping (the reference `xmlAttrEscape`).
-fn xml_attr_escape(text: &str) -> String {
-    xml_escape(text).replace('"', "&quot;")
 }

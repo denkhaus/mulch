@@ -166,16 +166,20 @@ pub fn why_surfaced(record: &Value, ctx: Option<&ActiveContext>) -> SurfaceReaso
     SurfaceReason::Universal
 }
 
-/// Whole days since `recorded_at`; `None` when unparsable (the JS
+/// Whole days since `recorded_at`, floored like the reference's
+/// `Math.floor((Date.now() - t) / 86400000)`; the parse is the lib's
+/// constructor law (mulch-c5c4: date-only, space-separated, and
+/// zone-less stamps parse). `None` when the date is invalid (the JS
 /// `NaN` path — skips the recency arm).
 fn days_ago(record: &Value) -> Option<i64> {
-    let recorded = record
-        .get("recorded_at")
-        .and_then(Value::as_str)?
-        .parse::<jiff::Timestamp>()
-        .ok()?;
-    let now = jiff::Timestamp::now();
-    Some((now.as_millisecond() - recorded.as_millisecond()) / 86_400_000)
+    let recorded = crate::date_ms(record)?;
+    let now = crate::now_ms();
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "Math.floor of a TimeClip-bounded span fits i64"
+    )]
+    let days = ((now - recorded) / 86_400_000.0).floor() as i64;
+    Some(days)
 }
 
 /// `formatSurfaceReason`: the agent-facing suffix line.
@@ -186,6 +190,9 @@ pub fn format_surface_reason(reason: &SurfaceReason) -> String {
             format!("why: in-progress {tracker}:{id}")
         }
         SurfaceReason::Stars { count } => {
+            // Number.isInteger display decision (not a Value build):
+            // the fract check stays; mulch::js_number governs the
+            // serde_json construction sites instead.
             let stars = if count.fract() == 0.0 {
                 format!("{count:.0}")
             } else {

@@ -280,18 +280,23 @@ fn count64(count: usize) -> u64 {
     u64::try_from(count).unwrap_or(0)
 }
 
-/// Relative-time rendering ("just now", "2m ago", "3h ago", "4d ago").
+/// Relative-time rendering ("just now", "2m ago", "3h ago", "4d ago")
+/// — the shared lib law (the reference `formatTimeAgo`). The old
+/// seconds-trunc buckets were outcome-equivalent for every whole-second
+/// stamp; the delegation additionally floors the sub-second mtimes
+/// exactly like the reference's `Math.floor` on milliseconds.
 fn relative(then: Timestamp, now: Timestamp) -> String {
-    let seconds = now.as_second() - then.as_second();
-    if seconds < 60 {
-        "just now".into()
-    } else if seconds < 3_600 {
-        format!("{}m ago", seconds / 60)
-    } else if seconds < 86_400 {
-        format!("{}h ago", seconds / 3_600)
-    } else {
-        format!("{}d ago", seconds / 86_400)
-    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "epoch milliseconds are exact in f64 below 2^53"
+    )]
+    let recorded = then.as_millisecond() as f64;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "epoch milliseconds are exact in f64 below 2^53"
+    )]
+    let current = now.as_millisecond() as f64;
+    mulch::time_ago(Some(recorded), current)
 }
 
 /// Formats a timestamp as ISO-8601 with milliseconds and `Z`.
