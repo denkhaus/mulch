@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use jiff::Timestamp;
+use mulch::anchors::AnchorReport;
 use mulch::stale::{StaleRule, StaleVerdict};
 use mulch::{js_number, timestamp_ms, value_text};
 use serde_json::{Map, Value};
@@ -276,40 +277,6 @@ impl RecordAction {
     }
 }
 
-/// A record's anchor census (utils/anchor-validity.ts).
-struct AnchorReport {
-    /// `valid / total`; meaningless at 0/0 (the hit site exempts the
-    /// record before reading it).
-    valid_fraction: f64,
-    valid:          usize,
-    total:          usize,
-    broken:         Vec<(&'static str, String)>,
-}
-
-impl AnchorReport {
-    fn to_json(&self) -> Value {
-        let mut row = Map::new();
-        row.insert("valid_fraction".into(), js_number(self.valid_fraction));
-        row.insert("valid".into(), Value::from(self.valid));
-        row.insert("total".into(), Value::from(self.total));
-        row.insert(
-            "broken".into(),
-            Value::Array(
-                self.broken
-                    .iter()
-                    .map(|(kind, path)| {
-                        let mut entry = Map::new();
-                        entry.insert("kind".into(), Value::String((*kind).into()));
-                        entry.insert("path".into(), Value::String(path.clone()));
-                        Value::Object(entry)
-                    })
-                    .collect(),
-            ),
-        );
-        Value::Object(row)
-    }
-}
-
 /// The per-run classification context: one owner for every law the
 /// per-record walk reads.
 struct PruneWalk<'a> {
@@ -354,7 +321,7 @@ impl PruneWalk<'_> {
         ) {
             return None;
         }
-        let report = compute_anchor_validity(record, self.project_root);
+        let report = mulch::anchors::validity(record, self.project_root);
         // Zero anchors exempt (a 0/0 record would otherwise compute a
         // NaN fraction and falsely trip the threshold).
         if report.total == 0 || report.valid_fraction >= params.threshold {
@@ -669,83 +636,6 @@ fn render_plain(opts: &GlobalOpts, args: &PruneArgs, outcomes: &[DomainOutcome],
 #[allow(clippy::print_stderr, reason = "the warning channel is stderr")]
 fn print_warning(text: &str) {
     eprintln!("{text}");
-}
-
-// ---- anchor validity ----
-
-/// Every filesystem anchor a record carries: the typed `files[]`,
-/// `dir_anchors[]`, and `evidence.file` (getRecordAnchors). Empty
-/// strings skip; non-string entries skip.
-fn record_anchors(record: &Value) -> Vec<(&'static str, String)> {
-    let mut anchors = Vec::new();
-    if let Some(files) = record.get("files").and_then(Value::as_array) {
-        for file in files {
-            if let Some(path) = file.as_str()
-                && !path.is_empty()
-            {
-                anchors.push(("file", path.to_string()));
-            }
-        }
-    }
-    if let Some(dirs) = record.get("dir_anchors").and_then(Value::as_array) {
-        for dir in dirs {
-            if let Some(path) = dir.as_str()
-                && !path.is_empty()
-            {
-                anchors.push(("dir", path.to_string()));
-            }
-        }
-    }
-    if let Some(evidence) = record.get("evidence")
-        && let Some(path) = evidence.get("file").and_then(Value::as_str)
-        && !path.is_empty()
-    {
-        anchors.push(("evidence_file", path.to_string()));
-    }
-    anchors
-}
-
-/// The anchor census against the project root: existence per anchor,
-/// the valid fraction, and the broken list.
-fn compute_anchor_validity(record: &Value, project_root: &Path) -> AnchorReport {
-    let anchors = record_anchors(record);
-    let total = anchors.len();
-    if total == 0 {
-        return AnchorReport {
-            valid_fraction: 0.0,
-            valid:          0,
-            total:          0,
-            broken:         Vec::new(),
-        };
-    }
-    let mut valid = 0;
-    let mut broken = Vec::new();
-    for (kind, path) in anchors {
-        if anchor_exists(project_root, &path) {
-            valid += 1;
-        } else {
-            broken.push((kind, path));
-        }
-    }
-    // Fraction as f64 division (the JSON carries the shortest float
-    // the JS engine prints, e.g. 0.6666666666666666).
-    AnchorReport {
-        valid_fraction: valid as f64 / total as f64,
-        valid,
-        total,
-        broken,
-    }
-}
-
-/// `existsSync(resolve(projectRoot, path))`: absolute anchors ignore
-/// the root, everything else joins under it.
-fn anchor_exists(project_root: &Path, path: &str) -> bool {
-    let candidate = Path::new(path);
-    if candidate.is_absolute() {
-        candidate.exists()
-    } else {
-        project_root.join(candidate).exists()
-    }
 }
 
 /// The raw `decay.anchor_validity` block: any shape, missing keys
@@ -1183,14 +1073,14 @@ mod tests {
             "dir_anchors": ["adir"],
             "evidence": {"file": "ev.bin"}
         });
-        let report = compute_anchor_validity(&record, &root);
+        let report = mulch::anchors::validity(&record, &root);
         assert_eq!(report.total, 3);
         assert_eq!(report.valid, 0);
         assert_eq!(report.broken.len(), 3);
         let kinds: Vec<&str> = report.broken.iter().map(|(kind, _)| *kind).collect();
         assert_eq!(kinds, ["file", "dir", "evidence_file"]);
         let bare = json!({"type": "pattern"});
-        let report = compute_anchor_validity(&bare, &root);
+        let report = mulch::anchors::validity(&bare, &root);
         assert_eq!(report.total, 0);
         assert_eq!(report.broken.len(), 0);
         // the fraction is meaningless at 0/0: the hit site exempts it

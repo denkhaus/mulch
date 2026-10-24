@@ -741,57 +741,20 @@ fn id_bracket(id: Option<&Value>) -> String {
 
 /// A record's broken anchor detail bodies in the reference's report
 /// order: `files[]` entries, `dir_anchors[]` entries, then
-/// `evidence.file`. Non-string entries never participate — the
-/// reference crashes on them (README DEVIATIONS: doctor reports
-/// instead).
+/// `evidence.file` — the lib anchors module owns the walk and the
+/// resolution (mulch-5a3d); doctor only renders. Non-string entries
+/// never participate (the reference crashes on them — README
+/// DEVIATIONS: doctor reports instead).
 fn broken_anchors(record: &Value, project_root: &std::path::Path) -> Vec<String> {
-    let mut broken = Vec::new();
-    for (field, label) in [("files", "files[]"), ("dir_anchors", "dir_anchors[]")] {
-        for path in anchor_strings(record.get(field)) {
-            if !resolve_anchor(project_root, path).exists() {
-                broken.push(format!("{label} path not found: {path}"));
-            }
-        }
-    }
-    if let Some(file) = evidence_file(record)
-        && !resolve_anchor(project_root, file).exists()
-    {
-        broken.push(format!("evidence.file not found: {file}"));
-    }
-    broken
-}
-
-/// The string entries of an anchor array, in entry order.
-fn anchor_strings(field: Option<&Value>) -> impl Iterator<Item = &str> {
-    field
-        .and_then(Value::as_array)
+    mulch::anchors::record_anchors(record)
         .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-}
-
-/// A record's `evidence.file` when truthy (the reference's `?.`
-/// skips null/missing and JS truthiness skips the empty string).
-fn evidence_file(record: &Value) -> Option<&str> {
-    record
-        .get("evidence")
-        .and_then(Value::as_object)
-        .and_then(|evidence| evidence.get("file"))
-        .and_then(Value::as_str)
-        .filter(|file| !file.is_empty())
-}
-
-/// An anchor path resolved like the reference's
-/// `resolve(projectRoot, p)`: absolute anchors stay absolute,
-/// everything else joins the project root (doctor has no `--dir`;
-/// the store lives under the process cwd).
-fn resolve_anchor(project_root: &std::path::Path, anchor: &str) -> std::path::PathBuf {
-    let path = std::path::Path::new(anchor);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        project_root.join(path)
-    }
+        .filter(|(_, path)| !mulch::anchors::exists(project_root, path))
+        .map(|(kind, path)| match kind {
+            "file" => format!("files[] path not found: {path}"),
+            "dir" => format!("dir_anchors[] path not found: {path}"),
+            _ => format!("evidence.file not found: {path}"),
+        })
+        .collect()
 }
 
 /// Strips a record's broken anchors in place (the `file-anchors`
@@ -812,7 +775,7 @@ fn strip_broken_anchors(record: &mut Value, project_root: &std::path::Path) -> u
         entries.retain(|entry| {
             entry
                 .as_str()
-                .is_none_or(|path| resolve_anchor(project_root, path).exists())
+                .is_none_or(|path| mulch::anchors::exists(project_root, path))
         });
         let dropped = before - entries.len();
         if dropped > 0 {
@@ -824,8 +787,9 @@ fn strip_broken_anchors(record: &mut Value, project_root: &std::path::Path) -> u
             }
         }
     }
-    if let Some(file) = evidence_file(record)
-        && !resolve_anchor(project_root, file).exists()
+    if let Some(evidence) = record.get("evidence")
+        && let Some(file) = evidence.get("file").and_then(Value::as_str)
+        && !mulch::anchors::exists(project_root, file)
     {
         if let Some(evidence) = record.get_mut("evidence").and_then(Value::as_object_mut) {
             evidence.shift_remove("file");
