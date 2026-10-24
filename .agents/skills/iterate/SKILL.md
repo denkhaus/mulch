@@ -322,7 +322,15 @@ and hand-rolled string building in fixtures cost four gate iterations
 (push_str(&format!) -> format_collect -> write! -> writeln!): prefer
 `writeln!`/prebuilt strings, and have each child run
 `cargo clippy -p mulch --all-targets -- -D warnings` on a SCRATCH
-battery copy before delivering.
+battery copy before delivering. (c) A child can DIE MID-FLIGHT
+(subagent quota/429, session abort): its owned files then hold
+UNCOMMITTED, UNREVIEWED work — `cargo check` passing means only that
+it compiles. Inventory every aborted child before integrating
+(`git status`, compile, full nextest), then review its laws against
+probes/fixtures (sprint 39: one wrong superseded-id fixture, a bogus
+"valid JSON" row, a banner seeded on both twins, a dead rollback
+branch). If the quota blocks respawning, the HOST finishes the
+delivery and records the deviation in the sprint note.
 
 ## State file (sprint counter)
 
