@@ -313,7 +313,10 @@ ONE final integration commit (verify the file list with `git show --stat
 owned files + /tmp deliverables. Sprint-23 additions: (a) when seeds
 share ONE cross-chain constructor, the HOST pre-lands it on `main`
 before spawning (children consume the landed API — no child-to-child
-dependencies); (b) delivered battery fixtures must be clippy-clean BY
+dependencies) — but only lib-side constructors (`pub` items are never
+dead code): a `pub(crate)` CLI helper is dead until its adopter lands
+and fails the pre-land's clippy gate, so it goes in the ADOPTING
+child's brief instead (sprint 37: flag_value_failure); (b) delivered battery fixtures must be clippy-clean BY
 CONSTRUCTION — `-D warnings` covers tests, children cannot run clippy,
 and hand-rolled string building in fixtures cost four gate iterations
 (push_str(&format!) -> format_collect -> write! -> writeln!): prefer
