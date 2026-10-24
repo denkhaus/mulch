@@ -9,9 +9,7 @@ use mulch::DomainSpec;
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{
-    DomainFailure, flag_value_failure, open_store, render_core_error, unknown_domain_failure,
-};
+use crate::commands::{DomainFailure, flag_value_failure, open_store, unknown_domain_failure};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One ranked row: the domain (for display), the normalized record,
@@ -57,9 +55,12 @@ pub(crate) fn run(
 
     let mut ranked: Vec<RankedRecord> = Vec::new();
     for domain in domains_to_rank {
-        let records = store
-            .read_records(&domain, opts.allow_unknown_types)
-            .map_err(|source| Failure::handled_on_stderr("rank", render_core_error(&source)))?;
+        let records = crate::commands::read_domain_records(
+            "rank",
+            &store,
+            &domain,
+            opts.allow_unknown_types,
+        )?;
         for record in records {
             let record = record.record;
             if let Some(want) = record_type

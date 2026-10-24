@@ -38,11 +38,12 @@ pub(super) fn stdin_batch(
         single => vec![single],
     };
 
-    let existing = store
-        .read_records(&args.domain, opts.allow_unknown_types)
-        .map_err(|source| {
-            Failure::handled_on_stderr("record", crate::commands::render_core_error(&source))
-        })?;
+    let existing = crate::commands::read_domain_records(
+        "record",
+        store,
+        &args.domain,
+        opts.allow_unknown_types,
+    )?;
     // The working copy the reference dedupes against (`currentRecords`):
     // existing records plus this batch's accepted appends — within-batch
     // duplicates upsert too. Dry-run never mutates it (the reference

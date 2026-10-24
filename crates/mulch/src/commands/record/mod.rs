@@ -127,11 +127,12 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     // unregistered types abort before the write, and the dedup key is
     // the type's dedup FIELD (registry dedupKey), never the id — a
     // renamed record still dedupes after `edit --name` (mulch-ccf6).
-    let existing = store
-        .read_records(&args.domain, opts.allow_unknown_types)
-        .map_err(|source| {
-            Failure::handled_on_stderr("record", crate::commands::render_core_error(&source))
-        })?;
+    let existing = crate::commands::read_domain_records(
+        "record",
+        &store,
+        &args.domain,
+        opts.allow_unknown_types,
+    )?;
     // One decision owner (lib `upsert_plan`): named duplicates upsert
     // with merged outcomes, anonymous ones skip, --force falls through
     // to the create path below.

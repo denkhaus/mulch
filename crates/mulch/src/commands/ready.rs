@@ -80,9 +80,12 @@ pub(crate) fn run(
         if !valid_domain(&domain) {
             return Err(invalid_domain(&domain));
         }
-        let records = store
-            .read_records(&domain, opts.allow_unknown_types)
-            .map_err(|source| Failure::handled_on_stderr("ready", render_core_error(&source)))?;
+        let records = crate::commands::read_domain_records(
+            "ready",
+            &store,
+            &domain,
+            opts.allow_unknown_types,
+        )?;
         all.extend(records.into_iter().map(|line| ReadyEntry {
             domain: domain.clone(),
             record: line.record,

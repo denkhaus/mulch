@@ -126,11 +126,8 @@ fn filtered_records(
     opts: &GlobalOpts,
     sort_by_score: bool,
 ) -> Result<Vec<Value>, Failure> {
-    let records = store
-        .read_records(domain, opts.allow_unknown_types)
-        .map_err(|source| {
-            Failure::handled_on_stderr("query", crate::commands::render_core_error(&source))
-        })?;
+    let records =
+        crate::commands::read_domain_records("query", store, domain, opts.allow_unknown_types)?;
     let mut records = filter.apply(records.into_iter().map(|row| row.record).collect());
     if sort_by_score {
         mulch::scoring::sort_by_confirmation(&mut records);

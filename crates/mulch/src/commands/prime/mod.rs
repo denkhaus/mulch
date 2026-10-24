@@ -179,11 +179,12 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     // format pipeline share the dataset.
     let mut loaded: Vec<Loaded> = Vec::new();
     for domain in &target_domains {
-        let records = store
-            .read_records(domain, opts.allow_unknown_types)
-            .map_err(|source| {
-                Failure::handled_on_stderr("prime", crate::commands::render_core_error(&source))
-            })?;
+        let records = crate::commands::read_domain_records(
+            "prime",
+            &store,
+            domain,
+            opts.allow_unknown_types,
+        )?;
         let last_updated = modified(&store, domain)?;
         loaded.push(Loaded {
             domain: domain.clone(),

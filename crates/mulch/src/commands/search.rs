@@ -271,12 +271,8 @@ fn read_domain(
     domain: &str,
     opts: &GlobalOpts,
 ) -> Result<Vec<Value>, Failure> {
-    store
-        .read_records(domain, opts.allow_unknown_types)
+    crate::commands::read_domain_records("search", store, domain, opts.allow_unknown_types)
         .map(|records| records.into_iter().map(|row| row.record).collect())
-        .map_err(|source| {
-            Failure::handled_on_stderr("search", crate::commands::render_core_error(&source))
-        })
 }
 
 /// Reads one domain's archive (hard-wired unknown-type tolerance,

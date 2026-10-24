@@ -14,6 +14,10 @@
 //!   a 0-byte file.
 //! - [`StoreFiles::append_domain_line`] — append verbatim, existing bytes
 //!   preserved.
+//! - [`StoreFiles::rewrite_archive`] / [`StoreFiles::archive_records`] — the
+//!   soft-archive writes (reference `writeArchiveFile` / `archiveRecords`):
+//!   banner + compact lines, no id assignment; an empty record set still writes
+//!   the banner alone.
 //!
 //! Config writes always go through the canonical YAML serializer with
 //! defaults backfilled (`Config::to_yaml`), and domain removal keeps the
@@ -27,6 +31,13 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::records::{LenientLine, LineRecord, read_strict};
 use crate::upsert::write_records;
+
+/// The soft-archive banner (reference `ARCHIVE_BANNER`, archive.ts).
+/// DEVIATION (README): the reference promotes its own binary — `Run
+/// \`ml restore <id>\`` — while our shipped strings name THIS binary
+/// (user directive 2026-10-13, the same law as the record retry-echo),
+/// so ours reads `mulch restore`.
+const ARCHIVE_BANNER: &str = "# ARCHIVED — not for active use. Run `mulch restore <id>` to revive.";
 
 /// Where a store lookup landed.
 #[derive(Debug)]
@@ -312,6 +323,87 @@ impl StoreFiles {
         crate::records::read_strict(&self.registry, &self.archive_path(domain), true)
     }
 
+    /// Rewrites a domain's soft-archive (`writeArchiveFile`): the
+    /// banner line, then compact JSON lines, one trailing newline
+    /// after the last record — so an EMPTY record set still writes
+    /// the banner plus newline (never the 0-byte empty of
+    /// [`StoreFiles::rewrite_domain`]). No id is assigned: archived
+    /// records keep the ids they carried, including none. Creates
+    /// the archive directory when missing; writes through a temp
+    /// file + rename.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Write`] on I/O.
+    pub fn rewrite_archive(&self, domain: &str, records: &[Value]) -> Result<()> {
+        let path = self.archive_path(domain);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| Error::Write {
+                path: path.clone(),
+                source,
+            })?;
+        }
+        let mut body = String::from(ARCHIVE_BANNER);
+        body.push('\n');
+        for (index, record) in records.iter().enumerate() {
+            if index > 0 {
+                body.push('\n');
+            }
+            body.push_str(&serde_json::to_string(record).unwrap_or_default());
+        }
+        if !records.is_empty() {
+            body.push('\n');
+        }
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        let temp = PathBuf::from(format!("{}.tmp.{unique:x}", path.display()));
+        std::fs::write(&temp, body).map_err(|source| Error::Write {
+            path: temp.clone(),
+            source,
+        })?;
+        std::fs::rename(&temp, &path).map_err(|source| {
+            std::fs::remove_file(&temp).ok();
+            Error::Write { path, source }
+        })
+    }
+
+    /// Moves records into a domain's soft-archive (`archiveRecords`):
+    /// stamps each record with the archive lifecycle fields
+    /// ([`stamp_archive_fields`]), merges the archive's existing
+    /// records first, and rewrites — existing lines pass through
+    /// byte-stably. Empty input is a no-op: no read, no write. The
+    /// caller owns the source file's rewrite (and, in the reference,
+    /// its lock).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Read`] / [`Error::Write`] on I/O,
+    /// [`Error::MalformedLine`] / [`Error::NotAnObject`] for
+    /// unparsable existing archive lines.
+    pub fn archive_records(
+        &self,
+        domain: &str,
+        records: &[Value],
+        now: &str,
+        reason: &str,
+    ) -> Result<()> {
+        if records.is_empty() {
+            return Ok(());
+        }
+        let stamped: Vec<Value> = records
+            .iter()
+            .map(|record| stamp_archive_fields(record, now, reason))
+            .collect();
+        let mut merged: Vec<Value> = self
+            .read_archive(domain)?
+            .into_iter()
+            .map(|line| line.record)
+            .collect();
+        merged.extend(stamped);
+        self.rewrite_archive(domain, &merged)
+    }
+
     /// Rewrites a domain compactly (canonical; 0 bytes when empty).
     ///
     /// # Errors
@@ -342,9 +434,165 @@ impl StoreFiles {
     }
 }
 
+/// Stamps one record with the soft-archive lifecycle fields
+/// (`{ ...r, status: "archived", archived_at: r.archived_at ?? now,
+/// archive_reason: r.archive_reason ?? reason }`): keys already on
+/// the record keep their position — `status` always (its value is
+/// replaced), `archived_at` / `archive_reason` while non-null (JS
+/// `??` falls through on null AND absent, so a pre-existing stamp
+/// from a restore rollback survives) — and absent keys append in
+/// write order: status, archived_at, archive_reason.
+fn stamp_archive_fields(record: &Value, now: &str, reason: &str) -> Value {
+    let mut object = record.as_object().cloned().unwrap_or_default();
+    object.insert("status".into(), Value::String("archived".into()));
+    for (key, fallback) in [("archived_at", now), ("archive_reason", reason)] {
+        let survives = object.get(key).is_some_and(|value| !value.is_null());
+        if !survives {
+            object.insert(key.into(), Value::String(fallback.into()));
+        }
+    }
+    Value::Object(object)
+}
+
 /// Valid domain names (reference `src/utils/config.ts:204`).
 fn valid_domain(domain: &str) -> bool {
     let mut chars = domain.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphanumeric())
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// A scratch store with one configured domain (the reference
+    /// probe's layout: `ml prune` over a two-record expertise file).
+    fn scratch(tag: &str) -> (PathBuf, StoreFiles) {
+        let root = std::env::temp_dir().join(format!("mulch-archive-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(root.join(".mulch")).expect("temp dir");
+        std::fs::write(
+            root.join(".mulch").join("mulch.config.yaml"),
+            "version: '1'\ndomains:\n  dev: {}\n",
+        )
+        .expect("writable config");
+        match StoreFiles::locate(&root).expect("store opens") {
+            StoreLocation::Open(store) => (root, store),
+            other => panic!("expected an open store, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rewrite_archive_empty_is_banner_only() {
+        let (root, store) = scratch("empty");
+        store.rewrite_archive("dev", &[]).expect("write");
+        let bytes = std::fs::read(root.join(".mulch/archive/dev.jsonl")).expect("archive exists");
+        // 71 bytes: the probed 68-byte banner+newline (ml) plus the
+        // three extra bytes of our `mulch` restore hint — never the
+        // 0-byte empty of the live-file writer.
+        assert_eq!(bytes.len(), 71);
+        assert_eq!(
+            String::from_utf8(bytes).expect("utf-8"),
+            "# ARCHIVED — not for active use. Run `mulch restore <id>` to revive.\n"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn rewrite_archive_writes_banner_plus_compact_lines_without_ids() {
+        let (root, store) = scratch("lines");
+        // no archive directory exists yet — the write creates it
+        store
+            .rewrite_archive("dev", &[
+                json!({"id": "a", "type": "pattern", "name": "one"}),
+                json!({"type": "convention", "content": "no id"}),
+            ])
+            .expect("write");
+        let text = std::fs::read_to_string(root.join(".mulch/archive/dev.jsonl")).expect("archive");
+        assert_eq!(
+            text,
+            "# ARCHIVED — not for active use. Run `mulch restore <id>` to revive.\n\
+             {\"id\":\"a\",\"type\":\"pattern\",\"name\":\"one\"}\n\
+             {\"type\":\"convention\",\"content\":\"no id\"}\n"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn archive_records_stamps_appending_absent_and_sparing_present() {
+        let (root, store) = scratch("stamp");
+        store
+            .archive_records(
+                "dev",
+                &[
+                    json!({"id": "fresh", "type": "pattern", "name": "n", "recorded_at": "2020-01-02T03:04:05.678Z"}),
+                    json!({"id": "re", "type": "pattern", "name": "m", "status": "active", "recorded_at": "2020-02-02T00:00:00.000Z", "archived_at": "2021-05-05T05:05:05.005Z", "archive_reason": "manual: rollback"}),
+                    json!({"id": "nul", "type": "pattern", "name": "k", "archived_at": null}),
+                ],
+                "2026-10-24T11:02:49.753Z",
+                "stale",
+            )
+            .expect("archive");
+        let text = std::fs::read_to_string(root.join(".mulch/archive/dev.jsonl")).expect("archive");
+        let lines: Vec<&str> = text.lines().skip(1).collect();
+        // probed: absent keys APPEND at object end, in write order
+        assert_eq!(
+            lines[0],
+            "{\"id\":\"fresh\",\"type\":\"pattern\",\"name\":\"n\",\"recorded_at\":\"2020-01-02T03:04:05.678Z\",\"status\":\"archived\",\"archived_at\":\"2026-10-24T11:02:49.753Z\",\"archive_reason\":\"stale\"}"
+        );
+        // probed: pre-existing stamps survive ??; status is replaced
+        // IN PLACE (key position preserved, value overwritten)
+        assert_eq!(
+            lines[1],
+            "{\"id\":\"re\",\"type\":\"pattern\",\"name\":\"m\",\"status\":\"archived\",\"recorded_at\":\"2020-02-02T00:00:00.000Z\",\"archived_at\":\"2021-05-05T05:05:05.005Z\",\"archive_reason\":\"manual: rollback\"}"
+        );
+        // ?? falls through on null too — the key keeps its position
+        // and takes the fallback value
+        assert_eq!(
+            lines[2],
+            "{\"id\":\"nul\",\"type\":\"pattern\",\"name\":\"k\",\"archived_at\":\"2026-10-24T11:02:49.753Z\",\"status\":\"archived\",\"archive_reason\":\"stale\"}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn archive_records_merges_existing_first() {
+        let (root, store) = scratch("merge");
+        store
+            .archive_records(
+                "dev",
+                &[json!({"id": "one", "type": "pattern", "name": "a"})],
+                "2026-01-01T00:00:00.000Z",
+                "stale",
+            )
+            .expect("first archive");
+        store
+            .archive_records(
+                "dev",
+                &[json!({"id": "two", "type": "pattern", "name": "b"})],
+                "2026-01-02T00:00:00.000Z",
+                "stale",
+            )
+            .expect("second archive");
+        let text = std::fs::read_to_string(root.join(".mulch/archive/dev.jsonl")).expect("archive");
+        let lines: Vec<&str> = text.lines().skip(1).collect();
+        // probed: [...existing, ...stamped] — the first prune's line
+        // passes through byte-stably, the new one appends
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("\"id\":\"one\""));
+        assert!(lines[1].contains("\"id\":\"two\""));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn archive_records_empty_input_is_a_no_op() {
+        let (root, store) = scratch("noop");
+        store
+            .archive_records("dev", &[], "2026-01-01T00:00:00.000Z", "stale")
+            .expect("noop");
+        // no read, no write — not even the archive directory appears
+        assert!(!root.join(".mulch/archive/dev.jsonl").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
 }
