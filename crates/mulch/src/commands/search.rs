@@ -27,14 +27,12 @@ use mulch::{DomainSpec, RecordFilter, apply_confirmation_boost};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, SearchArgs};
-use crate::commands::open_store;
 use crate::commands::render::{
     format_domain_expertise, format_domain_expertise_compact, format_domain_expertise_plain,
     format_domain_expertise_xml,
 };
-use crate::output::{
-    EXIT_ERROR, Failure, failure_envelope, print_json, print_line, success_envelope,
-};
+use crate::commands::{DomainFailure, open_store, unknown_domain_failure};
+use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// `DEFAULT_SEARCH_BOOST_FACTOR` (schemas/config.ts:19).
 const DEFAULT_SEARCH_BOOST_FACTOR: f64 = 0.1;
@@ -62,7 +60,15 @@ pub(super) fn run(opts: &GlobalOpts, args: &SearchArgs) -> Result<(), Failure> {
     let configured = store.domains();
     let domains = match domain_flag {
         Some(domain) => mulch::domain_set(&configured, &DomainSpec::One(domain.to_string()))
-            .map_err(|unknown| unknown_domain_failure(&unknown.domain, &unknown.available))?,
+            .map_err(|unknown| {
+                unknown_domain_failure(
+                    "search",
+                    &unknown.domain,
+                    &unknown.available,
+                    opts.json,
+                    DomainFailure::SearchHint,
+                )
+            })?,
         None => configured,
     };
 
@@ -142,27 +148,6 @@ pub(super) fn run(opts: &GlobalOpts, args: &SearchArgs) -> Result<(), Failure> {
         }
     }
     Ok(())
-}
-
-/// The unknown-domain failure (search.ts:153-170): the hint already
-/// says `mulch add` in the reference, and the available list joins
-/// WITHOUT the `(none)` fallback query uses.
-fn unknown_domain_failure(domain: &str, available: &[String]) -> Failure {
-    let one_line = format!(
-        "Domain \"{domain}\" not found in config. Available domains: {}",
-        available.join(", ")
-    );
-    let mut fields = Map::new();
-    fields.insert("error".into(), Value::String(one_line.clone()));
-    Failure {
-        message:            format!(
-            "Error: {one_line}\nHint: Run `mulch add {domain}` to create this domain, or check .mulch/mulch.config.yaml"
-        ),
-        code:               EXIT_ERROR,
-        envelope:           failure_envelope("search", fields),
-        envelope_to_stderr: true,
-        rendered:           false,
-    }
 }
 
 /// `searchRecords` (expertise.ts:275-298): BM25 ranking (with the

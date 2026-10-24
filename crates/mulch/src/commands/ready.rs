@@ -10,11 +10,13 @@
 
 use std::cmp::Ordering;
 
-use mulch::{date_ms, now_ms, time_ago};
+use mulch::{DomainSpec, date_ms, now_ms, time_ago};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{open_store, render_core_error};
+use crate::commands::{
+    DomainFailure, flag_value_failure, open_store, render_core_error, unknown_domain_failure,
+};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One collected row: the domain (for display) and the normalized
@@ -36,7 +38,8 @@ pub(crate) fn run(
     // config message, not the flag error — the inverse of rank).
     let store = open_store("ready", true)?;
 
-    let limit = parse_strict_positive_int(limit).ok_or_else(|| limit_failure(limit))?;
+    let limit = mulch::parse_strict_positive_int(limit)
+        .ok_or_else(|| flag_value_failure("ready", "limit", "positive integer", limit))?;
 
     // `if (options.domain)` / `if (options.since)` are JS truthiness
     // gates: an empty flag value behaves exactly like an absent one
@@ -47,18 +50,23 @@ pub(crate) fn run(
 
     let domains = store.domains();
     let to_check = match domain {
-        Some(wanted) => {
-            if !domains.iter().any(|known| known == wanted) {
-                return Err(unknown_domain(opts.json, wanted, &domains));
-            }
-            vec![wanted.to_string()]
-        }
+        Some(wanted) => mulch::domain_set(&domains, &DomainSpec::One(wanted.to_string())).map_err(
+            |unknown| {
+                unknown_domain_failure(
+                    "ready",
+                    &unknown.domain,
+                    &unknown.available,
+                    opts.json,
+                    DomainFailure::ReadyOneLine,
+                )
+            },
+        )?,
         None => domains,
     };
 
     let since_ms =
         match since {
-            Some(raw) => Some(parse_duration(raw).map_err(|message| {
+            Some(raw) => Some(mulch::parse_duration(raw).map_err(|message| {
                 Failure::handled_on_stderr("ready", format!("Error: {message}"))
             })?),
             None => None,
@@ -141,72 +149,6 @@ pub(crate) fn run(
         );
     }
     Ok(())
-}
-
-/// `parseStrictPositiveInt`: `/^\d+$/` plus a JS `Number()` that must
-/// stay finite and `>= 1` (rank.ts's law, shared verbatim by ready).
-fn parse_strict_positive_int(raw: &str) -> Option<usize> {
-    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let number: f64 = raw.parse().ok()?;
-    if !number.is_finite() || number < 1.0 {
-        return None;
-    }
-    // JS slice(0, 1e24) clamps to the array length; usize::MAX clamps
-    // the same way for every real store size.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "bounded by usize::MAX and finite (Number semantics)"
-    )]
-    Some(number.min(usize::MAX as f64) as usize)
-}
-
-/// `parseDuration`: `/^(\d+)(h|d|w)$/`, the unit in milliseconds. The
-/// digit run parses as a JS `Number` (huge runs overflow to infinity,
-/// exactly like `parseInt`), so the arithmetic stays in `f64`.
-fn parse_duration(raw: &str) -> Result<f64, String> {
-    let invalid =
-        || format!("Invalid duration: \"{raw}\". Use format like \"24h\", \"7d\", \"2w\".");
-    let Some((at, unit)) = raw.char_indices().next_back() else {
-        return Err(invalid());
-    };
-    let digits = &raw[..at];
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(invalid());
-    }
-    let factor = match unit {
-        'h' => 3_600_000.0,
-        'd' => 86_400_000.0,
-        'w' => 7.0 * 86_400_000.0,
-        _ => return Err(invalid()),
-    };
-    let value: f64 = digits.parse().map_err(|_| invalid())?;
-    Ok(value * factor)
-}
-
-/// The strict `--limit` failure: `Error: --limit must be a positive
-/// integer (got "<raw>").` on stderr (the envelope drops the prefix).
-fn limit_failure(raw: &str) -> Failure {
-    Failure::handled_on_stderr(
-        "ready",
-        format!("Error: --limit must be a positive integer (got \"{raw}\")."),
-    )
-}
-
-/// The unknown-domain failure: ready's own single-line plain wording
-/// (`domain "x" not found. Available: …` — no `in config`, no
-/// `domains`) and the one-line json shape. An empty store renders the
-/// trailing `Available: ` with nothing after it.
-fn unknown_domain(json: bool, domain: &str, available: &[String]) -> Failure {
-    let list = available.join(", ");
-    let message = if json {
-        format!("Domain \"{domain}\" not found in config. Available domains: {list}")
-    } else {
-        format!("Error: domain \"{domain}\" not found. Available: {list}")
-    };
-    Failure::handled_on_stderr("ready", message)
 }
 
 /// `getExpertisePath`'s name check failure (`validateDomainName`),
@@ -309,43 +251,6 @@ fn summary_text(summary: Option<&Value>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The strict limit law (rank's parse, byte-identical message).
-    #[test]
-    fn limit_parse_is_strict_positive_int() {
-        assert_eq!(parse_strict_positive_int("10"), Some(10));
-        assert_eq!(parse_strict_positive_int("007"), Some(7));
-        assert_eq!(parse_strict_positive_int("1"), Some(1));
-        assert!(parse_strict_positive_int("999999999999999999999999").is_some());
-        for reject in ["", "0", "-1", "3.7", "10abc", "+5", " 5", ".5", "5."] {
-            assert_eq!(parse_strict_positive_int(reject), None, "{reject}");
-        }
-    }
-
-    /// The duration law: `^(\d+)(h|d|w)$` in milliseconds, everything
-    /// else rejected with the reference message.
-    #[test]
-    fn duration_parse_matches_the_reference() {
-        assert_eq!(parse_duration("24h"), Ok(24.0 * 3_600_000.0));
-        assert_eq!(parse_duration("7d"), Ok(7.0 * 86_400_000.0));
-        assert_eq!(parse_duration("2w"), Ok(14.0 * 86_400_000.0));
-        assert_eq!(parse_duration("0h"), Ok(0.0));
-        assert_eq!(parse_duration("0007d"), Ok(7.0 * 86_400_000.0));
-        // A 24-digit run is a finite JS number (1e24); only a run past
-        // f64's range overflows to Infinity.
-        assert_eq!(
-            parse_duration("999999999999999999999999w"),
-            Ok(1e24 * 604_800_000.0)
-        );
-        assert!(parse_duration(&format!("{}w", "9".repeat(400))).is_ok_and(f64::is_infinite));
-        for reject in ["", "24", "1x", "7D", " 7d", "-1d", "1.5d", "h", "7d ", "é"] {
-            let message = parse_duration(reject).expect_err(reject);
-            assert_eq!(
-                message,
-                format!("Invalid duration: \"{reject}\". Use format like \"24h\", \"7d\", \"2w\".")
-            );
-        }
-    }
 
     /// The plain row's padEnd columns and the id-column truthiness
     /// gate (empty / zero / null ids drop the column and its spaces).

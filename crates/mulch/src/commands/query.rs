@@ -23,14 +23,12 @@ use mulch::{DomainSpec, RecordFilter};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, QueryArgs};
-use crate::commands::open_store;
 use crate::commands::render::{
     format_domain_expertise, format_domain_expertise_compact, format_domain_expertise_plain,
     format_domain_expertise_xml,
 };
-use crate::output::{
-    EXIT_ERROR, Failure, failure_envelope, print_json, print_line, success_envelope,
-};
+use crate::commands::{DomainFailure, open_store, unknown_domain_failure};
+use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `query` against the store at the current directory.
 pub(super) fn run(opts: &GlobalOpts, args: &QueryArgs) -> Result<(), Failure> {
@@ -55,8 +53,15 @@ pub(super) fn run(opts: &GlobalOpts, args: &QueryArgs) -> Result<(), Failure> {
         }
         configured
     } else if let Some(domain) = mulch::truthy_str(args.domain.as_deref()) {
-        mulch::domain_set(&configured, &DomainSpec::One(domain.to_string()))
-            .map_err(|unknown| unknown_domain_failure(&unknown.domain, &unknown.available))?
+        mulch::domain_set(&configured, &DomainSpec::One(domain.to_string())).map_err(|unknown| {
+            unknown_domain_failure(
+                "query",
+                &unknown.domain,
+                &unknown.available,
+                opts.json,
+                DomainFailure::QueryHint,
+            )
+        })?
     } else {
         return Err(Failure::handled_on_stderr(
             "query",
@@ -103,29 +108,6 @@ pub(super) fn run(opts: &GlobalOpts, args: &QueryArgs) -> Result<(), Failure> {
         print_line(false, &sections.join("\n\n"));
     }
     Ok(())
-}
-
-/// The unknown-domain failure (query.ts:70-98): the one-line
-/// capital-D sentence for json, plus the two-line hint for plain.
-/// Unlike search, the available-list join falls back to `(none)`.
-fn unknown_domain_failure(domain: &str, available: &[String]) -> Failure {
-    let list = if available.is_empty() {
-        "(none)".to_string()
-    } else {
-        available.join(", ")
-    };
-    let one_line = format!("Domain \"{domain}\" not found in config. Available domains: {list}");
-    let mut fields = Map::new();
-    fields.insert("error".into(), Value::String(one_line.clone()));
-    Failure {
-        message:            format!(
-            "Error: {one_line}\nHint: Run `mulch add {domain}` to create this domain, or check .mulch/mulch.config.yaml"
-        ),
-        code:               EXIT_ERROR,
-        envelope:           failure_envelope("query", fields),
-        envelope_to_stderr: true,
-        rendered:           false,
-    }
 }
 
 /// An optional flag value under JS truthiness: `None` and `Some("")`

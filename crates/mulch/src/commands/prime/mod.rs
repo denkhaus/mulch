@@ -106,12 +106,24 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     let available = store.domains();
     for domain in &requested {
         if !available.contains(domain) {
-            return Err(unknown_domain_failure(json_mode, domain, &available, false));
+            return Err(crate::commands::unknown_domain_failure(
+                "prime",
+                domain,
+                &available,
+                json_mode,
+                crate::commands::DomainFailure::Prime { excluded: false },
+            ));
         }
     }
     for domain in &excluded {
         if !available.contains(domain) {
-            return Err(unknown_domain_failure(json_mode, domain, &available, true));
+            return Err(crate::commands::unknown_domain_failure(
+                "prime",
+                domain,
+                &available,
+                json_mode,
+                crate::commands::DomainFailure::Prime { excluded: true },
+            ));
         }
     }
     let target_domains = mulch::domain_set(&available, &mulch::DomainSpec::Union {
@@ -157,15 +169,9 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     // Budget: enabled in plain mode unless --no-limit.
     let budget_enabled = !json_mode && !args.no_limit;
     let budget = match args.budget.as_deref() {
-        Some(raw) => match parse_strict_positive_int(raw) {
-            Some(value) => value,
-            None => {
-                return Err(prime_error(
-                    json_mode,
-                    &format!("--budget must be a positive integer (got \"{raw}\")."),
-                ));
-            }
-        },
+        Some(raw) => mulch::parse_strict_positive_int(raw).ok_or_else(|| {
+            crate::commands::flag_value_failure("prime", "budget", "positive integer", raw)
+        })?,
         None => mulch::budget::DEFAULT_BUDGET,
     };
 
@@ -456,7 +462,7 @@ fn full_mode_output(
         payload.insert(
             "budgetUsed".into(),
             if budget_enabled {
-                js_number(total_tokens as f64 / budget as f64)
+                mulch::js_number(total_tokens as f64 / budget as f64)
             } else {
                 Value::Null
             },
@@ -589,78 +595,10 @@ fn should_auto_flip_to_manifest(total_records: usize, total_domains: usize) -> b
     total_records > 100 || total_domains > 5
 }
 
-/// `parseStrictPositiveInt`: digits-only, finite, ≥ 1 — JS `Number`
-/// semantics, so huge digit strings stay finite and clamp to the
-/// usize budget.
-fn parse_strict_positive_int(raw: &str) -> Option<usize> {
-    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    let value: f64 = raw.parse().ok()?;
-    if value.is_finite() && value >= 1.0 {
-        // `as` saturates (Rust 1.45+): a huge budget clamps to
-        // usize::MAX, which drops nothing — the reference's Number
-        // behaves the same way at every real store size.
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "saturating float-to-int cast; value >= 1.0 was checked"
-        )]
-        Some(value as usize)
-    } else {
-        None
-    }
-}
-
-/// A JS-number JSON value: integer-valued floats serialize without
-/// the decimal point (`JSON.stringify(0)` is `0`, not `0.0`).
-fn js_number(value: f64) -> Value {
-    if value.fract() == 0.0 && value.abs() < 9.007_199_254_740_992e15 {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "the bound check keeps the integer exact"
-        )]
-        Value::from(value as i64)
-    } else {
-        Value::from(value)
-    }
-}
-
 /// The json/plain error surface of the guard clauses (the handled
 /// failure's envelope already carries the unprefixed sentence).
 fn prime_error(_json_mode: bool, message: &str) -> Failure {
     Failure::handled_on_stderr("prime", format!("Error: {message}"))
-}
-
-/// prime's unknown-domain surfaces: the capital-D sentence (json)
-/// or the two-line hint (plain), `Excluded domain` for exclusions.
-/// The hint promotes THIS binary (user directive 2026-10-13).
-fn unknown_domain_failure(
-    json_mode: bool,
-    domain: &str,
-    available: &[String],
-    excluded: bool,
-) -> Failure {
-    let list = if available.is_empty() {
-        "(none)".to_string()
-    } else {
-        available.join(", ")
-    };
-    let one_line = if excluded {
-        format!("Excluded domain \"{domain}\" not found in config. Available domains: {list}")
-    } else {
-        format!("Domain \"{domain}\" not found in config. Available domains: {list}")
-    };
-    let mut fields = Map::new();
-    fields.insert("error".into(), Value::String(one_line.clone()));
-    let mut failure = Failure::handled_on_stderr("prime", format!("Error: {one_line}"));
-    failure.envelope = crate::output::failure_envelope("prime", fields);
-    if !json_mode {
-        failure.message = format!(
-            "Error: {one_line}\nHint: Run `mulch add {domain}` to create this domain, or check .mulch/mulch.config.yaml"
-        );
-    }
-    failure
 }
 
 /// A domain file's mtime (`getFileModTime`; `None` when absent).
@@ -701,20 +639,6 @@ fn effective_governance(config: &Config) -> Governance {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn strict_int_matches_the_reference_parse() {
-        assert_eq!(parse_strict_positive_int("1"), Some(1));
-        assert_eq!(parse_strict_positive_int("007"), Some(7));
-        assert_eq!(
-            parse_strict_positive_int("999999999999999999999999"),
-            Some(usize::MAX)
-        );
-        assert_eq!(parse_strict_positive_int("0"), None);
-        assert_eq!(parse_strict_positive_int("3.7"), None);
-        assert_eq!(parse_strict_positive_int("10abc"), None);
-        assert_eq!(parse_strict_positive_int(""), None);
-    }
 
     #[test]
     fn auto_flip_is_strict_greater() {

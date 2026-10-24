@@ -29,7 +29,7 @@ pub(crate) use mulch::StoreLocation;
 use mulch::{Error, ResolveError, js_string, truthy_str};
 
 use crate::cli::{Cli, Command, EditArgs, RecordArgs};
-use crate::output::Failure;
+use crate::output::{Failure, failure_envelope};
 
 /// The handled-error message for a missing store (status et al.).
 pub(crate) const NO_STORE_MESSAGE: &str = "No .mulch/ directory found. Run `mulch init` first.";
@@ -195,7 +195,7 @@ pub(crate) fn now_iso() -> String {
 }
 
 /// Which unknown-domain surface a command renders — the reference
-/// hand-writes four variants; this carries them as data.
+/// hand-writes a shape per command; this carries them as data.
 #[derive(Clone, Copy)]
 pub(crate) enum DomainFailure {
     /// Two-line plain (lowercase `domain`), one-line json (capital D).
@@ -204,10 +204,37 @@ pub(crate) enum DomainFailure {
     Move,
     /// `delete-domain`'s plain carries a Hint instead of the list.
     WithHint,
+    /// query's read-family hint (query.ts:70-98): the message is the
+    /// two-line hint in BOTH modes — the json surface rides the
+    /// error-field envelope — and an empty store backfills `(none)`.
+    QueryHint,
+    /// search's hint (search.ts:153-170): the same envelope-carrying
+    /// shape, but the list joins WITHOUT the `(none)` fallback (an
+    /// empty store renders the trailing `Available domains: `).
+    SearchHint,
+    /// rank's hint (rank.ts): the json switch rides the shared handled
+    /// law — json prints the bare sentence, plain the hint; the list
+    /// backfills `(none)` like query's.
+    RankHint,
+    /// ready's rewording (ready.ts): json keeps the standard sentence,
+    /// plain is the single lowercase line `domain "x" not found.
+    /// Available: …` (no `in config`, no `domains`, no hint), the
+    /// list without the `(none)` fallback.
+    ReadyOneLine,
+    /// prime's shape (prime.ts): the error-field envelope with the
+    /// one-line sentence; `excluded` prefixes the subject (`Excluded
+    /// domain`, the --exclude-domain walk).
+    Prime {
+        /// Whether the name came from the exclusion walk.
+        excluded: bool,
+    },
 }
 
-/// The one unknown-domain failure: the available-list join and every
-/// message shape live here, not in per-command copies (mulch-9e70).
+/// The one unknown-domain failure: the available-list join, every
+/// message shape, and the two envelope laws (the shared handled
+/// derivation vs the error-field envelope) live here, not in
+/// per-command copies (mulch-9e70; the read family joined in
+/// mulch-5366).
 pub(crate) fn unknown_domain_failure(
     command: &str,
     domain: &str,
@@ -215,30 +242,74 @@ pub(crate) fn unknown_domain_failure(
     json: bool,
     shape: DomainFailure,
 ) -> Failure {
-    let list = if available.is_empty() {
+    // search and ready join the list without the `(none)` backfill
+    // every other shape takes (probe-pinned per-command drift).
+    let bare_list = matches!(
+        shape,
+        DomainFailure::SearchHint | DomainFailure::ReadyOneLine
+    );
+    let list = if available.is_empty() && !bare_list {
         "(none)".to_string()
     } else {
         available.join(", ")
     };
+    // prime's exclusion walk prefixes the subject; every other
+    // shape reads `Domain`.
+    let subject = match shape {
+        DomainFailure::Prime { excluded: true } => "Excluded domain",
+        _ => "Domain",
+    };
     // The one-line capital-D sentence: json output for every
     // shape, and `move`'s plain text prefixed with `Error: `.
-    let one_line = format!("Domain \"{domain}\" not found in config. Available domains: {list}");
-    let message = if json {
-        one_line
-    } else {
-        match shape {
-            DomainFailure::Standard => {
-                format!(
-                    "Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}"
-                )
-            }
-            DomainFailure::Move => format!("Error: {one_line}"),
-            DomainFailure::WithHint => format!(
-                "Error: domain \"{domain}\" not found in config.\nHint: Run `mulch add {domain}` to create it, or check `mulch status` for existing domains."
-            ),
+    let one_line = format!("{subject} \"{domain}\" not found in config. Available domains: {list}");
+    // The read family's shared hint line (query, search, rank,
+    // prime): it promotes THIS binary and names the config file.
+    let hint = format!(
+        "Hint: Run `mulch add {domain}` to create this domain, or check .mulch/mulch.config.yaml"
+    );
+    // The shape's plain wording (json output is the bare sentence).
+    let plain = match shape {
+        DomainFailure::Standard => {
+            format!("Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}")
+        }
+        DomainFailure::Move => format!("Error: {one_line}"),
+        DomainFailure::WithHint => format!(
+            "Error: domain \"{domain}\" not found in config.\nHint: Run `mulch add {domain}` to create it, or check `mulch status` for existing domains."
+        ),
+        // The read family's hint shapes share the config-file hint.
+        DomainFailure::QueryHint
+        | DomainFailure::SearchHint
+        | DomainFailure::RankHint
+        | DomainFailure::Prime { .. } => format!("Error: {one_line}\n{hint}"),
+        DomainFailure::ReadyOneLine => {
+            format!("Error: domain \"{domain}\" not found. Available: {list}")
         }
     };
-    Failure::handled_on_stderr(command, message)
+    // The message: query and search keep the hint in BOTH modes
+    // (their json surface rides the error-field envelope below, not
+    // the message); prime keeps the `Error: `-prefixed sentence for
+    // json (the envelope overrides the printed surface anyway); the
+    // handled shapes print the bare sentence as their json output.
+    let message = match shape {
+        DomainFailure::QueryHint | DomainFailure::SearchHint => plain,
+        DomainFailure::Prime { .. } if json => format!("Error: {one_line}"),
+        _ if json => one_line.clone(),
+        _ => plain,
+    };
+    // The error-field envelope family (query, search, prime): the
+    // json surface is a failure envelope whose `error` field is the
+    // sentence alone — the handled derivation would drag the plain
+    // wording along.
+    match shape {
+        DomainFailure::QueryHint | DomainFailure::SearchHint | DomainFailure::Prime { .. } => {
+            let mut failure = Failure::handled_on_stderr(command, message);
+            let mut fields = serde_json::Map::new();
+            fields.insert("error".into(), serde_json::Value::String(one_line));
+            failure.envelope = failure_envelope(command, fields);
+            failure
+        }
+        _ => Failure::handled_on_stderr(command, message),
+    }
 }
 
 /// The shared identifier-resolution failure: the reference's
@@ -371,6 +442,23 @@ pub(crate) fn persist(
     store
         .rewrite_domain(domain, records)
         .map_err(|source| Failure::handled(command, chain_message_from(&source)))
+}
+
+/// The strict flag-value failure (utils/numeric-flags.ts wording,
+/// mulch-a878): `Error: --<flag> must be a <what> (got "<raw>").` on
+/// stderr; the JSON envelope drops the `Error: ` prefix (the shared
+/// handled law). One owner beside [`persist`] — rank, ready, and
+/// prime carried private copies.
+pub(crate) fn flag_value_failure(
+    command: &'static str,
+    flag: &str,
+    what: &str,
+    raw: &str,
+) -> Failure {
+    Failure::handled_on_stderr(
+        command,
+        format!("Error: --{flag} must be a {what} (got \"{raw}\")."),
+    )
 }
 
 /// The payload<->flag adapter (mulch-4ee2): the one owner of the six
@@ -590,6 +678,64 @@ mod tests {
         );
         let none = unknown_domain_failure("delete", "x", &[], false, DomainFailure::Standard);
         assert!(none.message.ends_with("Available domains: (none)"));
+        let query =
+            unknown_domain_failure("query", "x", &available, false, DomainFailure::QueryHint);
+        assert_eq!(
+            query.message,
+            "Error: Domain \"x\" not found in config. Available domains: d\n\
+             Hint: Run `mulch add x` to create this domain, or check .mulch/mulch.config.yaml"
+        );
+        assert_eq!(
+            query.envelope["error"],
+            "Domain \"x\" not found in config. Available domains: d"
+        );
+        assert!(query.envelope_to_stderr);
+        // search joins the list without the `(none)` backfill.
+        let search = unknown_domain_failure("search", "x", &[], false, DomainFailure::SearchHint);
+        assert_eq!(
+            search.message,
+            "Error: Domain \"x\" not found in config. Available domains: \n\
+             Hint: Run `mulch add x` to create this domain, or check .mulch/mulch.config.yaml"
+        );
+        let rank = unknown_domain_failure("rank", "x", &available, false, DomainFailure::RankHint);
+        assert_eq!(
+            rank.message,
+            "Error: Domain \"x\" not found in config. Available domains: d\n\
+             Hint: Run `mulch add x` to create this domain, or check .mulch/mulch.config.yaml"
+        );
+        let rank_json =
+            unknown_domain_failure("rank", "x", &available, true, DomainFailure::RankHint);
+        assert_eq!(
+            rank_json.message,
+            "Domain \"x\" not found in config. Available domains: d"
+        );
+        let ready =
+            unknown_domain_failure("ready", "x", &available, false, DomainFailure::ReadyOneLine);
+        assert_eq!(ready.message, "Error: domain \"x\" not found. Available: d");
+        let ready_empty =
+            unknown_domain_failure("ready", "x", &[], false, DomainFailure::ReadyOneLine);
+        assert!(ready_empty.message.ends_with("Available: "));
+        let prime = unknown_domain_failure("prime", "x", &available, false, DomainFailure::Prime {
+            excluded: false,
+        });
+        assert_eq!(
+            prime.message,
+            "Error: Domain \"x\" not found in config. Available domains: d\n\
+             Hint: Run `mulch add x` to create this domain, or check .mulch/mulch.config.yaml"
+        );
+        let excluded =
+            unknown_domain_failure("prime", "x", &available, false, DomainFailure::Prime {
+                excluded: true,
+            });
+        assert_eq!(
+            excluded.message,
+            "Error: Excluded domain \"x\" not found in config. Available domains: d\n\
+             Hint: Run `mulch add x` to create this domain, or check .mulch/mulch.config.yaml"
+        );
+        assert_eq!(
+            excluded.envelope["error"],
+            "Excluded domain \"x\" not found in config. Available domains: d"
+        );
     }
 }
 

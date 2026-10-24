@@ -321,6 +321,68 @@ pub fn js_key_sorted<T>(entries: &[(String, T)]) -> Vec<&(String, T)> {
 }
 
 #[cfg(test)]
+mod numeric_flag_tests {
+    use super::{parse_duration, parse_strict_positive_int};
+
+    /// The strict positive-int law (utils/numeric-flags.ts): `007` and
+    /// huge digit strings pass (clamping to usize::MAX — JS
+    /// `slice(0, 1e24)` semantics), `0`, signed, fractional, and garbage
+    /// reject. One law, three flags: rank `--limit`, ready `--limit`,
+    /// prime `--budget` (the former per-command tests were identical).
+    #[test]
+    fn limit_parse_is_strict_positive_int() {
+        assert_eq!(parse_strict_positive_int("10"), Some(10));
+        assert_eq!(parse_strict_positive_int("007"), Some(7));
+        assert_eq!(parse_strict_positive_int("1"), Some(1));
+        assert!(parse_strict_positive_int("999999999999999999999999").is_some());
+        for reject in ["", "0", "-1", "3.7", "10abc", "+5", " 5", ".5", "5."] {
+            assert_eq!(parse_strict_positive_int(reject), None, "{reject}");
+        }
+    }
+
+    /// prime's clamp corner (the former prime/mod.rs arm): the huge
+    /// digit run clamps to usize::MAX, dropping nothing.
+    #[test]
+    fn strict_int_clamps_huge_budgets_to_usize_max() {
+        assert_eq!(parse_strict_positive_int("1"), Some(1));
+        assert_eq!(parse_strict_positive_int("007"), Some(7));
+        assert_eq!(
+            parse_strict_positive_int("999999999999999999999999"),
+            Some(usize::MAX)
+        );
+        assert_eq!(parse_strict_positive_int("0"), None);
+        assert_eq!(parse_strict_positive_int("3.7"), None);
+        assert_eq!(parse_strict_positive_int("10abc"), None);
+        assert_eq!(parse_strict_positive_int(""), None);
+    }
+
+    /// The duration law: `^(\d+)(h|d|w)$` in milliseconds, everything
+    /// else rejected with the reference message (ready `--since`).
+    #[test]
+    fn duration_parse_matches_the_reference() {
+        assert_eq!(parse_duration("24h"), Ok(24.0 * 3_600_000.0));
+        assert_eq!(parse_duration("7d"), Ok(7.0 * 86_400_000.0));
+        assert_eq!(parse_duration("2w"), Ok(14.0 * 86_400_000.0));
+        assert_eq!(parse_duration("0h"), Ok(0.0));
+        assert_eq!(parse_duration("0007d"), Ok(7.0 * 86_400_000.0));
+        // A 24-digit run is a finite JS number (1e24); only a run past
+        // f64's range overflows to Infinity.
+        assert_eq!(
+            parse_duration("999999999999999999999999w"),
+            Ok(1e24 * 604_800_000.0)
+        );
+        assert!(parse_duration(&format!("{}w", "9".repeat(400))).is_ok_and(f64::is_infinite));
+        for reject in ["", "24", "1x", "7D", " 7d", "-1d", "1.5d", "h", "7d ", "é"] {
+            let message = parse_duration(reject).expect_err(reject);
+            assert_eq!(
+                message,
+                format!("Invalid duration: \"{reject}\". Use format like \"24h\", \"7d\", \"2w\".")
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod js_quirk_tests {
     use serde_json::json;
 

@@ -5,10 +5,13 @@
 //! `< minScore` skip, stable descending sort, slice to the limit.
 //! Probed live vs ml 0.10.7, 2026-10-23 (/tmp/opencode/childC).
 
+use mulch::DomainSpec;
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{open_store, render_core_error};
+use crate::commands::{
+    DomainFailure, flag_value_failure, open_store, render_core_error, unknown_domain_failure,
+};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One ranked row: the domain (for display), the normalized record,
@@ -30,20 +33,25 @@ pub(crate) fn run(
     // The strict parses run BEFORE the store opens (probed: a
     // no-store dir rejects `--limit abc` with the flag error, not the
     // no-store one) — limit first, then min-score.
-    let limit = parse_strict_positive_int(limit)
-        .ok_or_else(|| flag_failure("limit", "positive integer", limit))?;
+    let limit = mulch::parse_strict_positive_int(limit)
+        .ok_or_else(|| flag_value_failure("rank", "limit", "positive integer", limit))?;
     let min_score = parse_strict_non_negative_number(min_score)
-        .ok_or_else(|| flag_failure("min-score", "non-negative number", min_score))?;
+        .ok_or_else(|| flag_value_failure("rank", "min-score", "non-negative number", min_score))?;
 
     let store = open_store("rank", true)?;
     let domains = store.domains();
     let domains_to_rank = match domain {
-        Some(wanted) => {
-            if !domains.iter().any(|known| known == wanted) {
-                return Err(unknown_domain(opts.json, wanted, &domains));
-            }
-            vec![wanted.to_string()]
-        }
+        Some(wanted) => mulch::domain_set(&domains, &DomainSpec::One(wanted.to_string())).map_err(
+            |unknown| {
+                unknown_domain_failure(
+                    "rank",
+                    &unknown.domain,
+                    &unknown.available,
+                    opts.json,
+                    DomainFailure::RankHint,
+                )
+            },
+        )?,
         None => domains,
     };
 
@@ -121,63 +129,11 @@ pub(crate) fn run(
     Ok(())
 }
 
-/// `parseStrictPositiveInt`: `/^\d+$/` plus a JS `Number()` that must
-/// stay finite and `>= 1` — so `0`, `-1`, `3.7`, `10abc` reject while
-/// `007` (7) and huge digit strings (1e24) pass; the slice clamps.
-fn parse_strict_positive_int(raw: &str) -> Option<usize> {
-    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let number: f64 = raw.parse().ok()?;
-    if !number.is_finite() || number < 1.0 {
-        return None;
-    }
-    // JS slice(0, 1e24) clamps to the array length; usize::MAX clamps
-    // the same way for every real store size.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "bounded by usize::MAX and finite (Number semantics)"
-    )]
-    Some(number.min(usize::MAX as f64) as usize)
-}
-
 /// `parseStrictNonNegativeNumber` (utils/numeric-flags.ts — the
 /// `jsval` seam): digits with an optional fractional part, JS-Number
 /// canonicalized, never negative.
 fn parse_strict_non_negative_number(raw: &str) -> Option<f64> {
     mulch::parse_non_negative_number(raw).and_then(|value| value.as_f64())
-}
-
-/// The strict flag failure: `Error: --<flag> must be a <what> (got
-/// "<raw>").` on stderr; the json envelope drops the `Error: `
-/// prefix (the shared handled law).
-fn flag_failure(flag: &str, what: &str, raw: &str) -> Failure {
-    Failure::handled_on_stderr(
-        "rank",
-        format!("Error: --{flag} must be a {what} (got \"{raw}\")."),
-    )
-}
-
-/// The unknown-domain failure: rank's own two-line plain shape (the
-/// hint names THIS binary — the promote law, user directive
-/// 2026-10-13; the battery normalizes the name) and the one-line
-/// json error.
-fn unknown_domain(json: bool, domain: &str, available: &[String]) -> Failure {
-    let list = if available.is_empty() {
-        "(none)".to_string()
-    } else {
-        available.join(", ")
-    };
-    let one_line = format!("Domain \"{domain}\" not found in config. Available domains: {list}");
-    let message = if json {
-        one_line
-    } else {
-        format!(
-            "Error: {one_line}\nHint: Run `mulch add {domain}` to create this domain, or check .mulch/mulch.config.yaml"
-        )
-    };
-    Failure::handled_on_stderr("rank", message)
 }
 
 /// One plain row: `  <id>  ★<score> <domain> [<type>] <summary>`
@@ -208,7 +164,9 @@ fn plain_row(store: &mulch::StoreFiles, entry: &RankedRecord) -> Result<String, 
 
 /// `formatScore`: integral scores print bare, others with one fixed
 /// decimal (scores are always integral or half-integral, so one
-/// decimal is exact — `1.5`, never `1.50`).
+/// decimal is exact — `1.5`, never `1.50`). A Number.isInteger
+/// DISPLAY decision, not a JSON value — the jsval [`mulch::js_number`]
+/// law is for values the envelope serializes.
 fn format_score(score: f64) -> String {
     if score.fract() == 0.0 {
         #[expect(
@@ -225,20 +183,11 @@ fn format_score(score: f64) -> String {
 
 /// The JSON row: `{domain, id (nullish → null), type, score,
 /// summary, record}` — the score keeps the JS Number canonical form
-/// (`2`, never `2.0`).
+/// (`2`, never `2.0`) through the jsval seam.
 fn ranked_json(store: &mulch::StoreFiles, entry: &RankedRecord) -> Result<Value, Failure> {
     let id = entry.record.get("id").cloned().unwrap_or(Value::Null);
     let summary = summary(store, &entry.record)?;
-    let score = if entry.score.fract() == 0.0 {
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "fract()==0 makes the cast exact (Number.isInteger)"
-        )]
-        let whole = entry.score as i64;
-        Value::from(whole)
-    } else {
-        Value::from(entry.score)
-    };
+    let score = mulch::js_number(entry.score);
     Ok(serde_json::json!({
         "domain": entry.domain,
         "id": id,
@@ -270,19 +219,6 @@ fn summary(store: &mulch::StoreFiles, record: &Value) -> Result<String, Failure>
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The strict limit law: `007` and huge digit strings pass, `0`,
-    /// signed, fractional, and garbage reject.
-    #[test]
-    fn limit_parse_is_strict_positive_int() {
-        assert_eq!(parse_strict_positive_int("10"), Some(10));
-        assert_eq!(parse_strict_positive_int("007"), Some(7));
-        assert_eq!(parse_strict_positive_int("1"), Some(1));
-        assert!(parse_strict_positive_int("999999999999999999999999").is_some());
-        for reject in ["", "0", "-1", "3.7", "10abc", "+5", " 5", ".5", "5."] {
-            assert_eq!(parse_strict_positive_int(reject), None, "{reject}");
-        }
-    }
 
     /// The min-score law rides the jsval seam: canonical numbers
     /// pass, everything else rejects.
