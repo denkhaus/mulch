@@ -342,7 +342,7 @@ pub(crate) fn resolve_failure(command: &str, error: ResolveError) -> Failure {
 /// [`read_and_resolve`]. `render_core_error` owns the byte law
 /// (malformed-line + unknown-type texts).
 pub(crate) fn read_domain_records(
-    command: &'static str,
+    command: &str,
     store: &mulch::StoreFiles,
     domain: &str,
     allow_unknown: bool,
@@ -359,7 +359,7 @@ pub(crate) fn read_domain_records(
 /// domains first, `delete` checks the domain before its mode
 /// validation, mulch-e645).
 pub(crate) fn read_and_resolve(
-    command: &'static str,
+    command: &str,
     store: &mulch::StoreFiles,
     domain: &str,
     id: &str,

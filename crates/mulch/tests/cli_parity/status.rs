@@ -363,6 +363,67 @@ fn status_non_iso_recorded_at_stamps_match_reference() {
     }
 }
 
-// mulch-15d3 battery: the legacy singular `outcome` field with odd
-// values (absorbs mulch-1609) — listing, append, and doctor --fix
-// parity across number/string/null/array/empty-object shapes.
+/// The raw-comparison law's DISCRIMINATOR (spec-review nit, sprint
+/// 38): a space-separated stamp BEATS a T-separated one as `oldest`
+/// even though its instant is an hour LATER (the raw-string law
+/// compares `"2020-01-01 "` < `"2020-01-01T"` lexicographically —
+/// date math would pick the other record), and a NUMBER recorded_at
+/// pins both slots against every string (NaN comparisons never
+/// displace; the health block renders the number raw). The JSON
+/// channel pins both deterministically (the raw health string and
+/// the ISO-from-ms body); plain rides the twin differential.
+#[test]
+fn status_raw_compare_discriminator_and_number_stamp_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let convention = |body: &str, at: &str, id: &str| {
+        format!(
+            r#"{{"type":"convention","classification":"tactical","recorded_at":{at},"content":"{body}","id":"{id}"}}"#
+        )
+    };
+    let config = "version: '1'\ndomains:\n  rawdev: {}\n  numdev: {}\n";
+    let rawdev = [
+        convention(
+            "t earlier instant",
+            r#""2020-01-01T04:00:00Z""#,
+            "mx-900011",
+        ),
+        convention(
+            "space later instant",
+            r#""2020-01-01 05:00:00Z""#,
+            "mx-900012",
+        ),
+    ]
+    .join("\n")
+        + "\n";
+    // A number stamp is deliberately schema-invalid — it is the
+    // finding under test (status reads leniently, both sides).
+    let numdev = [
+        convention("string first", r#""2020-01-01""#, "mx-900013"),
+        convention("number pins both", "5", "mx-900014"),
+    ]
+    .join("\n")
+        + "\n";
+    let (ours, theirs) = twin_seeded(
+        "rawcmp",
+        Some(config),
+        &[("rawdev", &rawdev), ("numdev", &numdev)],
+        &[],
+    );
+    for args in [&["status"][..], &["--json", "status"][..]] {
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, their.code, "rc differs for {args:?}");
+        // JSON: lastUpdated carries each process's own clock ms —
+        // normalize; the raw health stamps compare verbatim.
+        let (our_out, their_out) = if args[0] == "--json" {
+            (normalize(&our.stdout), normalize(&their.stdout))
+        } else {
+            (our.stdout.clone(), their.stdout.clone())
+        };
+        assert_eq!(our_out, their_out, "stdout differs for {args:?}");
+        assert_eq!(our.stderr, their.stderr, "stderr differs for {args:?}");
+    }
+}

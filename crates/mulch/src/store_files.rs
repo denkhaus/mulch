@@ -442,6 +442,11 @@ impl StoreFiles {
 /// `??` falls through on null AND absent, so a pre-existing stamp
 /// from a restore rollback survives) — and absent keys append in
 /// write order: status, archived_at, archive_reason.
+///
+/// A NON-OBJECT record coerces to an object of only the three stamps
+/// (`{...r}` on a primitive boxes it, so the payload is lost) —
+/// unreachable from the strict readers, which reject non-objects
+/// before any write.
 fn stamp_archive_fields(record: &Value, now: &str, reason: &str) -> Value {
     let mut object = record.as_object().cloned().unwrap_or_default();
     object.insert("status".into(), Value::String("archived".into()));
