@@ -645,6 +645,37 @@ pub(crate) fn read_confirmation() -> std::io::Result<String> {
     Ok(buffer)
 }
 
+/// The raw summary law for user-visible surfaces (mulch-f06a): the
+/// reference embeds `getRecordSummary`'s RAW value — JSON omits the
+/// key when the summary field is absent and passes non-strings
+/// through verbatim. Unregistered types keep the commands' `Unknown
+/// record type` error; the truncating laws' TypeErrors render as a
+/// clean error line (the reference crashes on the throw).
+pub(crate) fn summary_raw(
+    command: &str,
+    registry: &mulch::Registry,
+    record: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, Failure> {
+    let type_name = record
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if registry.row(type_name).is_none() {
+        return Err(Failure::handled_on_stderr(
+            command,
+            format!("Error: Unknown record type: {type_name}"),
+        ));
+    }
+    mulch::record_summary_value(registry, record)
+        .map_err(|error| Failure::handled_on_stderr(command, format!("Error: {error}")))
+}
+
+/// The plain rendering of a raw summary: `String(value)` — `None`
+/// renders `undefined` like a JS template literal.
+pub(crate) fn summary_text(raw: Option<&serde_json::Value>) -> String {
+    raw.map_or_else(|| "undefined".into(), mulch::value_text)
+}
+
 /// Renders a format-core read error the way the reference does (the
 /// malformed-line and unknown-type contracts are byte-pinned).
 pub(crate) fn render_core_error(error: &Error) -> String {

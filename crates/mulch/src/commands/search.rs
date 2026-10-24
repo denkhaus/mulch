@@ -252,16 +252,12 @@ fn record_type(record: &Value) -> &str {
 /// The archived bullet's summary — registry-gated like the
 /// reference's `getRecordSummary`, which THROWS for unregistered
 /// types and fails the whole plain render (probe: an archived
-/// unknown-type record matching via its tags).
+/// unknown-type record matching via its tags). RAW law (mulch-f06a):
+/// the bullet renders `String(value)` — `undefined` for an absent
+/// summary field, non-strings coerced.
 fn archived_summary(record: &Value, registry: &mulch::Registry) -> Result<String, Failure> {
-    let type_name = record_type(record);
-    if registry.row(type_name).is_none() {
-        return Err(Failure::handled_on_stderr(
-            "search",
-            format!("Error: Unknown record type: {type_name}"),
-        ));
-    }
-    Ok(mulch::record_summary(registry, record))
+    crate::commands::summary_raw("search", registry, record)
+        .map(|raw| crate::commands::summary_text(raw.as_ref()))
 }
 
 /// Reads one domain's live records strictly (the global

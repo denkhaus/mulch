@@ -15,7 +15,7 @@
 //! reason (unreachable under the store writer lock — the pre-check
 //! and the re-check read the same file).
 
-use mulch::{LineRecord, record_summary, resolve_record_id, value_text};
+use mulch::{LineRecord, resolve_record_id, value_text};
 
 use crate::cli::GlobalOpts;
 use crate::commands::{open_store_mut, persist, read_domain_records, render_core_error};
@@ -149,14 +149,23 @@ pub(super) fn run(opts: &GlobalOpts, id: &str) -> Result<(), Failure> {
     persist("restore", &store, &domain, &restored)?;
 
     if opts.json {
-        let fields = serde_json::json!({
-            "domain": domain,
-            "id": live.get("id").cloned().unwrap_or(serde_json::Value::Null),
-            "type": removed.record_type(),
-            "summary": record_summary(store.registry(), &live),
-            "archive_reason": original_reason,
-        });
-        print_json(&success_envelope("restore", object(fields)), false);
+        // RAW summary (mulch-f06a): absent OMITS the key, non-strings
+        // verbatim.
+        let mut fields = serde_json::Map::new();
+        fields.insert("domain".into(), serde_json::Value::String(domain.clone()));
+        fields.insert(
+            "id".into(),
+            live.get("id").cloned().unwrap_or(serde_json::Value::Null),
+        );
+        fields.insert(
+            "type".into(),
+            serde_json::Value::String(removed.record_type()),
+        );
+        if let Ok(Some(summary)) = mulch::record_summary_value(store.registry(), &live) {
+            fields.insert("summary".into(), summary);
+        }
+        fields.insert("archive_reason".into(), original_reason);
+        print_json(&success_envelope("restore", fields), false);
     } else {
         // JS truthiness: an empty id renders no segment (unreachable —
         // resolution needs a non-empty id).
@@ -169,7 +178,12 @@ pub(super) fn run(opts: &GlobalOpts, id: &str) -> Result<(), Failure> {
             "✓ Restored {}{rid} to {domain} (archived: {}): {}",
             removed.record_type(),
             value_text(&original_reason),
-            record_summary(store.registry(), &live),
+            crate::commands::summary_text(
+                mulch::record_summary_value(store.registry(), &live)
+                    .ok()
+                    .flatten()
+                    .as_ref(),
+            ),
         );
         print_line(opts.quiet, &text);
     }
@@ -193,12 +207,4 @@ fn strip_archive_fields(record: &serde_json::Value) -> serde_json::Value {
 /// read `undefined`, present ones coerce like JS.
 fn field_text(value: Option<&serde_json::Value>) -> String {
     value.map_or_else(|| "undefined".into(), value_text)
-}
-
-/// A `serde_json::Value::Object` from a `json!` macro result.
-fn object(value: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
-    match value {
-        serde_json::Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    }
 }

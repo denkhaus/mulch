@@ -6,7 +6,7 @@
 //! ids to id-less survivors. Malformed lines and unregistered types are
 //! hard errors — nothing is written (reference `readExpertiseFile`).
 
-use mulch::{record_summary, resolve_record_id};
+use mulch::resolve_record_id;
 
 use crate::cli::GlobalOpts;
 use crate::output::{Failure, print_json, print_line, success_envelope};
@@ -159,14 +159,18 @@ pub(super) fn run(
     removal_indices.dedup();
 
     let bulk = !matches!(mode, Mode::Single(_)) || dry_run;
-    let deleted: Vec<(String, String, String)> = removal_indices
+    // RAW summaries (mulch-f06a): the plain lines render
+    // `String(value)` (`undefined` for absent), the json entries OMIT
+    // the key or pass non-strings through verbatim.
+    let deleted: Vec<(String, String, Option<serde_json::Value>)> = removal_indices
         .iter()
         .map(|index| {
             let line = &lines[*index];
+            let summary = crate::commands::summary_raw("delete", store.registry(), &line.record);
             (
                 line.id().unwrap_or_default().to_string(),
                 line.record_type(),
-                record_summary(store.registry(), &line.record),
+                summary.ok().flatten(),
             )
         })
         .collect();
@@ -201,7 +205,15 @@ pub(super) fn run(
             let list: Vec<serde_json::Value> = deleted
                 .iter()
                 .map(|(id, kind, summary)| {
-                    serde_json::json!({ "id": id, "type": kind, "summary": summary })
+                    // absent OMITS the summary key (JSON.stringify
+                    // drops undefined)
+                    let mut entry = serde_json::Map::new();
+                    entry.insert("id".into(), serde_json::Value::String(id.clone()));
+                    entry.insert("type".into(), serde_json::Value::String(kind.clone()));
+                    if let Some(summary) = summary {
+                        entry.insert("summary".into(), summary.clone());
+                    }
+                    serde_json::Value::Object(entry)
                 })
                 .collect();
             let fields = serde_json::json!({
@@ -213,17 +225,22 @@ pub(super) fn run(
             print_json(&success_envelope("delete", object(fields)), false);
         } else {
             let (id, kind, summary) = deleted.first().cloned().unwrap_or_default();
-            let fields = serde_json::json!({
-                "domain": domain,
-                "id": id,
-                "type": kind,
-                "summary": summary,
-            });
-            print_json(&success_envelope("delete", object(fields)), false);
+            let mut fields = serde_json::Map::new();
+            fields.insert(
+                "domain".into(),
+                serde_json::Value::String(domain.to_string()),
+            );
+            fields.insert("id".into(), serde_json::Value::String(id));
+            fields.insert("type".into(), serde_json::Value::String(kind));
+            if let Some(summary) = summary {
+                fields.insert("summary".into(), summary);
+            }
+            print_json(&success_envelope("delete", fields), false);
         }
     } else {
         let mut text = String::new();
         for (id, kind, summary) in &deleted {
+            let summary = crate::commands::summary_text(summary.as_ref());
             let verb = if dry_run {
                 "[DRY RUN] Would delete"
             } else if bulk {

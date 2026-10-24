@@ -1039,7 +1039,7 @@ fn markdown_custom(
         let mut line = format!(
             "- {}**{}**",
             id_tag(record),
-            mulch::record_summary(registry, record)
+            summary_coerced(registry, record)
         );
         let mut detail = Vec::new();
         for field in row.payload.iter().chain(row.optional.iter()) {
@@ -1070,6 +1070,18 @@ fn markdown_custom(
     lines.join("\n")
 }
 
+/// `String(getRecordSummary(record))` for the render formats
+/// (mulch-f06a): the raw law's coercion — `undefined` for an absent
+/// summary field, non-strings coerced. The truncating laws' throws
+/// keep the string view (the reference crashes there; accepted
+/// divergence).
+fn summary_coerced(registry: &mulch::Registry, record: &Value) -> String {
+    match mulch::record_summary_value(registry, record) {
+        Ok(raw) => crate::commands::summary_text(raw.as_ref()),
+        Err(_) => mulch::record_summary(registry, record),
+    }
+}
+
 /// `custom.ts formatCompactLine`: `- [type] truncate(summary)` +
 /// files parens + the shared meta/outcome/links suffixes (TWO paren
 /// groups when files exist).
@@ -1079,7 +1091,9 @@ fn compact_custom(
     record: &Value,
     now: Timestamp,
 ) -> String {
-    let summary = mulch::js_truncate(&mulch::record_summary(registry, record), 100);
+    // customs: truncate(getRecordSummary(custom), 100) — the
+    // compiled template, NOT the raw field
+    let summary = mulch::js_truncate(&summary_coerced(registry, record), 100);
     let files = row
         .files_array
         .as_deref()
@@ -1130,12 +1144,14 @@ fn xml_custom_lines(row: &mulch::Row, record: &Value) -> Vec<String> {
 /// the empty fallback only covers hand-crafted schema-invalid lines
 /// (JS templates would print `undefined` there — accepted divergence
 /// until the 16da differential pins the crafted-store edges).
+/// The JS template-literal coercion of a field read (mulch-f06a):
+/// a missing field renders `undefined`, non-strings coerce through
+/// [`mulch::value_text`] (probe: `name: 42` renders `42`, a missing
+/// name renders `undefined` in plain, compact, and markdown).
 fn str_field(record: &Value, field: &str) -> String {
     record
         .get(field)
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string()
+        .map_or_else(|| "undefined".into(), mulch::value_text)
 }
 
 /// The comma-joined files list ("" when none).

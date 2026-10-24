@@ -7,9 +7,14 @@
 use std::path::Path;
 
 use super::support::{
-    CONFIG_TAIL, TempDir, error_envelope, mulch_bin, normalize_dir, promote_theirs, reference_ml,
-    run_in, twin_seeded,
+    CONFIG_TAIL, TempDir, error_envelope, mulch_bin, normalize, normalize_dir, promote_theirs,
+    reference_ml, run_in, twin_seeded,
 };
+
+/// Clock-derived stamp `days` before now.
+fn days_ago(days: i64) -> String {
+    (jiff::Timestamp::now() - jiff::Span::new().hours(days * 24)).to_string()
+}
 
 /// The ranking fixture: three domains in config order (zeta first —
 /// tie order must follow CONFIG order, not alphabetical), records
@@ -505,4 +510,69 @@ fn rank_custom_type_records_rank_and_summarize() {
     }
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["rank"]);
     assert!(our.stdout.contains("api: restart"), "{}", our.stdout);
+}
+
+#[test]
+fn raw_summary_surfaces_match_reference() {
+    // mulch-f06a: the summary-carrying surfaces embed
+    // getRecordSummary's RAW value — a missing summary field renders
+    // `undefined` in plain views and OMITS the json key; a non-string
+    // passes through verbatim. The format bullets read their fields
+    // with the JS template coercion (same rendering for the id-key
+    // fields, no getRecordSummary truncation for the long failure).
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let stale = days_ago(2);
+    let long = "L".repeat(80);
+    let body = format!(
+        "{{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":\"Named\",\"description\":\"d\",\"id\":\"mx-aaa001\"}}\n\
+{{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"description\":\"d\",\"id\":\"mx-aaa002\"}}\n\
+{{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":42,\"description\":\"d\",\"id\":\"mx-aaa003\"}}\n\
+{{\"type\":\"failure\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"description\":\"{long}\",\"resolution\":\"r\",\"id\":\"mx-aaa004\"}}\n"
+    );
+    for args in [
+        &["rank", "dev"][..],
+        &["--json", "rank", "dev"][..],
+        &["query", "dev"][..],
+        &["query", "dev", "--format", "plain"][..],
+        &["query", "dev", "--format", "compact"][..],
+        &["search", "d"][..],
+        &["search", "L"][..],
+    ] {
+        let (ours, theirs) = twin_seeded("f06a", None, &[("dev", body.as_str())], &[]);
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, their.code, "{args:?} exit");
+        assert_eq!(our.stdout, their.stdout, "{args:?} stdout");
+        assert_eq!(our.stderr, their.stderr, "{args:?} stderr");
+    }
+    // the delete/archive/restore json envelopes carry the raw summary
+    for args in [
+        &[
+            "--json",
+            "delete",
+            "dev",
+            "--records",
+            "mx-aaa002,mx-aaa003",
+            "--yes",
+        ][..],
+        &[
+            "--json",
+            "archive",
+            "dev",
+            "mx-aaa003",
+            "--reason",
+            "x",
+            "--dry-run",
+        ][..],
+        &["archive", "dev", "mx-aaa002", "--reason", "x"][..],
+    ] {
+        let (ours, theirs) = twin_seeded("f06a-del", None, &[("dev", body.as_str())], &[]);
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, their.code, "{args:?} exit");
+        assert_eq!(normalize(&our.stdout), their.stdout, "{args:?} stdout");
+    }
 }

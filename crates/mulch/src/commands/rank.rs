@@ -157,6 +157,7 @@ fn plain_row(store: &mulch::StoreFiles, entry: &RankedRecord) -> Result<String, 
             .unwrap_or_default()
     );
     let summary = summary(store, &entry.record)?;
+    let summary = crate::commands::summary_text(summary.as_ref());
     Ok(format!(
         "  {id}{score:<6}{:<14}{record_type:<14}{summary}",
         entry.domain,
@@ -189,32 +190,31 @@ fn ranked_json(store: &mulch::StoreFiles, entry: &RankedRecord) -> Result<Value,
     let id = entry.record.get("id").cloned().unwrap_or(Value::Null);
     let summary = summary(store, &entry.record)?;
     let score = mulch::js_number(entry.score);
-    Ok(serde_json::json!({
-        "domain": entry.domain,
-        "id": id,
-        "type": entry.record.get("type").cloned().unwrap_or(Value::Null),
-        "score": score,
-        "summary": summary,
-        "record": entry.record,
-    }))
+    // The absent summary OMITS the key (JSON.stringify drops
+    // undefined); a non-string passes through verbatim.
+    let mut row = serde_json::Map::new();
+    row.insert("domain".into(), Value::String(entry.domain.clone()));
+    row.insert("id".into(), id);
+    row.insert(
+        "type".into(),
+        entry.record.get("type").cloned().unwrap_or(Value::Null),
+    );
+    row.insert("score".into(), score);
+    if let Some(summary) = summary {
+        row.insert("summary".into(), summary);
+    }
+    row.insert("record".into(), entry.record.clone());
+    Ok(Value::Object(row))
 }
 
-/// `getRecordSummary`: the registry summary law — which THROWS on
-/// unregistered types (`Unknown record type: <type>`), reachable only
-/// under `--allow-unknown-types` (the strict read rejects them
-/// otherwise).
-fn summary(store: &mulch::StoreFiles, record: &Value) -> Result<String, Failure> {
-    let raw_type = record
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if store.registry().row(raw_type).is_none() {
-        return Err(Failure::handled_on_stderr(
-            "rank",
-            format!("Error: Unknown record type: {raw_type}"),
-        ));
-    }
-    Ok(mulch::record_summary(store.registry(), record))
+/// `getRecordSummary`: the registry summary law, RAW (mulch-f06a) —
+/// which THROWS on unregistered types (`Unknown record type: <type>`),
+/// reachable only under `--allow-unknown-types` (the strict read
+/// rejects them otherwise). JSON omits the key when the summary field
+/// is absent and passes non-strings through verbatim; the plain table
+/// renders `String(value)` (`undefined` for absent).
+fn summary(store: &mulch::StoreFiles, record: &Value) -> Result<Option<Value>, Failure> {
+    crate::commands::summary_raw("rank", store.registry(), record)
 }
 
 #[cfg(test)]

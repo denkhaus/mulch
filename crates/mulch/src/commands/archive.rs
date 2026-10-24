@@ -12,7 +12,7 @@
 
 use std::fmt::Write as _;
 
-use mulch::{LineRecord, record_summary, resolve_record_id};
+use mulch::{LineRecord, resolve_record_id};
 
 use crate::cli::GlobalOpts;
 use crate::commands::{
@@ -150,14 +150,26 @@ pub(super) fn run(
         let list: Vec<serde_json::Value> = archived
             .iter()
             .map(|line| {
-                serde_json::json!({
-                    "id": line
-                        .id()
-                        .map_or(serde_json::Value::Null, |id| serde_json::Value::String(id.to_string())),
-                    "type": line.record_type(),
-                    "summary": record_summary(store.registry(), &line.record),
-                    "reason": stamped_reason,
-                })
+                // RAW summary (mulch-f06a): absent OMITS the key,
+                // non-strings pass through verbatim.
+                let mut entry = serde_json::Map::new();
+                entry.insert(
+                    "id".into(),
+                    line.id().map_or(serde_json::Value::Null, |id| {
+                        serde_json::Value::String(id.to_string())
+                    }),
+                );
+                entry.insert("type".into(), serde_json::Value::String(line.record_type()));
+                if let Ok(Some(summary)) =
+                    mulch::record_summary_value(store.registry(), &line.record)
+                {
+                    entry.insert("summary".into(), summary);
+                }
+                entry.insert(
+                    "reason".into(),
+                    serde_json::Value::String(stamped_reason.clone()),
+                );
+                serde_json::Value::Object(entry)
             })
             .collect();
         let fields = serde_json::json!({
@@ -185,7 +197,12 @@ pub(super) fn run(
                 text,
                 "{verb} {}{rid} from {domain} ({stamped_reason}): {}",
                 line.record_type(),
-                record_summary(store.registry(), &line.record),
+                crate::commands::summary_text(
+                    mulch::record_summary_value(store.registry(), &line.record)
+                        .ok()
+                        .flatten()
+                        .as_ref(),
+                ),
             );
         }
         if !dry_run && archived.len() > 1 {

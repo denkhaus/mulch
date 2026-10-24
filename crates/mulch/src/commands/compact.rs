@@ -28,18 +28,21 @@ use std::io::Write as _;
 
 use mulch::schema::{Verdict, render_subs, verdict};
 use mulch::stale::{StaleRule, StaleVerdict};
-use mulch::{CompactStrategy, LineRecord, record_id, record_summary};
+use mulch::{CompactStrategy, LineRecord, record_id, record_summary_value};
 use serde_json::{Map, Value};
 
 use crate::cli::{CompactArgs, GlobalOpts};
 use crate::commands::{now_iso, open_store, open_store_mut, persist, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
-/// One candidate member line (the reference's display triple).
+/// One candidate member line (the reference's display triple). The
+/// summary stays the RAW registry value (mulch-f06a): absent OMITS
+/// the json key, non-strings pass through verbatim, plain renders
+/// `String(value)` — `undefined` for absent.
 #[derive(Clone)]
 struct CandLine {
     id:          Option<String>,
-    summary:     String,
+    summary:     Option<Value>,
     recorded_at: String,
 }
 
@@ -51,7 +54,9 @@ impl CandLine {
         if let Some(id) = &self.id {
             entry.insert("id".into(), Value::String(id.clone()));
         }
-        entry.insert("summary".into(), Value::String(self.summary.clone()));
+        if let Some(summary) = &self.summary {
+            entry.insert("summary".into(), summary.clone());
+        }
         entry.insert(
             "recorded_at".into(),
             Value::String(self.recorded_at.clone()),
@@ -665,7 +670,7 @@ fn find_candidates(
                 .iter()
                 .map(|line| CandLine {
                     id:          id_of(&line.record),
-                    summary:     record_summary(registry, &line.record),
+                    summary:     record_summary_value(registry, &line.record).ok().flatten(),
                     recorded_at: raw_text(&line.record, "recorded_at"),
                 })
                 .collect(),
@@ -717,9 +722,10 @@ fn print_block(text: &str) {
 fn preview_lines(records: &[CandLine], indent: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for line in records.iter().take(3) {
+        let summary = crate::commands::summary_text(line.summary.as_ref());
         match &line.id {
-            Some(id) => lines.push(format!("{indent}{id}: {}", line.summary)),
-            None => lines.push(format!("{indent}(no id): {}", line.summary)),
+            Some(id) => lines.push(format!("{indent}{id}: {summary}")),
+            None => lines.push(format!("{indent}(no id): {summary}")),
         }
     }
     if records.len() > 3 {
