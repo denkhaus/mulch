@@ -1843,3 +1843,183 @@ fn record_batch_mode_creates_domains_silently() {
     assert_eq!(ours_run.stderr, theirs_run.stderr, "stderr batch-empty");
     assert!(has_domain(&ours.0, "dempty"));
 }
+
+/// mulch-72d1: an unreadable `--batch` path (a directory, a
+/// chmod-000 file) fails with the reference's Node io-error bytes —
+/// `EISDIR: illegal operation on a directory, read` (no path) and
+/// `EACCES: permission denied, open '<path>'` — on stderr in BOTH
+/// channels, exit 1, and the read precedes every store side effect:
+/// the domain never registers.
+#[test]
+fn record_batch_unreadable_path_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let ours = TempDir::new("b72d1-ours");
+    let theirs = TempDir::new("b72d1-theirs");
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &["init"]);
+        std::fs::create_dir(dir.join("batchdir")).expect("batch dir fixture");
+    }
+    let unreadable = |dir: &Path| {
+        std::fs::write(dir.join("noperm.json"), "nope{").expect("noperm fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(
+                dir.join("noperm.json"),
+                std::fs::Permissions::from_mode(0o000),
+            )
+            .expect("chmod 000");
+        }
+    };
+    unreadable(&ours.0);
+    unreadable(&theirs.0);
+
+    for batch in ["batchdir", "noperm.json"] {
+        for mode in [&[] as &[&str], &["--json"]] {
+            let mut args = mode.to_vec();
+            args.extend_from_slice(&["record", "d", "--batch", batch]);
+            let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+            let their = run_in(&theirs.0, &ml, &args);
+            assert_eq!(our.code, 1, "exit is 1 {batch} {mode:?}");
+            assert_eq!(our.code, their.code, "exit differs {batch} {mode:?}");
+            assert_eq!(our.stdout, their.stdout, "stdout {batch} {mode:?}");
+            assert_eq!(our.stderr, their.stderr, "stderr {batch} {mode:?}");
+        }
+    }
+    // the EISDIR bytes carry no path, the EACCES bytes carry it
+    assert!(
+        run_in(&ours.0, Path::new(mulch_bin()), &[
+            "record", "d", "--batch", "batchdir"
+        ])
+        .stderr
+        .contains("Error: EISDIR: illegal operation on a directory, read\n")
+    );
+    assert!(
+        run_in(&ours.0, Path::new(mulch_bin()), &[
+            "record",
+            "d",
+            "--batch",
+            "noperm.json"
+        ])
+        .stderr
+        .contains("Error: EACCES: permission denied, open 'noperm.json'\n")
+    );
+
+    // no side effect at all: the domain never registered, no
+    // expertise file appeared, the configs stay identical
+    assert!(!has_domain(&ours.0, "d"));
+    assert!(!has_domain(&theirs.0, "d"));
+    assert_eq!(read_store_text_or_empty(&ours.0, "expertise/d.jsonl"), "");
+    assert_eq!(read_store_text_or_empty(&theirs.0, "expertise/d.jsonl"), "");
+    assert_eq!(
+        read_store_file(&ours.0, "mulch.config.yaml"),
+        read_store_file(&theirs.0, "mulch.config.yaml")
+    );
+
+    // restore permissions so the teardown can clean up everywhere
+    for dir in [&ours.0, &theirs.0] {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::set_permissions(
+                dir.join("noperm.json"),
+                std::fs::Permissions::from_mode(0o644),
+            );
+        }
+    }
+}
+
+/// mulch-943b: invalid JSON input (stdin and batch) fails with the
+/// reference's JavaScriptCore parse-error bytes —
+/// `Failed to parse JSON from stdin: JSON Parse error: …` — on
+/// stderr in BOTH channels, exit 1, after the silent domain
+/// auto-create; nothing writes to the store.
+#[test]
+fn record_invalid_json_parse_surface_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // one payload per JSC message family (identifier, EOF, token,
+    // trailing comma, single quotes, number, trailing garbage)
+    let payloads = [
+        "not json at all",
+        "{\"type\":",
+        "{\"a\":}",
+        "[1,]",
+        "{'a':1}",
+        "1-",
+        "truefalse",
+    ];
+    for (index, payload) in payloads.iter().enumerate() {
+        let ours = TempDir::new(format!("b943b-{index}-o").as_str());
+        let theirs = TempDir::new(format!("b943b-{index}-t").as_str());
+        for dir in [&ours.0, &theirs.0] {
+            let _ = run_in(dir, &ml, &["init"]);
+            std::fs::write(dir.join("b.json"), payload).expect("batch fixture");
+        }
+        for mode in [&[] as &[&str], &["--json"]] {
+            // stdin surface
+            let mut args = mode.to_vec();
+            args.extend_from_slice(&["record", "d", "--stdin"]);
+            let our = run_stdin(&ours.0, Path::new(mulch_bin()), &args, payload);
+            let their = run_stdin(&theirs.0, &ml, &args, payload);
+            assert_eq!(our.code, 1, "stdin exit {payload} {mode:?}");
+            assert_eq!(
+                our.code, their.code,
+                "stdin exit differs {payload} {mode:?}"
+            );
+            assert_eq!(our.stdout, their.stdout, "stdin stdout {payload} {mode:?}");
+            assert_eq!(our.stderr, their.stderr, "stdin stderr {payload} {mode:?}");
+            // batch surface (the message still says "from stdin" —
+            // the reference shares processStdinRecords)
+            let mut args = mode.to_vec();
+            args.extend_from_slice(&["record", "d", "--batch", "b.json"]);
+            let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+            let their = run_in(&theirs.0, &ml, &args);
+            assert_eq!(our.code, 1, "batch exit {payload} {mode:?}");
+            assert_eq!(
+                our.code, their.code,
+                "batch exit differs {payload} {mode:?}"
+            );
+            assert_eq!(our.stdout, their.stdout, "batch stdout {payload} {mode:?}");
+            assert_eq!(our.stderr, their.stderr, "batch stderr {payload} {mode:?}");
+        }
+        // the parse failure follows the reference's addDomain: the
+        // domain registered silently with an empty store, nothing
+        // else moved in either store
+        assert!(has_domain(&ours.0, "d"), "domain registered {payload}");
+        assert!(has_domain(&theirs.0, "d"), "reference registered {payload}");
+        assert_eq!(read_store_file(&ours.0, "expertise/d.jsonl"), "");
+        assert_eq!(read_store_file(&theirs.0, "expertise/d.jsonl"), "");
+    }
+    // byte pin of the canonical surface: plain stderr line and the
+    // stderr json envelope for the bareword payload
+    let pin = TempDir::new("b943b-pin");
+    let _ = run_in(&pin.0, &ml, &["init"]);
+    let plain = run_stdin(
+        &pin.0,
+        Path::new(mulch_bin()),
+        &["record", "d", "--stdin"],
+        "not json at all",
+    );
+    assert_eq!(
+        plain.stderr,
+        "Error: Failed to parse JSON from stdin: JSON Parse error: Unexpected identifier \"not\"\n"
+    );
+    assert_eq!(plain.stdout, "");
+    let json = run_stdin(
+        &pin.0,
+        Path::new(mulch_bin()),
+        &["--json", "record", "d", "--stdin"],
+        "not json at all",
+    );
+    assert_eq!(
+        json.stderr,
+        "{\n  \"success\": false,\n  \"command\": \"record\",\n  \"error\": \"Failed to parse JSON from stdin: JSON Parse error: Unexpected identifier \\\"not\\\"\"\n}\n"
+    );
+    assert_eq!(json.stdout, "");
+}

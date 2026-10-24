@@ -19,6 +19,7 @@ mod custom_types;
 mod error;
 pub mod git_context;
 mod ids;
+pub mod json_error;
 pub mod jsval;
 pub mod lock;
 pub mod prime_ranking;

@@ -1,10 +1,14 @@
-//! The `record` stdin/batch family: JSON input parsing, the
-//! mixed-batch partial-write contract, and the batch summary surfaces
-//! (mulch-8c9c, mulch-ca49).
+//! The `record` stdin/batch family: JSON input parsing (including
+//! the reference's JavaScriptCore parse-error bytes, mulch-943b, and
+//! the Node io-error bytes for unreadable batch paths, mulch-72d1),
+//! the mixed-batch partial-write contract, and the batch summary
+//! surfaces (mulch-8c9c, mulch-ca49).
 
 use std::fmt::Write as _;
 use std::io::Read as _;
+use std::path::Path;
 
+use mulch::json_error::jsc_parse_error;
 use mulch::{record_id, schema};
 use serde_json::Value;
 
@@ -12,27 +16,97 @@ use crate::cli::{GlobalOpts, RecordArgs};
 use crate::commands::now_iso;
 use crate::output::{Failure, failure_envelope, print_json, print_line};
 
+/// Reads the batch file before any store side effect (the
+/// reference's `readFileSync` leads `processStdinRecords`' silent
+/// addDomain): unreadable paths fail with the Node io-error bytes on
+/// stderr in both channels, exit 1, no domain registration
+/// (mulch-72d1). The decode is lossy, like the reference's `utf-8`
+/// read of binary files.
+pub(super) fn read_batch_file(path: &Path) -> Result<String, Failure> {
+    std::fs::read(path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .map_err(|source| {
+            Failure::handled_on_stderr(
+                "record",
+                format!("Error: {}", node_read_error(path, &source)),
+            )
+        })
+}
+
+/// The reference's `readFileSync` failure text for the batch path
+/// (Node/Bun io-error rendering, probed against ml 0.10.7): a
+/// directory reads `EISDIR … read` with no path (the open succeeds,
+/// the read fails), everything else appends the open syscall and the
+/// path exactly as given.
+fn node_read_error(path: &Path, error: &std::io::Error) -> String {
+    if error.raw_os_error() == Some(libc_eisdir()) {
+        return "EISDIR: illegal operation on a directory, read".into();
+    }
+    // libuv's strerror texts are lowercase (Node renders
+    // `EACCES: permission denied, open '<path>'`); Rust's io Display
+    // capitalizes, so the codes we map carry their libuv wording.
+    let (code, detail) = match error.raw_os_error() {
+        Some(1) => ("EPERM", String::from("operation not permitted")),
+        Some(2) => ("ENOENT", String::from("no such file or directory")),
+        Some(13) => ("EACCES", String::from("permission denied")),
+        Some(20) => ("ENOTDIR", String::from("not a directory")),
+        Some(36) => ("ENAMETOOLONG", String::from("name too long")),
+        Some(40) => ("ELOOP", String::from("too many symbolic links encountered")),
+        _ => {
+            let text = error.to_string();
+            let stripped = text
+                .split_once(" (os error")
+                .map_or(text.as_str(), |(before, _)| before);
+            ("EUNKNOWN", stripped.to_string())
+        }
+    };
+    format!("{code}: {detail}, open '{}'", path.display())
+}
+
+/// EISDIR's errno on this platform (21 on Linux, the only host the
+/// reference parity surface targets).
+fn libc_eisdir() -> i32 {
+    21
+}
+
 /// stdin/batch path: preserves input key order, appends recorded_at,
 /// classification, id. The batch file wins over stdin when both are
-/// given (the reference's batch block precedes the stdin block).
+/// given (the reference's batch block precedes the stdin block); the
+/// batch content arrives pre-read by the caller.
 pub(super) fn stdin_batch(
     opts: &GlobalOpts,
     args: &RecordArgs,
-    batch: Option<&std::path::Path>,
+    batch: Option<String>,
     store: &mulch::StoreFiles,
 ) -> Result<(), Failure> {
-    let raw = if let Some(path) = batch {
-        std::fs::read_to_string(path)
-            .map_err(|source| Failure::handled("record", format!("reading batch: {source}")))?
+    let raw = if let Some(text) = batch {
+        text
     } else {
-        let mut buffer = String::new();
+        let mut buffer = Vec::new();
         std::io::stdin()
-            .read_to_string(&mut buffer)
+            .read_to_end(&mut buffer)
             .map_err(|source| Failure::handled("record", format!("reading stdin: {source}")))?;
-        buffer
+        String::from_utf8_lossy(&buffer).into_owned()
     };
-    let parsed: Value = serde_json::from_str(&raw)
-        .map_err(|source| Failure::handled("record", format!("parsing input: {source}")))?;
+    // The reference parses with JavaScriptCore's JSON.parse (Bun
+    // runtime): failures say `Failed to parse JSON from stdin: JSON
+    // Parse error: …` on stderr in BOTH channels, exit 1, after the
+    // silent domain auto-create (mulch-943b).
+    let parsed: Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(source) => {
+            return Err(match jsc_parse_error(&raw) {
+                Some(detail) => Failure::handled_on_stderr(
+                    "record",
+                    format!("Error: Failed to parse JSON from stdin: JSON Parse error: {detail}"),
+                ),
+                // JSC accepts what serde rejected (a lone \u surrogate
+                // decodes there): keep the serde wording for that
+                // corner instead of inventing JSC bytes.
+                None => Failure::handled("record", format!("parsing input: {source}")),
+            });
+        }
+    };
     let items: Vec<Value> = match parsed {
         Value::Array(items) => items,
         single => vec![single],

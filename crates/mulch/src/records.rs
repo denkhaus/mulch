@@ -71,11 +71,19 @@ pub fn read_strict(
             } else {
                 trimmed.to_string()
             };
+            // The reference parses with JavaScriptCore's JSON.parse
+            // and renders the thrown error's message, which carries a
+            // `JSON Parse error: ` prefix; the modeler mirrors the
+            // body, with serde's text as the fallback for inputs JSC
+            // accepts but serde rejects (lone surrogates).
             Error::MalformedLine {
                 path: path.to_path_buf(),
                 line: index + 1,
                 preview,
-                reason: source.to_string(),
+                reason: crate::json_error::jsc_parse_error(line).map_or_else(
+                    || source.to_string(),
+                    |detail| format!("JSON Parse error: {detail}"),
+                ),
             }
         })?;
         // Scalars and null crash the reference reader (`"outcome" in

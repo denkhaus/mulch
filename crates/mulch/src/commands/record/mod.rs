@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::cli::{GlobalOpts, RecordArgs};
 use crate::commands::now_iso;
-use crate::commands::record::batch::stdin_batch;
+use crate::commands::record::batch::{read_batch_file, stdin_batch};
 use crate::commands::record::flag::{build_record, evidence_map};
 use crate::commands::record::report::{
     RecordAction, report_record_action, skip_advisory, upsert_update,
@@ -52,6 +52,16 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
         return Err(failure);
     }
 
+    // The batch READ also precedes every store side effect (the
+    // reference's readFileSync leads processStdinRecords' silent
+    // addDomain): EISDIR/EACCES surface the Node io-error bytes on
+    // stderr in both channels with no domain registration
+    // (mulch-72d1).
+    let batch_raw = match batch {
+        Some(path) => Some(read_batch_file(path)?),
+        None => None,
+    };
+
     // Auto-create precedes validation AND dry-run (reference behavior:
     // the domain side effects happen even for dry-runs and failed
     // records) — but the batch/stdin family creates the domain
@@ -72,9 +82,10 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     }
 
     // Batch wins over stdin when both are given (the reference's
-    // batch block precedes the stdin block).
+    // batch block precedes the stdin block); the batch content
+    // arrives pre-read above.
     if args.stdin || batch.is_some() {
-        return stdin_batch(opts, args, batch, &store);
+        return stdin_batch(opts, args, batch_raw, &store);
     }
 
     // Validate --type is provided for non-stdin mode (reference
