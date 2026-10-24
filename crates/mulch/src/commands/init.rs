@@ -52,6 +52,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
 
     write_missing(&store_root.join("README.md"), README_TEMPLATE)?;
     write_missing(&store_root.join("mulch.config.yaml"), CONFIG_TEMPLATE)?;
+    ensure_gitattributes(&cwd)?;
 
     if fresh {
         print_line(
@@ -65,6 +66,27 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
         );
     }
     Ok(())
+}
+
+/// The reference's root `.gitattributes` law (`initMulchDir`,
+/// mulch-6546): the union-merge line for expertise files is appended
+/// unless already present; a non-empty existing text without a
+/// trailing newline gets one inserted. An unreadable file reads as
+/// empty (the reference's catch swallows the error) and is replaced.
+fn ensure_gitattributes(root: &std::path::Path) -> Result<(), Failure> {
+    const LINE: &str = ".mulch/expertise/*.jsonl merge=union";
+    let path = root.join(".gitattributes");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing.contains(LINE) {
+        return Ok(());
+    }
+    let separator = if !existing.is_empty() && !existing.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    std::fs::write(&path, format!("{existing}{separator}{LINE}\n"))
+        .map_err(|source| io_failure(&source))
 }
 
 /// Writes `contents` to `path` only when the file is absent (re-init

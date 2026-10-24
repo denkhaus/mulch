@@ -71,3 +71,44 @@ fn init_reinit_message_matches() {
     assert_eq!(ours_run.code, theirs_run.code);
     assert_eq!(ours_run.stdout, theirs_run.stdout);
 }
+
+#[test]
+fn init_gitattributes_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Fresh init, pre-existing text with and without a trailing
+    // newline, the line already present (idempotence), and a re-init
+    // after the first write: the union-merge line lands byte-for-byte
+    // on both sides in every case.
+    for (tag, seed) in [
+        ("fresh", None),
+        ("newline", Some("custom line\n")),
+        ("no-newline", Some("no-newline-x")),
+        ("already", Some(".mulch/expertise/*.jsonl merge=union\n")),
+    ] {
+        let ours = TempDir::new(&format!("initga-{tag}-o"));
+        let theirs = TempDir::new(&format!("initga-{tag}-t"));
+        for dir in [&ours.0, &theirs.0] {
+            if let Some(seed) = seed {
+                std::fs::write(dir.join(".gitattributes"), seed).expect("seed attributes");
+            }
+        }
+        run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+        run_in(&theirs.0, &ml, &["init"]);
+        assert_eq!(
+            std::fs::read_to_string(ours.0.join(".gitattributes")).expect("our attributes"),
+            std::fs::read_to_string(theirs.0.join(".gitattributes")).expect("their attributes"),
+            "{tag} first init"
+        );
+        // the second init never duplicates the line
+        run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+        run_in(&theirs.0, &ml, &["init"]);
+        assert_eq!(
+            std::fs::read_to_string(ours.0.join(".gitattributes")).expect("our attributes"),
+            std::fs::read_to_string(theirs.0.join(".gitattributes")).expect("their attributes"),
+            "{tag} re-init"
+        );
+    }
+}
