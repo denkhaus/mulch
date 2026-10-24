@@ -198,6 +198,10 @@ pub(crate) enum Command {
         id: String,
     },
 
+    /// Compact records: analyze candidates or apply a compaction
+    /// (mulch-8a1b).
+    Compact(CompactArgs),
+
     /// Query records across domains (mulch-16da).
     Query(Box<QueryArgs>),
 
@@ -484,6 +488,74 @@ pub(crate) struct PruneArgs {
     /// Print per-record reasons for each demotion.
     #[arg(long)]
     pub(crate) explain: bool,
+}
+
+/// Flags of `mulch compact` (mulch-8a1b; the reference registers the
+/// numeric flags as strings and parses them strictly).
+#[derive(Debug, Args)]
+pub(crate) struct CompactArgs {
+    /// Expertise domain (required for --apply).
+    pub(crate) domain: Option<String>,
+
+    /// Show compaction candidates.
+    #[arg(long)]
+    pub(crate) analyze: bool,
+
+    /// Apply a compaction (replace records with a summary).
+    #[arg(long)]
+    pub(crate) apply: bool,
+
+    /// Automatically compact all candidates.
+    #[arg(long)]
+    pub(crate) auto: bool,
+
+    /// Preview what --auto would do without writing.
+    #[arg(long = "dry-run")]
+    pub(crate) dry_run: bool,
+
+    /// Minimum group size for auto-compaction.
+    #[arg(long = "min-group")]
+    pub(crate) min_group: Option<String>,
+
+    /// Maximum records to compact in one run.
+    #[arg(long = "max-records")]
+    pub(crate) max_records: Option<String>,
+
+    /// Skip confirmation prompts.
+    #[arg(long)]
+    pub(crate) yes: bool,
+
+    /// Comma-separated record IDs to compact.
+    #[arg(long)]
+    pub(crate) records: Option<String>,
+
+    /// Record type for the replacement.
+    #[arg(long = "type")]
+    pub(crate) record_type: Option<String>,
+
+    /// Name for the replacement.
+    #[arg(long)]
+    pub(crate) name: Option<String>,
+
+    /// Title for the replacement (decision).
+    #[arg(long)]
+    pub(crate) title: Option<String>,
+
+    /// Description for the replacement.
+    #[arg(long)]
+    pub(crate) description: Option<String>,
+
+    /// Content for the replacement (convention).
+    #[arg(long)]
+    pub(crate) content: Option<String>,
+
+    /// Resolution for the replacement (failure).
+    #[arg(long)]
+    pub(crate) resolution: Option<String>,
+
+    /// Rationale for the replacement (decision).
+    #[arg(long)]
+    pub(crate) rationale: Option<String>,
 }
 
 /// Flags of `mulch query` (reference surface: query.ts declares NO

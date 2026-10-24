@@ -550,6 +550,21 @@ pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> crate::ids::Row {
         .or_else(|| parent.map(|spec| spec.section_title.to_string()))
         .unwrap_or(default_title);
 
+    // `compact ?? parent?.compact ?? "manual"` (custom.ts); the
+    // value was validated in [`validate`], so a non-string raw is
+    // unreachable here.
+    let compact = cfg
+        .compact
+        .as_ref()
+        .map(|raw| match yaml_display(raw).as_str() {
+            "concat" => crate::ids::CompactStrategy::Concat,
+            "keep_latest" => crate::ids::CompactStrategy::KeepLatest,
+            "merge_outcomes" => crate::ids::CompactStrategy::MergeOutcomes,
+            _ => crate::ids::CompactStrategy::Manual,
+        })
+        .or(parent.map(|spec| spec.compact))
+        .unwrap_or(crate::ids::CompactStrategy::Manual);
+
     crate::ids::Row {
         name: name.to_string(),
         section_title,
@@ -562,6 +577,7 @@ pub(crate) fn build_row(name: &str, cfg: &CustomTypeCfg) -> crate::ids::Row {
         files_array,
         aliases,
         summary,
+        compact,
     }
 }
 

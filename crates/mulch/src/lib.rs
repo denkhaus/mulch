@@ -38,8 +38,8 @@ pub use config::{
 };
 pub use error::{Error, Result};
 pub use ids::{
-    PAYLOAD_TYPES, REGISTRY, Registry, Row, SummaryLaw, SummaryPart, TypeSpec, effective_type,
-    record_id,
+    CompactStrategy, PAYLOAD_TYPES, REGISTRY, Registry, Row, SummaryLaw, SummaryPart, TypeSpec,
+    effective_type, record_id,
 };
 // the JS-quirk facade: the command-consumed jsval items re-export at
 // the root like the records/schema constants (one convention;

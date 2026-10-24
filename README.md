@@ -160,15 +160,21 @@ expectation (the parity rule: never silently):
   there either). Per-command `--help` wording differs (clap renderer;
   the reference reuses its root template with the command name
   swapped in) — help text lists only implemented commands either way.
-- **`prime` and `prune` do not run `pre-*` hooks.** The reference
-  executes the config's `hooks.pre-prime` list (block/mutate
-  semantics) before rendering and its `hooks.pre-prune` list
-  (block-or-allow) between prune's preview and write phases; this
-  port has no hook engine yet, so a config that declares hooks
-  surfaces them in the project-contract block only. Expectation:
-  identical output for hook-less configs (the reference treats a
-  missing hook config as no hooks); hook-bearing configs skip the
-  scripts (hooks parity is tracked in Seeds).
+- **`prime`, `prune`, and `compact` do not run `pre-*` hooks.** The
+  reference executes the config's `hooks.pre-prime` list (block/mutate
+  semantics) before rendering, its `hooks.pre-prune` list
+  (block-or-allow) between prune's preview and write phases, and its
+  `hooks.pre-compact` list (block/mutate; a hook's `{ replacement }`
+  overrides the mechanical merge); this port has no hook engine yet,
+  so a config that declares hooks surfaces them in the project-contract
+  block only. Expectation: identical output for hook-less configs (the
+  reference treats a missing hook config as no hooks); hook-bearing
+  configs skip the scripts (hooks parity is tracked in Seeds).
+- **`compact --auto` aborts cleanly on a `manual`-strategy group.**
+  The reference crashes with an uncaught-throw stack dump when a
+  `manual` custom type reaches the mechanical merge; this port prints
+  the thrown message as a plain `Error:` line (exit 1) and leaves the
+  store untouched.
 - **Three doctor checks evaluate as unconditional pass** on clean
   stores only: `domain-violations`, `domain-rules-compatibility`,
   `decay-config`. Their warn/fail semantics land with the later

@@ -3,6 +3,7 @@
 mod active_work;
 mod add;
 mod archive;
+mod compact;
 mod delete;
 mod delete_domain;
 mod doctor;
@@ -135,6 +136,7 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
             *dry_run,
         ),
         Command::Restore { id } => restore::run(&cli.opts, id),
+        Command::Compact(args) => compact::run(&cli.opts, args),
         Command::Add { domain } => add::run(&cli.opts, domain.clone()),
         Command::Record(args) => record::run(&cli.opts, args),
         Command::Edit(args) => edit::run(&cli.opts, args),

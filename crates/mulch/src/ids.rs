@@ -13,6 +13,21 @@ pub const PAYLOAD_TYPES: [&str; 6] = [
     "guide",
 ];
 
+/// A type's compaction strategy (reference `TypeDefinition.compact`;
+/// the six builtins are all `concat`, customs default to `manual`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompactStrategy {
+    /// Required fields join with blank lines (`name`/`title` keep the
+    /// longest value instead).
+    Concat,
+    /// The newest record's body, re-stamped and re-superseded.
+    KeepLatest,
+    /// Like keep_latest, plus every input's `outcomes[]` merged.
+    MergeOutcomes,
+    /// `--auto` skips the group with a warning; `--apply` only.
+    Manual,
+}
+
 /// One registry row per record type (the reference `builtins.ts`
 /// table): payload fields in canonical order, the id/dedup key, and
 /// whether duplicates upsert (named) or skip (anonymous). Every other
@@ -36,6 +51,8 @@ pub struct TypeSpec {
     /// The `extracts_files` field (a string array in the schema),
     /// when the builtin has one.
     pub files:         Option<&'static str>,
+    /// The compaction strategy (all six builtins: `concat`).
+    pub compact:       CompactStrategy,
 }
 
 /// How a record's one-line summary renders (the reference's
@@ -101,6 +118,9 @@ pub struct Row {
     pub files_array:   Option<String>,
     /// How the record's summary line renders.
     pub summary:       SummaryLaw,
+    /// The compaction strategy (builtins `concat`; customs
+    /// `compact ?? parent's ?? manual`).
+    pub compact:       CompactStrategy,
     /// Canonical field → legacy names, config-declared order
     /// (custom types only): applied at the read seams so disk
     /// records keep working after a field rename (reference
@@ -186,6 +206,7 @@ impl Row {
                 field:    spec.id_key.to_string(),
                 truncate: matches!(spec.name, "convention" | "failure"),
             },
+            compact:       spec.compact,
             aliases:       Vec::new(),
         }
     }
@@ -201,6 +222,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         named:         false,
         optional:      &[],
         files:         None,
+        compact:       CompactStrategy::Concat,
     },
     TypeSpec {
         name:          "pattern",
@@ -210,6 +232,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         named:         true,
         optional:      &["files"],
         files:         Some("files"),
+        compact:       CompactStrategy::Concat,
     },
     TypeSpec {
         name:          "failure",
@@ -219,6 +242,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         named:         false,
         optional:      &[],
         files:         None,
+        compact:       CompactStrategy::Concat,
     },
     TypeSpec {
         name:          "decision",
@@ -228,6 +252,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         named:         true,
         optional:      &["date"],
         files:         None,
+        compact:       CompactStrategy::Concat,
     },
     TypeSpec {
         name:          "reference",
@@ -237,6 +262,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         named:         true,
         optional:      &["files"],
         files:         Some("files"),
+        compact:       CompactStrategy::Concat,
     },
     TypeSpec {
         name:          "guide",
@@ -246,6 +272,7 @@ pub const REGISTRY: [TypeSpec; 6] = [
         named:         true,
         optional:      &[],
         files:         None,
+        compact:       CompactStrategy::Concat,
     },
 ];
 

@@ -8,6 +8,7 @@
 //! shared `support` harness.
 
 mod archive;
+mod compact;
 mod custom_types;
 mod delete;
 mod doctor;
