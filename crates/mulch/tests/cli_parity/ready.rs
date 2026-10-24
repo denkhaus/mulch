@@ -827,10 +827,21 @@ fn ready_identical_timestamps_keep_config_order() {
         eprintln!("skipped: no ml on PATH");
         return;
     };
+    // ONE shared stamp: three separate now() calls straddle a
+    // millisecond boundary on ~1% of runs, breaking the ms-granular
+    // tie this test exists to pin (the flake seen twice before this
+    // fix — ties are millisecond-coarse on both sides).
+    let tie = at(30);
+    let line = |name: &str, id: &str| {
+        format!(
+            "{{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{tie}\",\
+\"name\":\"{name}\",\"description\":\"d\",\"id\":\"{id}\"}}\n"
+        )
+    };
     let (zeta, mid, alpha) = (
-        pattern_line("Z", "mx-t10001", 30),
-        pattern_line("M", "mx-t10002", 30),
-        pattern_line("A", "mx-t10003", 30),
+        line("Z", "mx-t10001"),
+        line("M", "mx-t10002"),
+        line("A", "mx-t10003"),
     );
     let (ours, theirs) = twin_seeded(
         "ready-tie",

@@ -286,17 +286,7 @@ fn count64(count: usize) -> u64 {
 /// stamp; the delegation additionally floors the sub-second mtimes
 /// exactly like the reference's `Math.floor` on milliseconds.
 fn relative(then: Timestamp, now: Timestamp) -> String {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "epoch milliseconds are exact in f64 below 2^53"
-    )]
-    let recorded = then.as_millisecond() as f64;
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "epoch milliseconds are exact in f64 below 2^53"
-    )]
-    let current = now.as_millisecond() as f64;
-    mulch::time_ago(Some(recorded), current)
+    mulch::time_ago_ts(then, now)
 }
 
 /// Formats a timestamp as ISO-8601 with milliseconds and `Z`.

@@ -136,17 +136,7 @@ pub(crate) fn estimate_record_text(
 /// bucket boundaries included — pinned in
 /// `time_ago_boundaries_match_the_lib_law`).
 pub(crate) fn time_ago(then: Timestamp, now: Timestamp) -> String {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "epoch milliseconds are exact in f64 below 2^53"
-    )]
-    let recorded = then.as_millisecond() as f64;
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "epoch milliseconds are exact in f64 below 2^53"
-    )]
-    let current = now.as_millisecond() as f64;
-    mulch::time_ago(Some(recorded), current)
+    mulch::time_ago_ts(then, now)
 }
 
 /// `formatEvidence`: the commit/date/issue/file bracket (the other
@@ -269,15 +259,10 @@ fn classification_age(record: &Value, now: Timestamp) -> String {
     if classification == "foundational" {
         return classification.into();
     }
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "epoch milliseconds are exact in f64 below 2^53"
-    )]
-    let now_ms = now.as_millisecond() as f64;
     format!(
         "{} {}",
         classification,
-        mulch::time_ago(mulch::date_ms(record), now_ms)
+        mulch::time_ago(mulch::date_ms(record), mulch::timestamp_ms(now))
     )
 }
 

@@ -86,12 +86,24 @@ fn date_only_midnight(text: &str) -> Option<f64> {
 
 /// `Date.now()` in epoch milliseconds.
 pub fn now_ms() -> f64 {
+    timestamp_ms(jiff::Timestamp::now())
+}
+
+/// A jiff Timestamp as the JS law's f64 milliseconds (the one cast
+/// site — `as_millisecond` is exact in f64 below 2^53).
+pub fn timestamp_ms(then: jiff::Timestamp) -> f64 {
     #[expect(
         clippy::cast_precision_loss,
         reason = "epoch milliseconds are exact in f64 below 2^53"
     )]
-    let millis = jiff::Timestamp::now().as_millisecond() as f64;
+    let millis = then.as_millisecond() as f64;
     millis
+}
+
+/// `formatTimeAgo` over jiff Timestamps — the parsed-stamp view the
+/// CLI's render/status adapters delegate to.
+pub fn time_ago_ts(then: jiff::Timestamp, now: jiff::Timestamp) -> String {
+    time_ago(Some(timestamp_ms(then)), timestamp_ms(now))
 }
 
 /// `formatTimeAgo`: the minute / hour / day buckets, `just now` for
