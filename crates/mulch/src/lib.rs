@@ -28,6 +28,7 @@ pub mod schema;
 pub mod scoring;
 pub mod stale;
 mod store_files;
+mod upsert;
 
 pub use config::{
     Config, Governance, Prime, SUPPORTED_VERSION, Search, SessionClose, ShelfLife, TierWeights,
@@ -47,14 +48,17 @@ pub use jsval::{
 };
 pub use query::{DomainSpec, RecordFilter, UnknownDomain, domain_set};
 pub use records::{
-    Counter, LenientLine, LineRecord, OutcomeEntry, ResolveError, SummaryError, UpsertPlan,
-    apply_aliases, apply_aliases_for, assign_missing_id, find_duplicate, legacy_entry,
-    legacy_outcome, merge_outcomes, read_lenient, read_strict, record_summary,
-    record_summary_value, resolve_record_id, upsert_plan, write_records,
+    Counter, LenientLine, LineRecord, ResolveError, SummaryError, apply_aliases, apply_aliases_for,
+    legacy_entry, legacy_outcome, read_lenient, read_strict, record_summary, record_summary_value,
+    resolve_record_id,
 };
 pub use schema::CLASSIFICATIONS;
 pub use scoring::{apply_confirmation_boost, confirmation_score};
 pub use store_files::{StoreFiles, StoreLocation};
+pub use upsert::{
+    OutcomeEntry, UpsertPlan, assign_missing_id, find_duplicate, merge_outcomes, upsert_plan,
+    write_records,
+};
 
 /// The reference implementation this crate is read+write compatible with
 /// (README format-compatibility promise; ADR-0023 in denkhaus/fabro).

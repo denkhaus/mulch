@@ -25,7 +25,8 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::records::{LenientLine, LineRecord, read_strict, write_records};
+use crate::records::{LenientLine, LineRecord, read_strict};
+use crate::upsert::write_records;
 
 /// Where a store lookup landed.
 #[derive(Debug)]
