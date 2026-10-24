@@ -7,6 +7,7 @@
 //! the module layout (mulch-3e7c): per-surface modules plus the
 //! shared `support` harness.
 
+mod archive;
 mod custom_types;
 mod delete;
 mod doctor;
@@ -16,10 +17,12 @@ mod learn;
 mod move_cmd;
 mod outcome;
 mod prime;
+mod prune;
 mod query;
 mod rank;
 mod ready;
 mod record;
+mod restore;
 mod search;
 mod status;
 mod support;
