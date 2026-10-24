@@ -2,6 +2,7 @@
 
 mod active_work;
 mod add;
+mod archive;
 mod delete;
 mod delete_domain;
 mod doctor;
@@ -12,11 +13,13 @@ mod learn;
 mod move_cmd;
 mod outcome;
 mod prime;
+mod prune;
 mod query;
 mod rank;
 mod ready;
 mod record;
 mod render;
+mod restore;
 mod search;
 mod status;
 mod validate;
@@ -116,6 +119,22 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
         Command::Status => status::run(&cli.opts),
         Command::Validate => validate::run(&cli.opts),
         Command::Doctor { fix } => doctor::run(&cli.opts, *fix),
+        Command::Prune(args) => prune::run(&cli.opts, args),
+        Command::Archive {
+            domain,
+            id,
+            records,
+            reason,
+            dry_run,
+        } => archive::run(
+            &cli.opts,
+            domain,
+            id.as_deref(),
+            records.as_deref(),
+            reason,
+            *dry_run,
+        ),
+        Command::Restore { id } => restore::run(&cli.opts, id),
         Command::Add { domain } => add::run(&cli.opts, domain.clone()),
         Command::Record(args) => record::run(&cli.opts, args),
         Command::Edit(args) => edit::run(&cli.opts, args),

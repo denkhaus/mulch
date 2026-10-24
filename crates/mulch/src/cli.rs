@@ -167,6 +167,37 @@ pub(crate) enum Command {
         fix: bool,
     },
 
+    /// Soft-archive or hard-delete stale records, plus tier-demote
+    /// superseded ones (mulch-7c55).
+    Prune(PruneArgs),
+
+    /// Soft-archive one or more live records (mulch-7c55).
+    Archive {
+        /// Expertise domain.
+        domain: String,
+
+        /// Record ID (exact, bare hash, or unique prefix).
+        id: Option<String>,
+
+        /// Comma-separated list of record IDs to archive.
+        #[arg(long)]
+        records: Option<String>,
+
+        /// Why this record is being archived (required, free-text).
+        #[arg(long)]
+        reason: String,
+
+        /// Preview without making changes.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Revive an archived record (mulch-7c55).
+    Restore {
+        /// Archived record ID (exact, bare hash, or unique prefix).
+        id: String,
+    },
+
     /// Query records across domains (mulch-16da).
     Query(Box<QueryArgs>),
 
@@ -428,6 +459,31 @@ pub(crate) struct EditOutcomeFlags {
     /// Recording agent name.
     #[arg(long = "outcome-agent")]
     pub(crate) agent: Option<String>,
+}
+
+/// Flags of `mulch prune` (mulch-7c55).
+#[derive(Debug, Args)]
+pub(crate) struct PruneArgs {
+    /// Show what would be pruned without removing.
+    #[arg(long = "dry-run")]
+    pub(crate) dry_run: bool,
+
+    /// Permanently delete stale records instead of archiving.
+    #[arg(long)]
+    pub(crate) hard: bool,
+
+    /// Collapse superseded records straight to archived in one pass
+    /// instead of one tier at a time.
+    #[arg(long)]
+    pub(crate) aggressive: bool,
+
+    /// Demote records whose file/dir anchors no longer resolve.
+    #[arg(long = "check-anchors")]
+    pub(crate) check_anchors: bool,
+
+    /// Print per-record reasons for each demotion.
+    #[arg(long)]
+    pub(crate) explain: bool,
 }
 
 /// Flags of `mulch query` (reference surface: query.ts declares NO
