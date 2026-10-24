@@ -1080,9 +1080,7 @@ fn anchors_pass(
     if removed == 0 {
         return Ok(None);
     }
-    store
-        .rewrite_domain(domain, &records)
-        .map_err(|source| store_failure(&source))?;
+    crate::commands::persist("doctor", store, domain, &records)?;
     Ok(Some(removed))
 }
 
