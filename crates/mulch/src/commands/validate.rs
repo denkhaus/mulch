@@ -39,11 +39,25 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
                     message: "Invalid JSON: failed to parse".into(),
                 })),
                 mulch::LenientLine::Record { line, record } => {
-                    let unknown = matches!(
+                    // Unknown type first (reference validate.ts): the
+                    // targeted error is the record's ONLY finding — a
+                    // legacy singular outcome stays unreported on an
+                    // unknown-type record — and --allow-unknown-types
+                    // skips the record entirely, the downstream Ajv
+                    // check included.
+                    if matches!(
                         schema::verdict(store.registry(), &record),
                         schema::Verdict::Unknown(_)
-                    );
-                    if unknown && opts.allow_unknown_types {
+                    ) {
+                        if !opts.allow_unknown_types
+                            && let Some(message) = validate_message(store.registry(), &record)
+                        {
+                            stream.push((false, Finding {
+                                domain: domain.clone(),
+                                line,
+                                message,
+                            }));
+                        }
                         continue;
                     }
                     // Legacy singular outcome: a warning, and it

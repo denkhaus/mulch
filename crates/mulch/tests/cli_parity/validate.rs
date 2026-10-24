@@ -566,3 +566,128 @@ fn schema_suberrors_match_reference() {
 }
 
 // ---- sprint 11 (mulch-ca49): batch summary surfaces + compact rewrite ----
+
+// ---- sprint 36 (mulch-230b): unknown-type validate surfaces ----
+
+/// The unknown-type store: a string-id unknown record, a schema-valid
+/// pattern (full oneOf set — the fixture rule), an id-less unknown
+/// record, and an empty-string-id unknown record (the id corners).
+const UNK_TYPES_CORPUS: &str = concat!(
+    r#"{"type":"zzzcustom","name":"wtf","id":"mx-bbbb02","content":"x","classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+    '\n',
+    r#"{"type":"pattern","name":"ok","description":"d","classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+    '\n',
+    r#"{"type":"wtf","content":"noid"}"#,
+    '\n',
+    r#"{"type":"wtfempty","id":"","content":"x"}"#,
+    '\n',
+);
+
+#[test]
+fn validate_unknown_type_message_and_id_corners_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = twin_seeded("unk230v", None, &[("dev", UNK_TYPES_CORPUS)], &[]);
+
+    // plain: summary on stdout, the targeted details on stderr, rc 1
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    let their = run_in(&theirs.0, &ml, &["validate"]);
+    assert_eq!(our.code, their.code, "plain exit");
+    assert_eq!(our.code, 1, "unknown types fail validate");
+    assert_eq!(our.stdout, their.stdout, "plain stdout");
+    assert_eq!(our.stderr, their.stderr, "plain stderr");
+    // the law itself: string id carries (id=…), the empty string
+    // carries (id=), a missing id carries no part
+    assert_eq!(
+        our.stderr,
+        concat!(
+            "dev:1 - Unknown record type \"zzzcustom\" (id=mx-bbbb02). Register it under custom_types in mulch.config.yaml or remove the record.\n",
+            "dev:3 - Unknown record type \"wtf\". Register it under custom_types in mulch.config.yaml or remove the record.\n",
+            "dev:4 - Unknown record type \"wtfempty\" (id=). Register it under custom_types in mulch.config.yaml or remove the record.\n",
+        )
+    );
+    assert_eq!(our.stdout, "4 records validated, 3 errors found\n");
+
+    // json: the envelope carries the same messages in errors[]
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "validate"]);
+    let their = run_in(&theirs.0, &ml, &["--json", "validate"]);
+    assert_eq!(our.code, their.code, "json exit");
+    assert_eq!(our.code, 1, "json envelope fails");
+    assert_eq!(
+        normalize(&our.stdout),
+        normalize(&their.stdout),
+        "json envelope"
+    );
+}
+
+#[test]
+fn validate_allow_unknown_types_skips_unknown_records_entirely() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = twin_seeded("unk230a", None, &[("dev", UNK_TYPES_CORPUS)], &[]);
+
+    // plain: rc 0, records still counted, zero errors, nothing on stderr
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "validate",
+        "--allow-unknown-types",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["validate", "--allow-unknown-types"]);
+    assert_eq!(our.code, their.code, "plain exit");
+    assert_eq!(our.code, 0, "the flag reads through unknown types");
+    assert_eq!(our.stdout, their.stdout, "plain stdout");
+    assert_eq!(our.stdout, "4 records validated, 0 errors found\n");
+    assert_eq!(our.stderr, their.stderr, "plain stderr");
+
+    // json: the success envelope, empty errors array
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json",
+        "validate",
+        "--allow-unknown-types",
+    ]);
+    let their = run_in(&theirs.0, &ml, &[
+        "--json",
+        "validate",
+        "--allow-unknown-types",
+    ]);
+    assert_eq!(our.code, their.code, "json exit");
+    assert_eq!(our.code, 0, "json envelope succeeds");
+    assert_eq!(
+        normalize(&our.stdout),
+        normalize(&their.stdout),
+        "json envelope"
+    );
+}
+
+#[test]
+fn validate_unknown_record_with_legacy_outcome_reports_only_unknown() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // The unknown check runs FIRST and continues (reference
+    // validate.ts): a legacy singular outcome on an unknown-type
+    // record never reaches the legacy warning.
+    let corpus = concat!(
+        r#"{"type":"wtf","content":"x","outcome":{"status":"success"}}"#,
+        '\n',
+        r#"{"type":"pattern","name":"ok","description":"d","classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+        '\n',
+    );
+    let (ours, theirs) = twin_seeded("unk230l", None, &[("dev", corpus)], &[]);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    let their = run_in(&theirs.0, &ml, &["validate"]);
+    assert_eq!(our.code, their.code, "exit");
+    assert_eq!(our.code, 1, "the unknown record still errors");
+    assert_eq!(our.stdout, their.stdout, "stdout");
+    assert_eq!(our.stderr, their.stderr, "stderr");
+    assert_eq!(
+        our.stderr,
+        "dev:1 - Unknown record type \"wtf\". Register it under custom_types in mulch.config.yaml or remove the record.\n",
+        "the unknown error is the record's ONLY finding"
+    );
+    assert_eq!(our.stdout, "2 records validated, 1 errors found\n");
+}

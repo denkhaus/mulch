@@ -12,7 +12,10 @@
 //! structured ([`SubError`]) and render with their ajv path — a
 //! leading space for the empty path, `/{path}` otherwise — joined
 //! with [`SUB_SEP`]. Records with a present-but-unregistered `type`
-//! fail with ``Unknown record `X` `` instead of the oneOf blob.
+//! never produce oneOf output: validate carries the targeted
+//! `Unknown record type "X"` message (reference validate.ts) and
+//! doctor's schema-validation check skips them ([`doctor_detail`]) —
+//! `checkUnknownTypes` owns that finding.
 
 use crate::ids::effective_type;
 
@@ -584,14 +587,26 @@ fn hint_line(registry: &crate::ids::Registry, kind: &str) -> String {
     format!("Hint: {kind} records require: {fields}")
 }
 
-/// The validate finding message for a non-valid record.
+/// The validate finding message for a non-valid record. The
+/// unknown-type arm carries the reference's targeted message:
+/// ` (id=…)` when the record's `id` is a JSON string — the empty
+/// string renders ` (id=)` — no part for any non-string or missing
+/// id (validate.ts `typeof id === "string"`).
 pub fn validate_message(
     registry: &crate::ids::Registry,
     record: &serde_json::Value,
 ) -> Option<String> {
     match verdict(registry, record) {
         Verdict::Valid => None,
-        Verdict::Unknown(kind) => Some(format!("Unknown record `{kind}`")),
+        Verdict::Unknown(kind) => {
+            let id_part = record
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .map_or(String::new(), |id| format!(" (id={id})"));
+            Some(format!(
+                "Unknown record type \"{kind}\"{id_part}. Register it under custom_types in mulch.config.yaml or remove the record."
+            ))
+        }
         Verdict::OneOf(subs) => Some(format!(
             "{VALIDATION_PREFIX}{}",
             render_subs(&subs).join(SUB_SEP)
@@ -601,14 +616,18 @@ pub fn validate_message(
 
 /// The doctor detail line for a non-valid record: no wrapper; the
 /// caller prefixes `domain:line - ` and the sub-errors' own path
-/// spaces provide the reference's extra gap.
+/// spaces provide the reference's extra gap. Unknown-type records
+/// are skipped (`None`) — they are `checkUnknownTypes`' finding,
+/// never schema-validation's (reference doctor.ts ~136:
+/// `if (!def) continue;`).
 pub fn doctor_detail(
     registry: &crate::ids::Registry,
     record: &serde_json::Value,
 ) -> Option<String> {
     match verdict(registry, record) {
-        Verdict::Valid => None,
-        Verdict::Unknown(kind) => Some(format!("Unknown record `{kind}`")),
+        // Valid records pass and unknown-type records skip — both
+        // carry no schema-validation finding.
+        Verdict::Valid | Verdict::Unknown(_) => None,
         Verdict::OneOf(subs) => Some(render_subs(&subs).join(SUB_SEP)),
     }
 }

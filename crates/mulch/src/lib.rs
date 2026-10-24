@@ -24,6 +24,7 @@ pub mod lock;
 pub mod prime_ranking;
 pub mod query;
 mod records;
+mod repair;
 pub mod schema;
 pub mod scoring;
 pub mod stale;
@@ -52,6 +53,7 @@ pub use records::{
     legacy_entry, legacy_outcome, read_lenient, read_strict, record_summary, record_summary_value,
     resolve_record_id,
 };
+pub use repair::{LineAction, parsed_records, raw_line_pass, value_line_pass};
 pub use schema::CLASSIFICATIONS;
 pub use scoring::{apply_confirmation_boost, confirmation_score};
 pub use store_files::{StoreFiles, StoreLocation};

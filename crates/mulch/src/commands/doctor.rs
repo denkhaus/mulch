@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use jiff::Timestamp;
 use mulch::schema::doctor_detail;
 use mulch::stale::{StaleRule, StaleVerdict};
+use mulch::{LineAction, parsed_records, raw_line_pass, value_line_pass};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -22,6 +23,21 @@ struct Check {
     message: String,
     fixable: bool,
     details: Vec<String>,
+}
+
+impl Check {
+    /// An always-pass check with no details — the hardcoded passes
+    /// (config, decay-config, upgrade & friends) whose reference
+    /// implementations we satisfy by construction.
+    fn stub(name: &'static str, message: &str) -> Check {
+        Check {
+            name,
+            status: Status::Pass,
+            message: message.into(),
+            fixable: false,
+            details: Vec::new(),
+        }
+    }
 }
 
 /// Check outcome levels (warnings never fail the exit code).
@@ -96,7 +112,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     let config = store.config();
     let rule = StaleRule::from_shelf_life(&config.effective_shelf_life());
     let governance = config.effective_governance();
-    let checks = run_checks(opts, &rule, &governance, &domains, &store, &cwd);
+    let checks = run_checks(&rule, &governance, &domains, &store, &cwd);
     let gates = FixGates::from_checks(&checks);
 
     let pass = checks
@@ -211,7 +227,6 @@ fn records_of(domain: &DomainLines) -> impl Iterator<Item = (usize, &Value)> {
 
 /// Runs the 17 checks in the reference's fixed order.
 fn run_checks(
-    opts: &GlobalOpts,
     rule: &StaleRule,
     governance: &mulch::Governance,
     domains: &[DomainLines],
@@ -219,60 +234,32 @@ fn run_checks(
     project_root: &std::path::Path,
 ) -> Vec<Check> {
     vec![
-        Check {
-            name:    "config",
-            status:  Status::Pass,
-            message: "Config is valid".into(),
-            fixable: false,
-            details: Vec::new(),
-        },
+        Check::stub("config", "Config is valid"),
         jsonl_integrity(domains),
         legacy_outcome(domains),
         schema_validation(store.registry(), domains),
-        unknown_types(store.registry(), domains, opts.allow_unknown_types),
+        unknown_types(store.registry(), domains),
         type_registry(store.registry(), domains),
-        Check {
-            name:    "domain-rules-compatibility",
-            status:  Status::Pass,
-            message: "All domain required_fields are compatible with allowed types".into(),
-            fixable: false,
-            details: Vec::new(),
-        },
+        Check::stub(
+            "domain-rules-compatibility",
+            "All domain required_fields are compatible with allowed types",
+        ),
         domain_conformance(domains),
-        Check {
-            name:    "domain-violations",
-            status:  Status::Pass,
-            message: "All records conform to domain rules".into(),
-            fixable: false,
-            details: Vec::new(),
-        },
+        Check::stub("domain-violations", "All records conform to domain rules"),
         stale_records(rule, domains),
         orphaned_domains(store),
         duplicates(store.registry(), domains),
         file_anchors(domains, project_root),
         governance_limits(governance, domains),
-        Check {
-            name:    "decay-config",
-            status:  Status::Pass,
-            message: "decay.anchor_validity uses defaults".into(),
-            fixable: false,
-            details: Vec::new(),
-        },
-        Check {
-            name:    "compact-summarizer",
-            status:  Status::Pass,
-            message: "compact-summarizer: not configured (mechanical merge in use)".into(),
-            fixable: false,
-            details: Vec::new(),
-        },
-        Check {
-            name:    "upgrade",
-            status:  Status::Pass,
-            message: "Native binary — update via cargo install (registry check not applicable)"
-                .into(),
-            fixable: false,
-            details: Vec::new(),
-        },
+        Check::stub("decay-config", "decay.anchor_validity uses defaults"),
+        Check::stub(
+            "compact-summarizer",
+            "compact-summarizer: not configured (mechanical merge in use)",
+        ),
+        Check::stub(
+            "upgrade",
+            "Native binary — update via cargo install (registry check not applicable)",
+        ),
     ]
 }
 
@@ -381,11 +368,7 @@ fn schema_validation(registry: &mulch::Registry, domains: &[DomainLines]) -> Che
     }
 }
 
-fn unknown_types(
-    registry: &mulch::Registry,
-    domains: &[DomainLines],
-    allow_unknown: bool,
-) -> Check {
+fn unknown_types(registry: &mulch::Registry, domains: &[DomainLines]) -> Check {
     let known: Vec<&str> = registry
         .rows()
         .iter()
@@ -396,13 +379,20 @@ fn unknown_types(
         .flat_map(|d| {
             records_of(d).filter_map(|(line, record)| {
                 let kind = record.as_object()?.get("type")?.as_str()?;
-                (!known.contains(&kind)).then(|| format!("{}:{}: {}", d.domain, line, kind))
+                (!known.contains(&kind)).then(|| {
+                    format!(
+                        "{}:{line}{} - unknown type \"{kind}\"",
+                        d.domain,
+                        unknown_id_part(record.get("id"))
+                    )
+                })
             })
         })
         .collect();
-    // The --allow-unknown-types escape hatch tolerates them (worktree/
-    // CI lag); the reference's clean-store contract stays pass.
-    if bad.is_empty() || allow_unknown {
+    // `checkUnknownTypes` never consults --allow-unknown-types (the
+    // flag is validate's read-through hatch only — probe-pinned vs
+    // ml 0.10.7: doctor still exits 1 with it).
+    if bad.is_empty() {
         Check {
             name:    "unknown-types",
             status:  Status::Pass,
@@ -414,10 +404,24 @@ fn unknown_types(
         Check {
             name:    "unknown-types",
             status:  Status::Fail,
-            message: format!("{} record(s) use unregistered types", bad.len()),
+            message: format!("{} record(s) with unregistered types", bad.len()),
             fixable: false,
             details: bad,
         }
+    }
+}
+
+/// The unknown-types detail id suffix: ` [{id}]` when the record's
+/// `id` is a JSON string — the empty string renders ` []` (probed vs
+/// ml 0.10.7). This is the typeof law (reference doctor.ts
+/// `checkUnknownTypes`: `typeof id === "string"`), NOT the
+/// file-anchors truthiness bracket ([`id_bracket`], doctor.ts
+/// `checkFileAnchors`: `record.id ? [...] : ""`) — a truthy
+/// non-string id brackets there but never here.
+fn unknown_id_part(id: Option<&Value>) -> String {
+    match id.and_then(Value::as_str) {
+        Some(text) => format!(" [{text}]"),
+        None => String::new(),
     }
 }
 
@@ -910,9 +914,13 @@ fn apply_fixes(
     // in domain order within each pass.
     if gates.jsonl {
         for domain in domains {
-            if let Some(count) = raw_line_pass(store, &domain.domain, &LineAction::Drop, |_| {
-                LineAction::Keep
-            })? {
+            let Some(text) = read_domain_text(store, &domain.domain)? else {
+                continue;
+            };
+            if let Some((body, count)) =
+                raw_line_pass(&text, &LineAction::Drop, |_| LineAction::Keep)
+            {
+                write_domain_text(store, &domain.domain, &body)?;
                 fixes.push(format!(
                     "Removed {count} invalid JSON line(s) from {}",
                     domain.domain
@@ -922,9 +930,13 @@ fn apply_fixes(
     }
     if gates.legacy {
         for domain in domains {
-            if let Some(count) = raw_line_pass(store, &domain.domain, &LineAction::Keep, |value| {
+            let Some(text) = read_domain_text(store, &domain.domain)? else {
+                continue;
+            };
+            if let Some((body, count)) = raw_line_pass(&text, &LineAction::Keep, |value| {
                 migrate_legacy_line(value).map_or(LineAction::Keep, LineAction::Replace)
-            })? {
+            }) {
+                write_domain_text(store, &domain.domain, &body)?;
                 fixes.push(format!(
                     "Migrated {count} legacy \"outcome\" field(s) to \"outcomes[]\" in {}",
                     domain.domain
@@ -934,8 +946,13 @@ fn apply_fixes(
     }
     if gates.schema {
         for domain in domains {
+            let Some(text) = read_domain_text(store, &domain.domain)? else {
+                continue;
+            };
             let keep = |record: &Value| mulch::schema::survives_repair(store.registry(), record);
-            if let Some(count) = value_line_pass(store, &domain.domain, keep)? {
+            if let Some(count) = value_line_pass(store, &domain.domain, &text, keep)
+                .map_err(|source| store_failure(&source))?
+            {
                 fixes.push(format!(
                     "Removed {count} invalid record(s) from {}",
                     domain.domain
@@ -950,7 +967,12 @@ fn apply_fixes(
         let keep =
             |record: &Value| !matches!(rule.verdict(record, now), StaleVerdict::Stale { .. });
         for domain in domains {
-            if let Some(count) = value_line_pass(store, &domain.domain, keep)? {
+            let Some(text) = read_domain_text(store, &domain.domain)? else {
+                continue;
+            };
+            if let Some(count) = value_line_pass(store, &domain.domain, &text, keep)
+                .map_err(|source| store_failure(&source))?
+            {
                 fixes.push(format!(
                     "Pruned {count} stale record(s) from {}",
                     domain.domain
@@ -1035,117 +1057,6 @@ impl FixGates {
             anchors:  open(checks, "file-anchors"),
         }
     }
-}
-
-/// One parsed line's fate in a line-preserving repair pass (jsonl
-/// integrity, legacy outcome).
-#[derive(Clone)]
-enum LineAction {
-    /// Keep the trimmed line verbatim.
-    Keep,
-    /// Replace the line with a new serialized one.
-    Replace(String),
-    /// Drop the line.
-    Drop,
-}
-
-/// One line-preserving repair pass (the jsonl-integrity and
-/// legacy-outcome fixes): every line parses, survivors keep their
-/// trimmed bytes verbatim, and `action` decides each parsed line.
-/// `unparsable` is the policy for lines that fail to parse — `Drop`
-/// for jsonl-integrity (malformed lines and `#` comments are its
-/// whole job), `Keep` for legacy-outcome (its raw-line loop passes
-/// unparsable survivors through byte-identical). Returns the number
-/// of lines not kept verbatim, `None` when every line kept (no
-/// write).
-fn raw_line_pass(
-    store: &mulch::StoreFiles,
-    domain: &str,
-    unparsable: &LineAction,
-    action: impl Fn(&Value) -> LineAction,
-) -> Result<Option<usize>, Failure> {
-    let Some(text) = read_domain_text(store, domain)? else {
-        return Ok(None);
-    };
-    let mut lines = Vec::new();
-    let mut changed = 0usize;
-    for line in text.split('\n') {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let outcome = serde_json::from_str::<Value>(trimmed)
-            .map_or_else(|_| unparsable.clone(), |value| action(&value));
-        match outcome {
-            LineAction::Keep => lines.push(trimmed.to_string()),
-            LineAction::Replace(replacement) => {
-                lines.push(replacement);
-                changed += 1;
-            }
-            LineAction::Drop => changed += 1,
-        }
-    }
-    if changed == 0 {
-        return Ok(None);
-    }
-    let mut body = lines.join("\n");
-    if !lines.is_empty() {
-        body.push('\n');
-    }
-    write_domain_text(store, domain, &body)?;
-    Ok(Some(changed))
-}
-
-/// One canonical-rewrite repair pass (the schema-validation and
-/// stale-records fixes): every line parses, `keep` decides each
-/// record, and the survivors rewrite through `rewrite_domain`
-/// (`write_records` semantics incl. id backfill). Returns the number
-/// of dropped records, `None` when nothing dropped (no write).
-fn value_line_pass(
-    store: &mulch::StoreFiles,
-    domain: &str,
-    keep: impl Fn(&Value) -> bool,
-) -> Result<Option<usize>, Failure> {
-    let Some(text) = read_domain_text(store, domain)? else {
-        return Ok(None);
-    };
-    let records = parsed_records(&text, store.registry());
-    let kept: Vec<Value> = records
-        .iter()
-        .filter(|record| keep(record))
-        .cloned()
-        .collect();
-    let removed = records.len() - kept.len();
-    if removed == 0 {
-        return Ok(None);
-    }
-    store
-        .rewrite_domain(domain, &kept)
-        .map_err(|source| store_failure(&source))?;
-    Ok(Some(removed))
-}
-
-/// The parseable records of a domain file's bytes, in line order —
-/// the shared read half of the record-rewriting repair passes
-/// (`value_line_pass`, `anchors_pass`). Unparsable lines drop
-/// uncounted (unreachable in practice: the reference's strict checks
-/// crash on truly malformed lines before any repair; comment lines
-/// were removed by the jsonl-integrity pass above), blank lines skip.
-fn parsed_records(text: &str, registry: &mulch::Registry) -> Vec<Value> {
-    let mut records: Vec<Value> = text
-        .split('\n')
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect();
-    // The repair passes read like the reference's readExpertiseFile
-    // (aliases applied) — the keep filters judge the canonical shape
-    // and the rewrites land canonical (utils/expertise.ts,
-    // mulch-b1cb).
-    for record in &mut records {
-        mulch::apply_aliases_for(registry, record);
-    }
-    records
 }
 
 /// The file-anchors repair on one domain: every line parses, each
@@ -1340,66 +1251,6 @@ mod tests {
             migrate_legacy_line(&record(r#"{"name":"p","outcome":"oops"}"#)).expect("migrated"),
             r#"{"name":"p","outcomes":[{}]}"#
         );
-    }
-
-    #[test]
-    fn raw_line_pass_counts_changes_and_keeps_verbatim_bytes() {
-        let (dir, store) = temp_store("raw");
-        // dropping policy: unparsable lines (# comments included) drop,
-        // survivors keep their trimmed bytes
-        std::fs::write(
-            store.domain_path("d"),
-            "# banner\n{\"a\":1}\nnot json\n  {\"b\":2}  \n\n",
-        )
-        .expect("writable");
-        let removed =
-            raw_line_pass(&store, "d", &LineAction::Drop, |_| LineAction::Keep).expect("pass runs");
-        assert_eq!(removed, Some(2));
-        assert_eq!(read_domain(&store, "d"), "{\"a\":1}\n{\"b\":2}\n");
-        // keeping policy: nothing changes -> None, no write at all
-        std::fs::write(store.domain_path("d"), "not json\n{\"a\":1}\n").expect("writable");
-        let untouched =
-            raw_line_pass(&store, "d", &LineAction::Keep, |_| LineAction::Keep).expect("pass runs");
-        assert_eq!(untouched, None);
-        assert_eq!(read_domain(&store, "d"), "not json\n{\"a\":1}\n");
-        // replacement: only replaced lines count, unparsable survivors stay
-        let migrated = raw_line_pass(&store, "d", &LineAction::Keep, |value| {
-            value.get("a").map_or(LineAction::Keep, |_| {
-                LineAction::Replace("{\"a\":2}".into())
-            })
-        })
-        .expect("pass runs");
-        assert_eq!(migrated, Some(1));
-        assert_eq!(read_domain(&store, "d"), "not json\n{\"a\":2}\n");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn value_line_pass_counts_drops_and_rewrites_canonically() {
-        let (dir, store) = temp_store("value");
-        std::fs::write(
-            store.domain_path("d"),
-            "{\"type\":\"pattern\",\"name\":\"p\"}\nnot json\n{\"junk\":1}\n",
-        )
-        .expect("writable");
-        // unparsable lines drop uncounted; the typeless record drops
-        let removed =
-            value_line_pass(&store, "d", |record| record.get("type").is_some()).expect("pass runs");
-        assert_eq!(removed, Some(1));
-        // the canonical rewrite backfills the id (write_records)
-        assert_eq!(
-            read_domain(&store, "d"),
-            format!(
-                "{{\"type\":\"pattern\",\"name\":\"p\",\"id\":\"{}\"}}\n",
-                mulch::record_id("pattern", "p")
-            )
-        );
-        // keep-all: None, and non-canonical spacing survives (no write)
-        std::fs::write(store.domain_path("d"), "{\"a\": 1}\n").expect("writable");
-        let untouched = value_line_pass(&store, "d", |_| true).expect("pass runs");
-        assert_eq!(untouched, None);
-        assert_eq!(read_domain(&store, "d"), "{\"a\": 1}\n");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -1088,3 +1088,111 @@ mod battery_s24 {
 
 // ---- sprint 25 (mulch-cbe2/e2cf/1209/2153/8ca8/5fd8): the record
 // flag-path residuals ----
+
+// ---- sprint 36 (mulch-230b): unknown-types doctor surfaces ----
+
+/// The unknown-type store: a string-id unknown record, a schema-valid
+/// pattern (full oneOf set — the fixture rule), an id-less unknown
+/// record, and an empty-string-id unknown record (the id brackets).
+const UNK_TYPES_CORPUS: &str = concat!(
+    r#"{"type":"zzzcustom","name":"wtf","id":"mx-bbbb02","content":"x","classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+    '\n',
+    r#"{"type":"pattern","name":"ok","description":"d","classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
+    '\n',
+    r#"{"type":"wtf","content":"noid"}"#,
+    '\n',
+    r#"{"type":"wtfempty","id":"","content":"x"}"#,
+    '\n',
+);
+
+#[test]
+fn doctor_unknown_types_check_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = twin_seeded("unk230d", None, &[("dev", UNK_TYPES_CORPUS)], &[]);
+
+    // plain: unknown-types fails with the reference's message and
+    // details (BOTH channels; the update-check warning line is
+    // network-bound and scoped out)
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
+    let their = run_in(&theirs.0, &ml, &["doctor"]);
+    assert_eq!(our.code, their.code, "plain exit");
+    assert_eq!(our.code, 1, "unknown types fail doctor");
+    assert_eq!(
+        strip_upgrade_and_summary(&our.stdout),
+        strip_upgrade_and_summary(&their.stdout),
+        "plain stdout (update check scoped)"
+    );
+    assert_eq!(our.stderr, their.stderr, "plain stderr");
+    // the law itself: "with unregistered types" wording, typeof-law
+    // id brackets (string id, none, empty string -> [])
+    assert!(
+        our.stdout.contains("✗ 3 record(s) with unregistered types"),
+        "message: {}",
+        our.stdout
+    );
+    assert!(
+        our.stdout
+            .contains("dev:1 [mx-bbbb02] - unknown type \"zzzcustom\""),
+        "string id brackets: {}",
+        our.stdout
+    );
+    assert!(
+        our.stdout.contains("dev:3 - unknown type \"wtf\""),
+        "missing id has no bracket: {}",
+        our.stdout
+    );
+    assert!(
+        our.stdout.contains("dev:4 [] - unknown type \"wtfempty\""),
+        "empty-string id brackets empty: {}",
+        our.stdout
+    );
+    // unknown-only stores keep schema-validation green
+    assert!(
+        our.stdout.contains("✓ All records pass schema validation"),
+        "schema-validation skips unknown types: {}",
+        our.stdout
+    );
+
+    // json: byte-comparable modulo the upgrade check
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["doctor", "--json"]);
+    let their = run_in(&theirs.0, &ml, &["doctor", "--json"]);
+    assert_eq!(our.code, their.code, "json exit");
+    assert_eq!(
+        normalize_doctor_json(&our.stdout),
+        normalize_doctor_json(&their.stdout),
+        "json envelope"
+    );
+}
+
+#[test]
+fn doctor_ignores_allow_unknown_types_flag() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // checkUnknownTypes never consults --allow-unknown-types (the
+    // flag is validate's read-through hatch only) — the reference
+    // still exits 1 with it, and so do we.
+    let (ours, theirs) = twin_seeded("unk230f", None, &[("dev", UNK_TYPES_CORPUS)], &[]);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "doctor",
+        "--allow-unknown-types",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["doctor", "--allow-unknown-types"]);
+    assert_eq!(our.code, their.code, "exit");
+    assert_eq!(our.code, 1, "the check ignores the flag");
+    assert_eq!(
+        strip_upgrade_and_summary(&our.stdout),
+        strip_upgrade_and_summary(&their.stdout),
+        "plain stdout (update check scoped)"
+    );
+    assert_eq!(our.stderr, their.stderr, "plain stderr");
+    assert!(
+        our.stdout.contains("✗ 3 record(s) with unregistered types"),
+        "the finding stays: {}",
+        our.stdout
+    );
+}
