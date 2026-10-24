@@ -337,6 +337,21 @@ pub(crate) fn resolve_failure(command: &str, error: ResolveError) -> Failure {
     }
 }
 
+/// The strict domain read with its failure mapped onto the command's
+/// handled shape (mulch-a8f4): the pair ten call sites repeated beside
+/// [`read_and_resolve`]. `render_core_error` owns the byte law
+/// (malformed-line + unknown-type texts).
+pub(crate) fn read_domain_records(
+    command: &'static str,
+    store: &mulch::StoreFiles,
+    domain: &str,
+    allow_unknown: bool,
+) -> Result<Vec<mulch::LineRecord>, Failure> {
+    store
+        .read_records(domain, allow_unknown)
+        .map_err(|source| Failure::handled_on_stderr(command, render_core_error(&source)))
+}
+
 /// The read half of the record-locator seam: strict-reads the domain
 /// and resolves the identifier (exact id, bare hash, or unique prefix).
 /// `move` and `delete` reach this half directly — their prologues pin
@@ -344,15 +359,13 @@ pub(crate) fn resolve_failure(command: &str, error: ResolveError) -> Failure {
 /// domains first, `delete` checks the domain before its mode
 /// validation, mulch-e645).
 pub(crate) fn read_and_resolve(
-    command: &str,
+    command: &'static str,
     store: &mulch::StoreFiles,
     domain: &str,
     id: &str,
     allow_unknown: bool,
 ) -> Result<(Vec<mulch::LineRecord>, usize), Failure> {
-    let records = store
-        .read_records(domain, allow_unknown)
-        .map_err(|source| Failure::handled_on_stderr(command, render_core_error(&source)))?;
+    let records = read_domain_records(command, store, domain, allow_unknown)?;
     let position =
         mulch::resolve_record_id(&records, id).map_err(|error| resolve_failure(command, error))?;
     Ok((records, position))

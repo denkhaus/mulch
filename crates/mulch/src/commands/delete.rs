@@ -266,9 +266,7 @@ fn read_lines(
     domain: &str,
     allow_unknown: bool,
 ) -> Result<Vec<mulch::LineRecord>, Failure> {
-    store.read_records(domain, allow_unknown).map_err(|source| {
-        Failure::handled_on_stderr("delete", crate::commands::render_core_error(&source))
-    })
+    crate::commands::read_domain_records("delete", store, domain, allow_unknown)
 }
 
 /// A `serde_json::Value::Object` from a `json!` macro result.
