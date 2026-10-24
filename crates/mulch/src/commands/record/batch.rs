@@ -150,9 +150,7 @@ pub(super) fn stdin_batch(
     // drop, id-less survivors get ids — a skip-only or empty batch
     // leaves the file byte-identical; mulch-ca49).
     if !args.dry_run && (created > 0 || updated > 0) {
-        store
-            .rewrite_domain(&args.domain, &working)
-            .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
+        crate::commands::persist("record", store, &args.domain, &working)?;
     }
 
     let failed = !errors.is_empty();

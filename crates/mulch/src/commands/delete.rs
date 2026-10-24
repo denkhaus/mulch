@@ -179,9 +179,7 @@ pub(super) fn run(
             .filter(|(index, _)| !removal_indices.contains(index))
             .map(|(_, line)| line.record.clone())
             .collect();
-        store
-            .rewrite_domain(domain, &survivors)
-            .map_err(|source| Failure::handled("delete", crate::output::chain_message(&source)))?;
+        crate::commands::persist("delete", &store, domain, &survivors)?;
     }
 
     // The reference prints each deleted record's summary through the

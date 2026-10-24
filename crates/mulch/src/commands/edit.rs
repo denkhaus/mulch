@@ -98,9 +98,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
 
     records[position].record = updated;
     let payload: Vec<Value> = records.iter().map(|line| line.record.clone()).collect();
-    store
-        .rewrite_domain(&args.domain, &payload)
-        .map_err(|source| Failure::handled("edit", crate::output::chain_message(&source)))?;
+    crate::commands::persist("edit", &store, &args.domain, &payload)?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();

@@ -356,6 +356,23 @@ pub(crate) fn locate_record(
     Ok((store, records, position))
 }
 
+/// The write-path law of the mutating commands (mulch-b6d5): rewrite
+/// the domain file with the new record set, mapping a store failure
+/// onto the command's handled shape (chain-rendered). The projection
+/// to the record set stays at the call site — it differs per command
+/// (plain projection, index replace, survivor filter, batch working
+/// copy).
+pub(crate) fn persist(
+    command: &'static str,
+    store: &mulch::StoreFiles,
+    domain: &str,
+    records: &[serde_json::Value],
+) -> Result<(), Failure> {
+    store
+        .rewrite_domain(domain, records)
+        .map_err(|source| Failure::handled(command, chain_message_from(&source)))
+}
+
 /// The payload<->flag adapter (mulch-4ee2): the one owner of the six
 /// registry payload fields' CLI flag sources. `record` and `edit`
 /// read payload fields through [`PayloadFlags::get`], so the

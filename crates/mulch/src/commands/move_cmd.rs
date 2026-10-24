@@ -146,11 +146,7 @@ pub(super) fn run(
             .filter(|(position, _)| *position != index)
             .map(|(_, line)| line.record.clone())
             .collect();
-        store
-            .rewrite_domain(source, &survivors)
-            .map_err(|source_err| {
-                Failure::handled("move", crate::output::chain_message(&source_err))
-            })?;
+        crate::commands::persist("move", &store, source, &survivors)?;
 
         // Target: the seam's append-verbatim policy (existing bytes
         // preserved, newline guard included).

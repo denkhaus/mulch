@@ -180,9 +180,7 @@ pub(super) fn upsert_update(
     }
     let mut lines: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
     lines[index] = Value::Object(upserted.clone());
-    store
-        .rewrite_domain(&args.domain, &lines)
-        .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
+    crate::commands::persist("record", store, &args.domain, &lines)?;
 
     report_record_action(opts, args, RecordAction::Update { index }, Some(upserted));
     Ok(())

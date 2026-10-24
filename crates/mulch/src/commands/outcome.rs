@@ -195,9 +195,7 @@ fn append(
     };
     records[position].record = Value::Object(record);
     let payload: Vec<Value> = records.iter().map(|line| line.record.clone()).collect();
-    store
-        .rewrite_domain(domain, &payload)
-        .map_err(|source| Failure::handled("outcome", crate::output::chain_message(&source)))?;
+    crate::commands::persist("outcome", store, domain, &payload)?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();
