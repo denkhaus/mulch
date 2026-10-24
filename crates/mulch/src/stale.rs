@@ -44,24 +44,28 @@ impl StaleRule {
             // foundational and anything unknown never decay
             _ => return StaleVerdict::Fresh,
         };
-        let Some(recorded) = record
-            .get("recorded_at")
-            .and_then(Value::as_str)
-            .and_then(|raw| raw.parse::<Timestamp>().ok())
-        else {
+        // The reference's `new Date(record.recorded_at)` is the full
+        // JS Date constructor coercion ([`crate::date_ms`], mulch-c5c4):
+        // date-only stamps, the space separator, zone-less civil time,
+        // and the null/boolean/number coercions (null is the epoch —
+        // ancient, therefore stale) all parse where a strict ISO read
+        // returned None; `None` here is the JS NaN (missing field,
+        // garbage strings) — the never-stale arm below. This one
+        // extraction owner also aligns doctor's stale check and the
+        // future prune: every isRecordStale/isStale consumer reads the
+        // reference's `new Date(...)` everywhere.
+        let Some(recorded_ms) = crate::date_ms(record) else {
             return StaleVerdict::Unparsable;
         };
         // Reference boundary: Math.floor(age_in_days) > shelf — a
         // record goes stale at the FIRST instant of the (shelf+1)-th
-        // day, not after shelf days exactly. The comparison runs in
-        // plain i64 milliseconds: exact to the reference's
-        // millisecond semantics, and an absurd day count (an absurd
-        // config saturating the shelf) saturates the boundary out of
-        // reach instead of overflowing the verdict — a gigantic shelf
-        // is never stale.
-        let boundary_ms = days.saturating_add(1).saturating_mul(86_400_000);
-        let age_ms = now.as_millisecond() - recorded.as_millisecond();
-        if age_ms >= boundary_ms {
+        // day, not after shelf days exactly. The quotient runs in
+        // f64 milliseconds and floors exactly like the reference's
+        // division (both operands are TimeClip-bounded, so the span
+        // is finite), and an absurd day count saturates the shelf
+        // past every finite age — a gigantic shelf is never stale.
+        let age_days = ((crate::timestamp_ms(now) - recorded_ms) / 86_400_000.0).floor();
+        if age_days > days as f64 {
             StaleVerdict::Stale {
                 classification: shelf_class,
             }

@@ -287,6 +287,82 @@ fn status_partial_config_blocks_backfill_per_field_like_reference() {
     assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
 }
 
+// mulch-4d25 battery: the reference's status health block parses
+// recorded_at with `new Date(...)` (date-only stamps, the space
+// separator, zone-less civil time — the JS Date law) where a strict
+// ISO read returned None, and its oldest/newest selection compares
+// the RAW field strings; the probed symptom was spurious ROTTING
+// plus an off-by-a-day newest age on a fresh zone-less stamp.
+#[test]
+fn status_non_iso_recorded_at_stamps_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // The fresh zone-less stamp rides the runtime clock a full TWO
+    // days back (a full day inside the 14-day tactical shelf and 28
+    // inside the observational 30 — the boundary rule), rendered as
+    // civil time in the process zone exactly as both CLIs read it
+    // back; the ancient stamps sit in stable day buckets. The second
+    // domain keeps ONLY ancient non-ISO stamps, so its newest —
+    // picked by the raw-string law (space separator over date-only)
+    // — pins the rotting math on a non-ISO winner.
+    let then = jiff::Timestamp::now() - jiff::Span::new().hours(48);
+    let fresh_zoneless = then
+        .to_zoned(jiff::tz::TimeZone::system())
+        .strftime("%Y-%m-%dT%H:%M:%S")
+        .to_string();
+    let convention = |body: &str, at: &str, id: &str| {
+        format!(
+            r#"{{"type":"convention","classification":"tactical","recorded_at":"{at}","content":"{body}","id":"{id}"}}"#
+        )
+    };
+    let config = "version: '1'\ndomains:\n  dev: {}\n  olddev: {}\n";
+    let dev = [
+        convention("iso control", "2020-01-02T12:00:00.000Z", "mx-900001"),
+        convention("date only", "2020-01-01", "mx-900002"),
+        convention("space separator", "2020-01-01 12:00:00Z", "mx-900003"),
+        convention("zone less ancient", "2020-01-01T12:00:00", "mx-900004"),
+        convention("zone less fresh", &fresh_zoneless, "mx-900005"),
+    ]
+    .join("\n")
+        + "\n";
+    let olddev = [
+        convention("date only", "2020-01-01", "mx-900006"),
+        convention(
+            "space separator newest",
+            "2020-01-02 12:00:00Z",
+            "mx-900007",
+        ),
+    ]
+    .join("\n")
+        + "\n";
+    let (ours, theirs) = twin_seeded(
+        "noniso",
+        Some(config),
+        &[("dev", &dev), ("olddev", &olddev)],
+        &[],
+    );
+
+    // plain: byte-parity on both channels — the range, the rotting
+    // banner, and the day buckets all derive from the raw stamps
+    for args in [&["status"][..], &["--json", "status"][..]] {
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, their.code, "rc differs for {args:?}");
+        // JSON: the ISO ms-Z renders (lastUpdated, oldest_recorded,
+        // newest_recorded) normalize; the health block's RAW stamp
+        // strings compare verbatim on both sides.
+        let (our_out, their_out) = if args[0] == "--json" {
+            (normalize(&our.stdout), normalize(&their.stdout))
+        } else {
+            (our.stdout.clone(), their.stdout.clone())
+        };
+        assert_eq!(our_out, their_out, "stdout differs for {args:?}");
+        assert_eq!(our.stderr, their.stderr, "stderr differs for {args:?}");
+    }
+}
+
 // mulch-15d3 battery: the legacy singular `outcome` field with odd
 // values (absorbs mulch-1609) — listing, append, and doctor --fix
 // parity across number/string/null/array/empty-object shapes.

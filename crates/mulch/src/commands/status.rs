@@ -1,10 +1,11 @@
 //! `mulch status` — domain statistics, plain and `--json`.
 
+use std::cmp::Ordering;
 use std::fmt::Write as _;
 
 use jiff::Timestamp;
 use mulch::stale::{StaleRule, StaleVerdict};
-use mulch::{CLASSIFICATIONS, Counter, js_round_u64};
+use mulch::{CLASSIFICATIONS, Counter, js_round_u64, truthy};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -66,8 +67,8 @@ struct DomainStatus {
     domain:                String,
     count:                 usize,
     last_updated:          Option<Timestamp>,
-    oldest_recorded:       Option<Timestamp>,
-    newest_recorded:       Option<Timestamp>,
+    oldest:                StampSlot,
+    newest:                StampSlot,
     stale_count:           usize,
     rotting:               bool,
     rotting_days:          Option<u64>,
@@ -94,24 +95,24 @@ impl DomainStatus {
         // helper, `to_distribution`.
         let mut type_counts = Counter::seeded(&TYPES);
         let mut classification_counts = Counter::seeded(&CLASSIFICATIONS);
-        let mut oldest_recorded = None;
-        let mut newest_recorded = None;
+        let mut oldest = StampSlot::default();
+        let mut newest = StampSlot::default();
         let mut stale_count = 0;
 
         for record in records {
             let field = |name: &str| record.get(name);
             type_counts.bump_field(field("type"));
             classification_counts.bump_known_field(field("classification"), &CLASSIFICATIONS);
-            if let Ok(Some(recorded)) =
-                parse_timestamp(field("recorded_at").and_then(Value::as_str))
-            {
-                if oldest_recorded.is_none_or(|o| recorded < o) {
-                    oldest_recorded = Some(recorded);
-                }
-                if newest_recorded.is_none_or(|n| recorded > n) {
-                    newest_recorded = Some(recorded);
-                }
-            }
+            // The oldest/newest selection compares the RAW recorded_at
+            // values (JS relational semantics over whatever JSON type
+            // the field carries) and only coerces the winner through
+            // `new Date(...)` at render time — a strict-ISO selection
+            // diverged on every non-ISO-but-JS-parseable stamp
+            // (mulch-4d25: date-only, space separator, zone-less
+            // civil time, and the null/number coercions).
+            let raw = field("recorded_at");
+            oldest = oldest.older(raw);
+            newest = newest.newer(raw);
             // The verdict owns the decay rule (reference isRecordStale:
             // unknown/missing -> never stale, and the (shelf+1)-day
             // boundary); it parses recorded_at itself.
@@ -121,20 +122,21 @@ impl DomainStatus {
         }
 
         // Rotting is the NEWEST record's age vs the observational
-        // shelf life (reference status.ts), not the stale count.
-        let (rotting, rotting_days) = match newest_recorded {
-            Some(newest) => {
-                // Math.floor of the total-hours quotient (reference
-                // age-in-days); the span is finite and non-negative
-                let age_days =
-                    js_round_u64(((now - newest).total(jiff::Unit::Hour)).unwrap_or(0.0) / 24.0);
-                if age_days > shelf.observational {
-                    (true, Some(age_days))
+        // shelf life (reference status.ts), not the stale count:
+        // `new Date(newest)` — truthiness-gated — then Math.floor of
+        // the day quotient, strictly above the shelf. An Invalid Date
+        // (truthy but unparsable) floors to NaN and never rots.
+        let now_ms = mulch::timestamp_ms(now);
+        let (rotting, rotting_days) = match newest.as_date() {
+            DateOf::Ms(newest_ms) => {
+                let age_days = ((now_ms - newest_ms) / 86_400_000.0).floor();
+                if age_days > shelf.observational as f64 {
+                    (true, Some(days_u64(age_days)))
                 } else {
                     (false, None)
                 }
             }
-            None => (false, None),
+            _ => (false, None),
         };
 
         Self {
@@ -144,8 +146,8 @@ impl DomainStatus {
             hard_limit: governance.hard_limit,
             count: records.len(),
             last_updated: mtime,
-            oldest_recorded,
-            newest_recorded,
+            oldest,
+            newest,
             stale_count,
             rotting,
             rotting_days,
@@ -156,6 +158,7 @@ impl DomainStatus {
 
     /// The plain one-line summary (relative times like the reference).
     fn plain_line(&self, now: Timestamp) -> String {
+        let now_ms = mulch::timestamp_ms(now);
         let mut line = format!(
             "  {}: {} records (updated {})",
             self.domain,
@@ -163,15 +166,24 @@ impl DomainStatus {
             self.last_updated
                 .map_or_else(|| "never".into(), |t| relative(t, now))
         );
-        if let (Some(oldest), Some(newest)) = (self.oldest_recorded, self.newest_recorded) {
-            let oldest_ago = relative(oldest, now);
-            let newest_ago = relative(newest, now);
-            if oldest_ago == newest_ago {
-                let _ = write!(line, " — recorded {oldest_ago}");
-            } else {
-                let _ = write!(line, " — recorded {oldest_ago} → {newest_ago}");
+        // The reference gates the range on the DATES' truthiness
+        // (an Invalid Date is truthy — it renders as `NaNd ago`);
+        // only a falsy/absent winner skips the range.
+        let range = match (&self.oldest, &self.newest) {
+            (StampSlot::Won(oldest), StampSlot::Won(newest))
+                if truthy(oldest) && truthy(newest) =>
+            {
+                let oldest_ago = mulch::time_ago(mulch::js_date_ms(oldest), now_ms);
+                let newest_ago = mulch::time_ago(mulch::js_date_ms(newest), now_ms);
+                if oldest_ago == newest_ago {
+                    format!(" — recorded {oldest_ago}")
+                } else {
+                    format!(" — recorded {oldest_ago} → {newest_ago}")
+                }
             }
-        }
+            _ => String::new(),
+        };
+        let _ = write!(line, "{range}");
         // Governance thresholds, then rotting (reference order)
         if count64(self.count) >= self.hard_limit {
             let _ = write!(line, " ⚠ OVER HARD LIMIT — must decompose");
@@ -211,27 +223,24 @@ impl DomainStatus {
             "classification_distribution".into(),
             self.classification_counts.to_distribution(),
         );
-        health.insert(
-            "oldest_timestamp".into(),
-            timestamp_json(self.oldest_recorded),
-        );
-        health.insert(
-            "newest_timestamp".into(),
-            timestamp_json(self.newest_recorded),
-        );
+        // The health timestamps carry the RAW winners: the reference's
+        // selection compares and keeps the field value verbatim (a
+        // date-only stamp renders "2020-01-01"); an all-undefined
+        // store DROPS the keys (JSON.stringify omits undefined
+        // properties), an empty one renders null.
+        if let Some(value) = self.oldest.health_json() {
+            health.insert("oldest_timestamp".into(), value);
+        }
+        if let Some(value) = self.newest.health_json() {
+            health.insert("newest_timestamp".into(), value);
+        }
 
         let mut body = Map::new();
         body.insert("domain".into(), Value::String(self.domain));
         body.insert("count".into(), json_num(self.count as u64));
         body.insert("lastUpdated".into(), timestamp_json(self.last_updated));
-        body.insert(
-            "oldest_recorded".into(),
-            timestamp_json(self.oldest_recorded),
-        );
-        body.insert(
-            "newest_recorded".into(),
-            timestamp_json(self.newest_recorded),
-        );
+        body.insert("oldest_recorded".into(), iso_json(&self.oldest.as_date()));
+        body.insert("newest_recorded".into(), iso_json(&self.newest.as_date()));
         body.insert("rotting".into(), Value::Bool(self.rotting));
         body.insert("rotting_days".into(), match self.rotting_days {
             Some(days) => Value::from(days),
@@ -242,24 +251,21 @@ impl DomainStatus {
     }
 }
 
-/// Reads a domain's records for reporting through the strict reader
-/// (the reference status uses `readExpertiseFile`): arrays count as
-/// records, scalar/null lines are a clean error where the reference
-/// crashes, unknown types error unless allowed. The seam supplies the
-/// modification time.
+/// Reads a domain's records for reporting through the shared strict
+/// reader seam (mulch-a8f4; the reference status uses
+/// `readExpertiseFile`): arrays count as records, scalar/null lines
+/// are a clean error where the reference crashes, unknown types error
+/// unless allowed. The seam supplies the modification time.
 fn read_domain(
     opts: &GlobalOpts,
     store: &mulch::StoreFiles,
     domain: &str,
 ) -> Result<(Vec<Value>, Option<Timestamp>), Failure> {
-    let records = store
-        .read_records(domain, opts.allow_unknown_types)
-        .map_err(|source| {
-            Failure::handled_on_stderr("status", crate::commands::render_core_error(&source))
-        })?
-        .into_iter()
-        .map(|line| line.record)
-        .collect();
+    let records =
+        crate::commands::read_domain_records("status", store, domain, opts.allow_unknown_types)?
+            .into_iter()
+            .map(|line| line.record)
+            .collect();
     let mtime = store
         .domain_modified(domain)
         .map_err(|source| Failure::handled("status", crate::output::chain_message(&source)))?
@@ -267,12 +273,227 @@ fn read_domain(
     Ok((records, mtime))
 }
 
-/// Parses an ISO-8601 timestamp with `Z` offset.
-fn parse_timestamp(raw: Option<&str>) -> Result<Option<Timestamp>, jiff::Error> {
-    match raw {
-        None => Ok(None),
-        Some(text) => text.parse::<Timestamp>().map(Some),
+/// The raw `recorded_at` winner of the health selection. The
+/// reference carries the RAW field value through the loop (JS
+/// relational comparisons, strict `<`/`>` keeping the first record on
+/// ties) and only coerces it through `new Date(...)` when rendering —
+/// probed 2026-10-24 (mulch-4d25): a space-separated stamp wins
+/// "oldest" over a lexicographically-later but temporally-earlier
+/// T-separated one, and the health block echoes the raw strings.
+#[derive(Default)]
+enum StampSlot {
+    /// No record seen (the loop's `null` seed): health renders null.
+    #[default]
+    Empty,
+    /// The winning record had NO recorded_at (JS `undefined`): the
+    /// health JSON key DROPS (JSON.stringify omits undefined
+    /// properties); every date consumer treats it as falsy.
+    Missing,
+    /// The winning raw value, whatever JSON type it carries.
+    Won(Value),
+}
+
+impl StampSlot {
+    /// `!winner || candidate < winner` — the oldest slot's law.
+    fn older(self, candidate: Option<&Value>) -> Self {
+        self.displaced(candidate, Ordering::Less)
     }
+
+    /// `!winner || candidate > winner` — the newest slot's law.
+    fn newer(self, candidate: Option<&Value>) -> Self {
+        self.displaced(candidate, Ordering::Greater)
+    }
+
+    /// The shared displacement law: a falsy live winner (or none yet)
+    /// takes any candidate unconditionally (`!oldestTimestamp`); a
+    /// truthy winner keeps the slot unless the strict JS comparison
+    /// displaces it — ties keep the FIRST record, and a `undefined`
+    /// candidate's NaN never displaces.
+    fn displaced(self, candidate: Option<&Value>, direction: Ordering) -> Self {
+        match self {
+            Self::Won(ref winner) if truthy(winner) => match candidate {
+                Some(value) if js_rel(value, winner) == Some(direction) => Self::Won(value.clone()),
+                _ => self,
+            },
+            _ => candidate.map_or(Self::Missing, |value| Self::Won(value.clone())),
+        }
+    }
+
+    /// The health block's value: the raw JSON value, `null` for the
+    /// empty seed, and NOTHING for the undefined winner (the key
+    /// drops).
+    fn health_json(&self) -> Option<Value> {
+        match self {
+            Self::Empty => Some(Value::Null),
+            Self::Missing => None,
+            Self::Won(value) => Some(value.clone()),
+        }
+    }
+
+    /// The truthiness-gated `new Date(winner)`: [`DateOf::None`] —
+    /// no Date at all (a falsy or absent winner; the plain range and
+    /// rotting skip); [`DateOf::Invalid`] — a truthy winner that is
+    /// an Invalid Date (the plain range still renders, as `NaNd
+    /// ago`, and rotting stays false); [`DateOf::Ms`] — the
+    /// constructor-coerced epoch milliseconds.
+    fn as_date(&self) -> DateOf {
+        match self {
+            Self::Won(value) if truthy(value) => match mulch::js_date_ms(value) {
+                Some(ms) => DateOf::Ms(ms),
+                None => DateOf::Invalid,
+            },
+            _ => DateOf::None,
+        }
+    }
+}
+
+/// `new Date(winner)` behind the reference's `winner ? … : null`
+/// truthiness gate (status.ts) — the three-way outcome the plain,
+/// JSON, and rotting consumers each read differently.
+enum DateOf {
+    /// A falsy or absent winner: no Date object was constructed.
+    None,
+    /// A truthy winner whose coercion is the JS Invalid Date.
+    Invalid,
+    /// The coerced epoch milliseconds.
+    Ms(f64),
+}
+
+/// The JS abstract relational comparison over two raw values: both
+/// ToPrimitive sides strings -> lexicographic; otherwise ToNumber
+/// both, where a NaN on either side makes EVERY comparison false.
+/// The recorded_at selection runs through this (a number recorded_at
+/// therefore pins both slots against every date string, probed
+/// mulch-4d25).
+fn js_rel(candidate: &Value, winner: &Value) -> Option<Ordering> {
+    match (to_primitive(candidate), to_primitive(winner)) {
+        (Primitive::Str(a), Primitive::Str(b)) => Some(a.cmp(&b)),
+        (a, b) => {
+            let (a, b) = (to_number(&a), to_number(&b));
+            if a.is_nan() || b.is_nan() {
+                None
+            } else {
+                // partial_cmp is total once NaN is excluded
+                Some(a.partial_cmp(&b).unwrap_or(Ordering::Equal))
+            }
+        }
+    }
+}
+
+/// ToPrimitive (no hint) of a JSON value: strings stay strings;
+/// null/booleans/numbers contribute their ToNumber side; arrays and
+/// objects fall to their JS toString (`[]` is the empty string —
+/// which BEATS every date string lexicographically as a candidate).
+enum Primitive {
+    Str(String),
+    Num(f64),
+}
+
+fn to_primitive(value: &Value) -> Primitive {
+    match value {
+        Value::String(text) => Primitive::Str(text.clone()),
+        Value::Number(number) => Primitive::Num(number.as_f64().unwrap_or(f64::NAN)),
+        Value::Bool(flag) => Primitive::Num(f64::from(u8::from(*flag))),
+        Value::Null => Primitive::Num(0.0),
+        Value::Array(items) => Primitive::Str(array_to_string(items)),
+        Value::Object(_) => Primitive::Str("[object Object]".into()),
+    }
+}
+
+/// ToNumber of a primitive: numbers pass through; strings take the JS
+/// numeric-literal grammar (a trimmed empty string is 0, Infinity/NaN
+/// only by their exact spellings, `0x` hex, decimal otherwise; every
+/// other shape is NaN — date strings always are, which is what makes
+/// mixed-type comparisons false).
+fn to_number(primitive: &Primitive) -> f64 {
+    match primitive {
+        Primitive::Num(number) => *number,
+        Primitive::Str(text) => js_to_number(text),
+    }
+}
+
+fn js_to_number(text: &str) -> f64 {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    match trimmed {
+        "Infinity" | "+Infinity" => return f64::INFINITY,
+        "-Infinity" => return f64::NEG_INFINITY,
+        // ToNumber resolves NaN's sign away; JS accepts the signed
+        // spellings as the same NaN
+        "NaN" | "+NaN" | "-NaN" => return f64::NAN,
+        _ => {}
+    }
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return u128::from_str_radix(hex, 16).map_or(f64::NAN, |value| value as f64);
+    }
+    // JS numeric literals start with a digit, sign, or decimal point —
+    // the guard rejects Rust's case-insensitive "inf"/"nan" parses.
+    let first = trimmed.as_bytes()[0];
+    if !(first.is_ascii_digit() || matches!(first, b'+' | b'-' | b'.')) {
+        return f64::NAN;
+    }
+    trimmed.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+/// Array.prototype.toString: elements joined by `,` with nested
+/// arrays flattened and null rendering empty. Number elements render
+/// Rust-style — a bounded approximation (the JS decimal
+/// stringification agrees on every integral value; recorded_at is
+/// schema-required to be a string, so arrays only reach the
+/// comparison as a hostile store's oddity).
+fn array_to_string(items: &[Value]) -> String {
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Null => String::new(),
+            Value::String(text) => text.clone(),
+            Value::Bool(flag) => flag.to_string(),
+            Value::Number(number) => number
+                .as_f64()
+                .map_or_else(String::new, |value| format!("{value}")),
+            Value::Array(nested) => array_to_string(nested),
+            Value::Object(_) => "[object Object]".into(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The rotting day count as the rendered u64 shape: the comparison
+/// above already established the value strictly above the (u64)
+/// shelf, hence positive, and the TimeClip-bounded span keeps the
+/// quotient under 2^53.
+fn days_u64(age_days: f64) -> u64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "positive by the > shelf comparison and far below 2^53"
+    )]
+    let days = age_days as u64;
+    days
+}
+
+/// `new Date(winner)?.toISOString() ?? null` — the body block's ISO
+/// rendering of the coerced winner. The reference THROWS (RangeError)
+/// on a truthy Invalid Date in JSON mode; we render null — the
+/// documented clean-deviation class for reference crashes (the plain
+/// channel renders `NaNd ago` and exits 0 there). A numeric stamp
+/// inside TimeClip but beyond jiff's year-9999 range also renders
+/// null.
+fn iso_json(date: &DateOf) -> Value {
+    let DateOf::Ms(ms) = *date else {
+        return Value::Null;
+    };
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "TimeClip bounds |ms| within i64"
+    )]
+    let ms = ms as i64;
+    timestamp_json(Timestamp::from_millisecond(ms).ok())
 }
 
 /// The record count as the thresholds' u64 shape.

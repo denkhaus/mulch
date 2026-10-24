@@ -47,6 +47,21 @@ fork. The rewrite target's CLI is published as `@os-eco/mulch-cli`
 Deliberate divergences from the reference `ml` 0.10.7, each with its own
 expectation (the parity rule: never silently):
 
+- **Archive banner promotes this binary.** The reference's
+  `ARCHIVE_BANNER` (src/utils/archive.ts) reads
+  `# ARCHIVED — not for active use. Run \`ml restore <id>\` to revive.`
+  Ours ships the same law with our binary's name:
+  `# ARCHIVED — not for active use. Run \`mulch restore <id>\` to revive.`
+  (the same law as the record retry-echo: shipped strings name this
+  binary). Byte delta vs the reference: +3 bytes on the banner (empty
+  archive file: 71 bytes vs the reference's 68).
+- **`status --json` renders a clean null where the reference crashes.**
+  A garbage `recorded_at` (unparsable even to JS) in the health block's
+  oldest/newest range makes the reference's JSON path throw a
+  `RangeError` (exit 1, no envelope); we render the winner as `null`
+  (plain renders `NaNd ago`, exit 0 — identical to the reference's
+  plain path). Expectation: JSON status completes with `null` where
+  the reference aborts.
 - **Crash paths render as clean errors.** The reference exits 1 with a
   raw Bun stack trace (no envelope) for (a) `.mulch/` without
   `mulch.config.yaml`, (b) `validate` with no `.mulch/` at all, and
