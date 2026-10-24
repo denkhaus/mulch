@@ -29,6 +29,7 @@ pub mod schema;
 pub mod scoring;
 pub mod stale;
 mod store_files;
+mod time;
 mod upsert;
 
 pub use config::{
@@ -44,8 +45,8 @@ pub use ids::{
 // `mulch::jsval` stays the deep path for the rest, e.g. `js_dedup_eq`)
 #[doc(inline)]
 pub use jsval::{
-    js_key_sorted, js_length, js_round_u64, js_string, js_truncate, parse_non_negative_number,
-    truthy, truthy_str, value_text,
+    js_key_sorted, js_length, js_number, js_round_u64, js_string, js_truncate, parse_duration,
+    parse_non_negative_number, parse_strict_positive_int, truthy, truthy_str, value_text,
 };
 pub use query::{DomainSpec, RecordFilter, UnknownDomain, domain_set};
 pub use records::{
@@ -57,6 +58,7 @@ pub use repair::{LineAction, parsed_records, raw_line_pass, value_line_pass};
 pub use schema::CLASSIFICATIONS;
 pub use scoring::{apply_confirmation_boost, confirmation_score};
 pub use store_files::{StoreFiles, StoreLocation};
+pub use time::{date_ms, js_date_ms, now_ms, parse_js_date, time_ago};
 pub use upsert::{
     OutcomeEntry, UpsertPlan, assign_missing_id, find_duplicate, merge_outcomes, upsert_plan,
     write_records,

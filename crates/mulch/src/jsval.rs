@@ -142,6 +142,67 @@ pub fn parse_non_negative_number(raw: &str) -> Option<Value> {
     Some(Value::from(number))
 }
 
+/// `parseStrictPositiveInt` (utils/numeric-flags.ts — the jsval seam,
+/// mulch-a878): `/^\d+$/` plus a JS `Number()` that must stay finite
+/// and `>= 1` — so `0`, `-1`, `3.7`, `10abc` reject while `007` (7)
+/// and huge digit strings (1e24) pass; the consuming slice clamps
+/// (JS `slice(0, 1e24)` clamps to the array length; usize::MAX clamps
+/// the same way for every real store size).
+pub fn parse_strict_positive_int(raw: &str) -> Option<usize> {
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let number: f64 = raw.parse().ok()?;
+    if !number.is_finite() || number < 1.0 {
+        return None;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "bounded by usize::MAX and finite (Number semantics)"
+    )]
+    Some(number.min(usize::MAX as f64) as usize)
+}
+
+/// `parseDuration` (utils/numeric-flags.ts): `/^(\d+)(h|d|w)$/`, the
+/// unit in milliseconds. The digit run parses as a JS `Number` (huge
+/// runs overflow to infinity, exactly like `parseInt`), so the
+/// arithmetic stays in `f64`. `Err` carries the reference's message
+/// verbatim.
+pub fn parse_duration(raw: &str) -> Result<f64, String> {
+    let invalid =
+        || format!("Invalid duration: \"{raw}\". Use format like \"24h\", \"7d\", \"2w\".");
+    let Some((at, unit)) = raw.char_indices().next_back() else {
+        return Err(invalid());
+    };
+    let digits = &raw[..at];
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    let factor = match unit {
+        'h' => 3_600_000.0,
+        'd' => 86_400_000.0,
+        'w' => 7.0 * 86_400_000.0,
+        _ => return Err(invalid()),
+    };
+    let value: f64 = digits.parse().map_err(|_| invalid())?;
+    Ok(value * factor)
+}
+
+/// A JS-number JSON value: integer-valued floats serialize without
+/// the decimal point (`JSON.stringify(0)` is `0`, not `0.0`).
+pub fn js_number(value: f64) -> Value {
+    if value.fract() == 0.0 && value.abs() < 9.007_199_254_740_992e15 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the bound check keeps the integer exact"
+        )]
+        Value::from(value as i64)
+    } else {
+        Value::from(value)
+    }
+}
+
 /// Math.round's non-negative clamp: finite positive inputs round into
 /// u64 (the reference's threshold computations feed it pre-rounded,
 /// non-negative values), everything else falls to 0.
