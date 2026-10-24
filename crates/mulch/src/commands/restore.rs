@@ -18,7 +18,7 @@
 use mulch::{LineRecord, record_summary, resolve_record_id, value_text};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{now_iso, open_store_mut, persist, read_domain_records, render_core_error};
+use crate::commands::{open_store_mut, persist, read_domain_records, render_core_error};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `restore` (mutating: the store writer lock spans the whole
@@ -78,10 +78,10 @@ pub(super) fn run(opts: &GlobalOpts, id: &str) -> Result<(), Failure> {
     // Pre-check: refuse to restore over an existing live id BEFORE
     // touching the archive.
     let existing = read_domain_records("restore", &store, &domain, opts.allow_unknown_types)?;
-    let live_conflict = existing
+    if let Some(conflict) = existing
         .iter()
-        .find(|line| line.id() == Some(record_id.as_str()));
-    if let Some(conflict) = live_conflict {
+        .find(|line| line.id() == Some(record_id.as_str()))
+    {
         return Err(Failure::handled_on_stderr(
             "restore",
             format!(
@@ -137,28 +137,11 @@ pub(super) fn run(opts: &GlobalOpts, id: &str) -> Result<(), Failure> {
 
     let live = strip_archive_fields(&removed.record);
 
-    // Race-safe re-check inside the write path; on conflict the
-    // archive keeps the record (rolled back with its original
-    // reason). Unreachable under the store lock — the pre-check above
-    // returned on the same in-memory read.
-    if let Some(conflict) = live_conflict {
-        if let Err(source) =
-            store.archive_records(&domain, &[live], &now_iso(), &value_text(&original_reason))
-        {
-            return Err(Failure::handled_on_stderr(
-                "restore",
-                format!("Error: {}", crate::output::chain_message(&source)),
-            ));
-        }
-        return Err(Failure::handled_on_stderr(
-            "restore",
-            format!(
-                "Error: Live record \"{record_id}\" appeared in domain \"{domain}\" while restore \
-                 was in flight (classification: {}). Re-archived; nothing changed.",
-                field_text(conflict.record.get("classification")),
-            ),
-        ));
-    }
+    // The reference's race-lost rollback (re-archive with the
+    // original reason) has no equivalent here: the store writer lock
+    // spans the pre-check and the live write, so a duplicate cannot
+    // appear in between, and persist reports I/O failures as errors
+    // without a conflict signal.
 
     let mut restored: Vec<serde_json::Value> =
         existing.iter().map(|line| line.record.clone()).collect();
