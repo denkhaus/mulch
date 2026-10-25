@@ -232,7 +232,12 @@ its own tickets explicitly.) Before the fold commit:
 grep-verify EVERY claimed fix against the code in the same cell — the
 claim-without-land class (an assert-abort mid-batched-python-cell lands the
 EARLIER writes and silently kills the later ones) extends to every claimed
-write of ANY multi-replace cell, not only folds. Clean up reviewer children.
+write of ANY multi-replace cell, not only folds. **A reviewer's live probe
+that shows a byte divergence becomes a BATTERY TEST, not just a fix** —
+verify it red before the fix and green after, so the pin has teeth (sprint
+42: the spec probe caught an adoption key-order divergence that 22 hook
+tests missed; the negative run proved the new test fails without the fix).
+Clean up reviewer children.
 A sprint is NOT closed until its SHORT reflection (step 6) ran and
 `sprints_reflected` caught up.
 
