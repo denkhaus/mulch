@@ -172,8 +172,15 @@ expectation (the parity rule: never silently):
   dumps an `EPIPE: broken pipe` trace and exits 1). This port's engine
   never prints (callers forward each script's captured stderr in
   invocation order) and its stdin writer ignores a broken pipe, so both
-  artifacts are absent by construction. Hook stdout, blocking, timeout,
-  mutation, and warning semantics match the reference byte-for-byte.
+  artifacts are absent by construction. Two wording-level deviations ride
+  the documented malformed-JSONL class: a mutable hook's non-JSON stdout
+  warns with serde's parse message where the reference carries V8's
+  (`JSON Parse error: Unexpected identifier "…"`), and a `pre-prune`
+  hook runs while this port already holds the store's writer lock (the
+  reference takes only its per-domain locks later, in the write phase) —
+  a hook that shells back into a mutating command on the same store
+  fails fast here and succeeds there. Blocking, timeout, mutation,
+  stdout-ignored and stderr-byte semantics match the reference.
 - **`compact --auto` aborts cleanly on a `manual`-strategy group.**
   The reference crashes with an uncaught-throw stack dump when a
   `manual` custom type reaches the mechanical merge; this port prints

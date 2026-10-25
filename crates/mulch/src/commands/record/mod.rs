@@ -7,15 +7,13 @@
 //! pre-record fires BEFORE the writer lock (skipped in dry-run),
 //! post-record AFTER the actual write, outside the lock.
 
-use std::path::PathBuf;
-
 use mulch::hooks::{HookEvent, run_hooks};
 use mulch::truthy_str;
 use serde_json::{Map, Value, json};
 
 use crate::cli::{GlobalOpts, RecordArgs};
 use crate::commands::failure::now_iso;
-use crate::commands::hooks_surface::forward_hook_stderr;
+use crate::commands::hooks_surface::{forward_hook_stderr, hook_cwd};
 use crate::commands::record::batch::{read_batch_file, stdin_batch};
 use crate::commands::record::flag::{build_record, evidence_map};
 use crate::commands::record::report::{RecordAction, report_record_action, skip_advisory};
@@ -294,13 +292,6 @@ fn action_verb(action: RecordAction) -> &'static str {
     }
 }
 
-/// The hooks' working directory (the reference spawns scripts in the
-/// CLI's cwd, which may be a project subdirectory).
-fn hook_cwd() -> Result<PathBuf, Failure> {
-    std::env::current_dir()
-        .map_err(|source| Failure::handled("record", format!("resolving cwd: {source}")))
-}
-
 /// The fallback block reason when the engine reports none (the
 /// reference's `?? "pre-record hook blocked the write"`).
 const BLOCK_DEFAULT: &str = "pre-record hook blocked the write";
@@ -308,7 +299,7 @@ const BLOCK_DEFAULT: &str = "pre-record hook blocked the write";
 /// The mutation gate's `payload.record` read (`payload?.record`):
 /// JSON truthiness — absent, null, false, zero, and the empty string
 /// never adopt; any other value (objects, arrays, `true`, non-empty
-/// scalars) proceeds to the comparison.
+/// scalars) is adopted after validation.
 fn truthy_payload_record(payload: &Value) -> Option<&Value> {
     let record = payload.get("record")?;
     let truthy = !matches!(record, Value::Null | Value::Bool(false))
@@ -375,7 +366,8 @@ fn pre_record_phase(
     let mut sent = record.clone();
     sent.remove("id");
     let payload = json!({"domain": domain, "record": sent});
-    let result = run_hooks(HookEvent::PreRecord, payload, store, &hook_cwd()?);
+    let cwd = hook_cwd("record")?;
+    let result = run_hooks(HookEvent::PreRecord, payload, store, &cwd);
     forward_hook_stderr(&result.executions);
     if result.blocked {
         return Err(hook_failure(
@@ -383,9 +375,13 @@ fn pre_record_phase(
         ));
     }
     let mut record = record;
+    // The reference's adoption guard is object IDENTITY
+    // (`mutated !== record` in record.ts) — always true for a parsed
+    // hook answer, so an echo is adopted too (key order and all). A
+    // deep-equality shortcut here would silently keep the builder's
+    // bytes where the reference writes the hook's.
     if result.ran_any
         && let Some(mutated) = truthy_payload_record(&result.payload)
-        && *mutated != Value::Object(sent)
     {
         if let mulch::schema::FullVerdict::Invalid { subs, .. } =
             mulch::schema::full_verdict(store.registry(), mutated)
@@ -412,7 +408,12 @@ fn post_record_phase(
     action: &str,
 ) -> Vec<String> {
     let payload = json!({"domain": domain, "record": record, "action": action});
-    let cwd = hook_cwd().unwrap_or_default();
+    // A post-* event never fails the parent command: an unresolvable
+    // cwd skips the observation hook with a warning instead of an
+    // error (the write already happened).
+    let Ok(cwd) = hook_cwd("record") else {
+        return vec!["post-record hook skipped: the working directory is unavailable".into()];
+    };
     let result = run_hooks(HookEvent::PostRecord, payload, store, &cwd);
     forward_hook_stderr(&result.executions);
     result.warnings

@@ -650,6 +650,10 @@ pub(crate) fn is_reference_env_line(line: &str) -> bool {
         || line.contains("Run `mulch upgrade`")
         || line.contains("Native binary")
         || line.contains("unable to check registry")
+        // The registry probe's third outcome (doctor.ts `cmp >= 0`):
+        // `✓ Version <cur> is up to date` — reachable the day the
+        // installed version is the latest one.
+        || line.contains("is up to date")
 }
 
 /// Plain doctor output modulo the documented upgrade-check deviation
@@ -667,6 +671,72 @@ pub(crate) fn strip_upgrade_and_summary(text: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Strips the reference runtime's stderr noise: the async EPIPE trace
+/// Bun 1.4.0's child-pipe teardown throws, the pino level-40 line a
+/// failed hook logs, and Bun's crash footer (probes:
+/// /tmp/sprint42/childB/probes/stab — none of it is the hook law's
+/// bytes, and the same flake flips successful reference exits to 1,
+/// which [`assert_flaked_exit`] absorbs).
+pub(crate) fn strip_reference_hook_noise(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_trace = false;
+    for line in text.lines() {
+        if line.starts_with("EPIPE: broken pipe") {
+            in_trace = true;
+            continue;
+        }
+        if in_trace {
+            // The trace rows (indentation not pinned): the errno/code
+            // rows, a blank, and the stack rows, ending at the first
+            // unrelated line.
+            let trimmed = line.trim_start();
+            let trace_row = line.is_empty()
+                || trimmed.starts_with("syscall:")
+                || trimmed.starts_with("errno:")
+                || trimmed.starts_with("code:")
+                || trimmed.starts_with("at ");
+            if trace_row {
+                continue;
+            }
+            in_trace = false;
+        }
+        if line.starts_with("{\"level\":40,") || line == "Bun v1.4.0 (Linux x64)" {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    format!("{}\n", out.trim_end_matches('\n'))
+}
+
+/// The reference's EPIPE flake can flip a successful run's exit to 1;
+/// ours must carry the law's exit, theirs may carry either — but ONLY
+/// with the trace on stderr, so a genuine exit-code divergence in a
+/// hook path still fails the assertion.
+pub(crate) fn assert_flaked_exit(
+    our: i32,
+    their: i32,
+    their_stderr: &str,
+    expected: i32,
+    tag: &str,
+) {
+    assert_eq!(our, expected, "{tag}: our exit is the law's");
+    if their == expected {
+        return;
+    }
+    assert!(
+        their == 1 && their_stderr.contains("EPIPE: broken pipe"),
+        "{tag}: reference exit {their} (law {expected}); exit 1 is allowed only \
+         as the EPIPE flake, but stderr carries no trace: {their_stderr:?}"
+    );
+}
+
+/// The hook's stdin capture (written by `cat > hook-stdin.txt` into
+/// the store's cwd during the run); `None` when the hook never fired.
+pub(crate) fn hook_stdin(dir: &Path) -> Option<String> {
+    std::fs::read_to_string(dir.join("hook-stdin.txt")).ok()
 }
 
 /// The config file's text, for domain side-effect pins.

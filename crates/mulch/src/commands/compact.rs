@@ -42,7 +42,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::{CompactArgs, GlobalOpts};
 use crate::commands::failure::now_iso;
-use crate::commands::hooks_surface::forward_hook_stderr;
+use crate::commands::hooks_surface::{forward_hook_stderr, hook_cwd, print_hook_warnings};
 use crate::commands::store::{open_store, open_store_mut, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -350,7 +350,7 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
     let mut total_compacted = 0;
     let mut results: Vec<(String, String, usize)> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cwd = hook_cwd("compact")?;
     let mut index = 0;
     while index < selected.len() {
         let domain = selected[index].0.clone();
@@ -485,15 +485,7 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
         print_line(opts.quiet, &details.join("\n"));
     }
     if !opts.quiet {
-        for warning in &warnings {
-            #[allow(
-                clippy::print_stderr,
-                reason = "the reference's skip warnings ride stderr"
-            )]
-            {
-                eprintln!("Warning: {warning}");
-            }
-        }
+        print_hook_warnings(&warnings);
     }
     Ok(())
 }
@@ -552,7 +544,7 @@ fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Fail
     // the replacement is built — a block aborts before any write; the
     // engine's own warnings print plain-mode only (not quiet-gated);
     // a truthy `payload.replacement` then overrides the user flags.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cwd = hook_cwd("compact")?;
     let hook = mulch::hooks::run_hooks(
         mulch::hooks::HookEvent::PreCompact,
         pre_compact_payload(domain, &record_type, &source),
@@ -567,15 +559,7 @@ fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Fail
         ));
     }
     if !opts.json {
-        for warning in &hook.warnings {
-            #[allow(
-                clippy::print_stderr,
-                reason = "the reference's plain-mode hook warnings ride stderr"
-            )]
-            {
-                eprintln!("Warning: {warning}");
-            }
-        }
+        print_hook_warnings(&hook.warnings);
     }
     let replacement = match adopt_replacement(&hook.payload, &compacted_from, store.registry()) {
         Err(reason) => return Err(compact_failure(opts.json, reason)),

@@ -2383,6 +2383,45 @@ fn record_hook_payloads_match_reference() {
     assert_hook_store_same(&ours, &theirs);
 }
 
+/// Adoption is the reference's object IDENTITY check
+/// (`mutated !== record`, record.ts): a hook that re-emits the SAME
+/// values in a different key order is adopted, so the written line
+/// carries the hook's order. A value-equality shortcut here silently
+/// keeps the builder's order — an undocumented store-file divergence
+/// (sprint-42 spec review probe).
+#[test]
+fn record_hook_echo_adopts_the_hooks_key_order() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Shell-only key reorder (the battery carries no python/jq
+    // dependency): move the record's `name` field to the front,
+    // every value untouched. The payload arrives on one line.
+    let hook = concat!(
+        r#"raw=$(cat); name=$(printf "%s" "$raw" | sed -n "s/.*\"name\":\"\([^\"]*\)\".*/\1/p"); "#,
+        r#"rest=$(printf "%s" "$raw" | sed "s/\"name\":\"[^\"]*\",//"); "#,
+        r#"printf "%s" "$rest" | sed "s/\"record\":{/\"record\":{\"name\":\"$name\",/""#,
+    );
+    let block = format!("hooks:\n  pre-record:\n    - '{hook}'\n");
+    let ours = TempDir::new("hookord-o");
+    let theirs = TempDir::new("hookord-t");
+    hook_fixture(&ours.0, &ml, &block);
+    hook_fixture(&theirs.0, &ml, &block);
+
+    let create = record_args("p1", &[]);
+    let create_refs: Vec<&str> = create.iter().map(String::as_str).collect();
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &create_refs);
+    let their = run_ref_quiet(&theirs.0, &ml, &create_refs);
+    assert_hook_pair(&our, &their, "echo reorder");
+    let line = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert!(
+        line.starts_with("{\"name\":\"p1\""),
+        "the hook's key order was adopted: {line}"
+    );
+    assert_hook_store_same(&ours, &theirs);
+}
+
 /// The batch family: a blocked pre-record hook drops just that record
 /// (valid-records index) and the batch continues; the post-record
 /// hook fires per actual write with `{domain, record, action}` and

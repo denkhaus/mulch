@@ -186,7 +186,17 @@ fn hook_timeout(config: &Config) -> u64 {
 
 /// One `sh -c` run: payload JSON on stdin (closed after), stdout and
 /// stderr collected, the process group SIGKILLed at the deadline.
-fn run_one(command: &str, stdin_json: &str, cwd: &Path, timeout_ms: u64) -> HookExecution {
+///
+/// Returns the execution plus capture diagnostics: a drain thread that
+/// panicked (allocation failure only) would otherwise truncate a
+/// script's output — and with it a payload mutation — without a trace,
+/// so the run reports it as a warning instead of defaulting silently.
+fn run_one(
+    command: &str,
+    stdin_json: &str,
+    cwd: &Path,
+    timeout_ms: u64,
+) -> (HookExecution, Vec<String>) {
     let started = Instant::now();
     let child = Command::new("sh")
         .arg("-c")
@@ -202,14 +212,17 @@ fn run_one(command: &str, stdin_json: &str, cwd: &Path, timeout_ms: u64) -> Hook
     // The reference's `error` event resolves to exit code 1 with no
     // output — a missing `sh` behaves like a failed script.
     let Ok(mut child) = child else {
-        return HookExecution {
-            command:     command.to_string(),
-            exit_code:   1,
-            stdout:      String::new(),
-            stderr:      String::new(),
-            duration_ms: elapsed_ms(started),
-            timed_out:   false,
-        };
+        return (
+            HookExecution {
+                command:     command.to_string(),
+                exit_code:   1,
+                stdout:      String::new(),
+                stderr:      String::new(),
+                duration_ms: elapsed_ms(started),
+                timed_out:   false,
+            },
+            Vec::new(),
+        );
     };
 
     let stdin = child.stdin.take();
@@ -229,18 +242,27 @@ fn run_one(command: &str, stdin_json: &str, cwd: &Path, timeout_ms: u64) -> Hook
 
     let (exit_code, timed_out) = wait_with_deadline(&mut child, timeout_ms);
 
-    let _ = stdin_thread.join();
-    let stdout = stdout_thread.join().unwrap_or_default();
-    let stderr = stderr_thread.join().unwrap_or_default();
-
-    HookExecution {
-        command: command.to_string(),
-        exit_code,
-        stdout,
-        stderr,
-        duration_ms: elapsed_ms(started),
-        timed_out,
+    let stdin_joined = stdin_thread.join();
+    let stdout_joined = stdout_thread.join();
+    let stderr_joined = stderr_thread.join();
+    let mut warnings = Vec::new();
+    if stdin_joined.is_err() || stdout_joined.is_err() || stderr_joined.is_err() {
+        warnings.push(format!(
+            "hook `{command}` output capture failed (a pipe thread panicked)"
+        ));
     }
+
+    (
+        HookExecution {
+            command: command.to_string(),
+            exit_code,
+            stdout: stdout_joined.unwrap_or_default(),
+            stderr: stderr_joined.unwrap_or_default(),
+            duration_ms: elapsed_ms(started),
+            timed_out,
+        },
+        warnings,
+    )
 }
 
 /// Whole milliseconds since `started` (saturating — a run cannot
@@ -332,7 +354,8 @@ pub fn run_hooks(event: HookEvent, payload: Value, store: &StoreFiles, cwd: &Pat
             "payload": current_payload,
         }))
         .unwrap_or_default();
-        let execution = run_one(&command, &stdin_json, cwd, timeout_ms);
+        let (execution, capture_warnings) = run_one(&command, &stdin_json, cwd, timeout_ms);
+        warnings.extend(capture_warnings);
 
         if execution.exit_code != 0 {
             let reason = if execution.timed_out {
@@ -406,16 +429,30 @@ pub fn run_hooks(event: HookEvent, payload: Value, store: &StoreFiles, cwd: &Pat
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     use serde_json::json;
 
     use super::*;
     use crate::StoreLocation;
 
+    /// One serial for every scratch name in this module: a pid alone
+    /// repeats across runs (and the OS recycles pids), so a
+    /// crash-leftover store under it would feed stale probe files into
+    /// a green run. The counter keeps each test's paths unique and
+    /// pre-cleaned.
+    static SCRATCH: AtomicU32 = AtomicU32::new(0);
+
+    fn scratch_path(tag: &str) -> PathBuf {
+        let serial = SCRATCH.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("mulch-hooks-{tag}-{}-{serial}", std::process::id()))
+    }
+
     /// A scratch store with one configured domain and a raw config
     /// body (the hooks/hook_settings blocks under test).
     fn hook_store(tag: &str, extra_config: &str) -> (PathBuf, StoreFiles) {
-        let root = std::env::temp_dir().join(format!("mulch-hooks-{tag}-{}", std::process::id()));
+        let root = scratch_path(tag);
+        std::fs::remove_dir_all(&root).ok();
         std::fs::create_dir_all(root.join(".mulch")).expect("temp dir");
         std::fs::write(
             root.join(".mulch").join("mulch.config.yaml"),
@@ -452,10 +489,10 @@ mod tests {
 
     #[test]
     fn stdin_carries_event_and_payload_with_env_flag() {
-        let stdin_path =
-            std::env::temp_dir().join(format!("mulch-hooks-stdin-{}.json", std::process::id()));
-        let flag_path =
-            std::env::temp_dir().join(format!("mulch-hooks-flag-{}", std::process::id()));
+        let stdin_path = scratch_path("stdin").with_extension("json");
+        let flag_path = scratch_path("flag");
+        std::fs::remove_file(&stdin_path).ok();
+        std::fs::remove_file(&flag_path).ok();
         let (root, store) = hook_store(
             "stdin",
             &format!(

@@ -37,7 +37,7 @@ use serde_json::{Map, Value};
 use crate::cli::{GlobalOpts, PrimeArgs};
 use crate::commands::active_work::resolve_active_work;
 use crate::commands::git_context::GitContext;
-use crate::commands::hooks_surface::{forward_hook_stderr, print_hook_warnings};
+use crate::commands::hooks_surface::{forward_hook_stderr, hook_cwd, print_hook_warnings};
 use crate::commands::prime::format::{
     ManifestDomain, contract_block, manifest_output, manifest_payload, prime_output_compact,
     prime_output_markdown, prime_output_plain, prime_output_xml, session_close,
@@ -484,12 +484,12 @@ fn full_mode_output(
         return Ok(Value::Object(payload));
     }
 
-    // pre-prime hooks (prime.ts:495) — the REAL render path only: the
+    // pre-prime hooks (prime.ts:503-526) — the REAL render path only: the
     // dry-run preview returned above, and manifest mode never enters
     // this function. The payload carries the context-filtered,
     // trust-sorted, PRE-budget records (probe P10: a budget that
     // drops every record still hands all of them to the hook).
-    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = hook_cwd("prime")?;
     let hook_payload = {
         let domains: Vec<Value> = loaded
             .iter()
@@ -516,7 +516,7 @@ fn full_mode_output(
         print_hook_warnings(&hooks.warnings);
     }
 
-    // Mutation (prime.ts:515): a per-domain map over the hook's
+    // Mutation (prime.ts:526): a per-domain map over the hook's
     // payload.domains — only well-shaped entries ({domain: string,
     // records: array}) register and the LAST entry per domain wins;
     // a domain outside the loaded set is IGNORED (never surface data

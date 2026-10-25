@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 use serde_yaml::Value as Yaml;
 
 use crate::cli::{GlobalOpts, PruneArgs};
-use crate::commands::hooks_surface::{forward_hook_stderr, print_hook_warnings};
+use crate::commands::hooks_surface::{forward_hook_stderr, hook_cwd, print_hook_warnings};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Reference default for `decay.anchor_validity.threshold`
@@ -125,7 +125,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
     if !args.dry_run {
         let candidate_rows = hook_candidate_rows(&live, &walk);
         if !candidate_rows.is_empty() {
-            let cwd = std::env::current_dir().unwrap_or_default();
+            let cwd = hook_cwd(command)?;
             let hooks = mulch::hooks::run_hooks(
                 mulch::hooks::HookEvent::PrePrune,
                 serde_json::json!({"candidates": candidate_rows}),

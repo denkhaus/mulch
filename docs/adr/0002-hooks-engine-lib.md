@@ -51,6 +51,11 @@ and a direct `libc` dependency (killpg for the timeout kill).
 - Non-JSON stdout warnings carry serde's parse wording where the
   reference carries V8's — the same documented deviation class as
   the malformed-JSONL reasons (README DEVIATIONS).
+- Miri is not applicable to the sanctioned `unsafe` block: the
+  module's exercised path is `Command::spawn` / process-group
+  signalling, which Miri does not emulate — the block is covered by
+  the timeout tests (a real `sh` child in a real process group)
+  instead of an interpreter run.
 
 ## Alternatives considered
 

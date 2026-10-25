@@ -169,10 +169,9 @@ pub(super) fn stdin_batch(
     if args.dry_run {
         records_to_write = valid;
     } else {
-        let cwd = super::hook_cwd()?;
+        let cwd = crate::commands::hooks_surface::hook_cwd("record")?;
         for (index, line) in valid.into_iter().enumerate() {
-            let sent = Value::Object(line.clone());
-            let payload = json!({"domain": args.domain, "record": sent.clone()});
+            let payload = json!({"domain": args.domain, "record": line.clone()});
             let result =
                 mulch::hooks::run_hooks(mulch::hooks::HookEvent::PreRecord, payload, store, &cwd);
             crate::commands::hooks_surface::forward_hook_stderr(&result.executions);
@@ -190,9 +189,11 @@ pub(super) fn stdin_batch(
                 continue;
             }
             let mut final_line = line;
+            // The reference's guard is object identity (`mutated !==
+            // record`), always true for a parsed answer: an echo is
+            // adopted too (key order and all).
             if result.ran_any
                 && let Some(mutated) = super::truthy_payload_record(&result.payload)
-                && *mutated != sent
             {
                 if let schema::FullVerdict::Invalid { subs, .. } =
                     schema::full_verdict(store.registry(), mutated)
@@ -325,7 +326,7 @@ pub(super) fn stdin_batch(
     // `{domain, record, action}` with the written record; failures
     // only warn, into the shared warnings surface.
     if !written.is_empty() {
-        let cwd = super::hook_cwd()?;
+        let cwd = crate::commands::hooks_surface::hook_cwd("record")?;
         for (record, action) in &written {
             let payload = json!({"domain": args.domain, "record": record, "action": action});
             let result =

@@ -530,11 +530,12 @@ impl StoreFiles {
 }
 
 /// Writes `body` through a unique scratch file and an atomic rename, so
-/// a concurrent lock-free reader never observes a truncated half-file
-/// (the pattern the record writer already uses in `upsert.rs`). The
-/// scratch name carries the pid and a nanosecond stamp — two writers
-/// never share one — and a failed rename cleans it up best-effort.
-fn atomic_write(path: &Path, body: &[u8]) -> Result<()> {
+/// a concurrent lock-free reader never observes a truncated half-file.
+/// The ONE owner of that law (`upsert::write_records` delegates here
+/// too): the scratch name carries the pid and a nanosecond stamp — two
+/// writers never share one — and a failed rename cleans it up
+/// best-effort.
+pub(crate) fn atomic_write(path: &Path, body: &[u8]) -> Result<()> {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());

@@ -249,59 +249,6 @@ fn prune_hook_twins(tag: &str, hook_yaml: &str) -> (TempDir, TempDir) {
     )
 }
 
-/// Strips the reference runtime's stderr noise (Bun 1.4.0's async
-/// EPIPE trace, the pino level-40 diagnostic a failed hook logs, the
-/// crash footer — probes: /tmp/sprint42/childB/probes/stab; the same
-/// flake flips successful reference exits to 1, which the tolerant
-/// exit asserts absorb).
-fn strip_reference_hook_noise(text: &str) -> String {
-    let mut out = String::new();
-    let mut in_trace = false;
-    for line in text.lines() {
-        if line.starts_with("EPIPE: broken pipe") {
-            in_trace = true;
-            continue;
-        }
-        if in_trace {
-            // The trace rows (indentation not pinned): the errno/code
-            // rows, a blank, and the stack rows, ending at the first
-            // unrelated line.
-            let trimmed = line.trim_start();
-            let trace_row = line.is_empty()
-                || trimmed.starts_with("syscall:")
-                || trimmed.starts_with("errno:")
-                || trimmed.starts_with("code:")
-                || trimmed.starts_with("at ");
-            if trace_row {
-                continue;
-            }
-            in_trace = false;
-        }
-        if line.starts_with("{\"level\":40,") || line == "Bun v1.4.0 (Linux x64)" {
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    format!("{}\n", out.trim_end_matches('\n'))
-}
-
-/// The reference's EPIPE flake can flip a successful run's exit to 1;
-/// ours must carry the law's exit, theirs may carry either.
-fn assert_flaked_exit(our: i32, their: i32, expected: i32, tag: &str) {
-    assert_eq!(our, expected, "{tag}: our exit is the law's");
-    assert!(
-        their == expected || their == 1,
-        "{tag}: reference exit {their} (law {expected}, flake 1)"
-    );
-}
-
-/// The hook's stdin capture (written by `cat > hook-stdin.txt` into
-/// the store's cwd during the run); `None` when the hook never fired.
-fn hook_stdin(dir: &Path) -> Option<String> {
-    std::fs::read_to_string(dir.join("hook-stdin.txt")).ok()
-}
-
 /// The payload law (probe PR-A): `{"event":"pre-prune","payload":\
 /// {"candidates":[{"domain":…,"stale":[…],"demote":[…],
 /// "anchor_decay":[…]}]}}` — only candidate domains, raw records per
@@ -579,7 +526,7 @@ fn prune_hook_stderr_forward_and_stdout_ignored_match_reference() {
             prune_hook_twins(tag, "hooks:\n  pre-prune:\n    - 'printf side-noise >&2'\n");
         let our = run_in(&ours.0, Path::new(mulch_bin()), args);
         let their = run_in(&theirs.0, &ml, args);
-        assert_flaked_exit(our.code, their.code, 0, tag);
+        assert_flaked_exit(our.code, their.code, &their.stderr, 0, tag);
         assert_eq!(our.stdout, promote_theirs(&their.stdout), "{tag} stdout");
         assert_eq!(our.stderr, "side-noise\n", "{tag}: forwarded verbatim");
         assert_eq!(
@@ -623,7 +570,7 @@ fn prune_hook_stderr_forward_and_stdout_ignored_match_reference() {
         "--check-anchors",
     ]);
     let their = run_in(&hooked.1.0, &ml, &["prune", "--check-anchors"]);
-    assert_flaked_exit(our.code, their.code, 0, "prh-stdout");
+    assert_flaked_exit(our.code, their.code, &their.stderr, 0, "prh-stdout");
     assert_eq!(
         our.stdout,
         promote_theirs(&their.stdout),

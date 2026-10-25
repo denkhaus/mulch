@@ -4,13 +4,14 @@
 //! deterministic id assignment — the half of the record semantics the
 //! mutating commands share. The read laws live in [`crate::records`].
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::ids::record_id;
 use crate::jsval::{js_dedup_eq, parse_non_negative_number, truthy_str};
+use crate::store_files::atomic_write;
 
 pub fn find_duplicate<'a, I>(
     registry: &crate::ids::Registry,
@@ -200,24 +201,7 @@ pub fn write_records(
     if records.is_empty() {
         body.clear();
     }
-    // A unique temp name (the reference uses a random suffix) so two
-    // writers never share a scratch file, with best-effort cleanup on a
-    // failed rename.
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_nanos());
-    let temp = PathBuf::from(format!("{}.tmp.{unique:x}", path.display()));
-    std::fs::write(&temp, body).map_err(|source| Error::Write {
-        path: temp.clone(),
-        source,
-    })?;
-    std::fs::rename(&temp, path).map_err(|source| {
-        std::fs::remove_file(&temp).ok();
-        Error::Write {
-            path: path.to_path_buf(),
-            source,
-        }
-    })
+    atomic_write(path, body.as_bytes())
 }
 
 /// Assigns the deterministic id when a record lacks one.
