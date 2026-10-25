@@ -1169,21 +1169,21 @@ fn check_json(check: &Check) -> Value {
 /// on stderr; JSON: full envelope on stdout), exit 1.
 fn no_store_report(opts: &GlobalOpts) -> Failure {
     if opts.json {
-        let mut check = Map::new();
-        check.insert("name".into(), Value::String("config".into()));
-        check.insert("status".into(), Value::String("fail".into()));
-        check.insert(
-            "message".into(),
-            Value::String("No .mulch/ directory found".into()),
-        );
-        check.insert("fixable".into(), Value::Bool(false));
-        check.insert("details".into(), Value::Array(Vec::new()));
+        // The one-check report reuses the shared check shape (the
+        // seed's item 4: the hand-built Map duplicated check_json).
+        let check = Check {
+            name:    "config",
+            status:  Status::Fail,
+            message: "No .mulch/ directory found".into(),
+            fixable: false,
+            details: Vec::new(),
+        };
         let mut summary = Map::new();
         summary.insert("pass".into(), Value::from(0));
         summary.insert("warn".into(), Value::from(0));
         summary.insert("fail".into(), Value::from(1));
         let mut fields = Map::new();
-        fields.insert("checks".into(), Value::Array(vec![Value::Object(check)]));
+        fields.insert("checks".into(), Value::Array(vec![check_json(&check)]));
         fields.insert("summary".into(), Value::Object(summary));
         let mut failure = Failure::handled("doctor", "");
         failure.envelope = failure_envelope("doctor", fields);
@@ -1195,6 +1195,10 @@ fn no_store_report(opts: &GlobalOpts) -> Failure {
             reason = "report rendering is the CLI boundary"
         )]
         {
+            // Its own parity byte law, NOT the run report's shape: no
+            // "warning(s)" suffix and no per-check lines — the two
+            // look-alikes stay separate on purpose (seed item 4's
+            // other half).
             println!("Mulch Doctor\n\n0 passed, 0 warnings, 1 failed");
             eprintln!("  ✗ No .mulch/ directory found");
         }
@@ -1208,6 +1212,8 @@ fn no_store_report(opts: &GlobalOpts) -> Failure {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// A fixable check with the given name and status — the gate
     /// tests' report input.
     fn check(name: &'static str, status: Status) -> Check {
@@ -1219,8 +1225,6 @@ mod tests {
             details: Vec::new(),
         }
     }
-
-    use super::*;
 
     fn record(line: &str) -> Value {
         serde_json::from_str(line).expect("record")
@@ -1395,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn fix_gates_open_only_for_failed_fixable_checks() {
+    fn repair_opens_only_for_failed_fixable_checks() {
         let mut unfixable = check("stale-records", Status::Fail);
         unfixable.fixable = false;
         let checks = vec![
@@ -1417,18 +1421,37 @@ mod tests {
         assert!(!Repair::FileAnchors.opens(&checks));
         assert!(Repair::OrphanedDomains.opens(&[check("orphaned-domains", Status::Warn)]));
         assert!(!Repair::FileAnchors.opens(&[check("orphaned-domains", Status::Warn)]));
-        // The name source: builders mint from Repair, so the mint and
-        // the gate cannot drift apart (the silent-disable class,
-        // mulch-d343). Catches a builder reverting to a literal that
-        // differs from the gate's key.
+        // The name source: ALL SIX builders mint from Repair, so the
+        // mint and the gate cannot drift apart (the silent-disable
+        // class, mulch-d343). Catches ANY builder reverting to a
+        // literal that differs from the gate's key — two of six were
+        // not enough (review finding: the other four could drift
+        // again with no test failing).
+        let (dir, store) = temp_store("name-source");
+        let rule = StaleRule::from_shelf_life(&store.config().effective_shelf_life());
+        let root = std::path::Path::new("/tmp");
         assert_eq!(
             jsonl_integrity(&[]).name,
             Repair::JsonlIntegrity.check_name()
         );
+        assert_eq!(legacy_outcome(&[]).name, Repair::LegacyOutcome.check_name());
         assert_eq!(
-            file_anchors(&[], std::path::Path::new("/tmp")).name,
+            schema_validation(store.registry(), &[]).name,
+            Repair::SchemaValidation.check_name()
+        );
+        assert_eq!(
+            stale_records(&rule, &[]).name,
+            Repair::StaleRecords.check_name()
+        );
+        assert_eq!(
+            orphaned_domains(&store).name,
+            Repair::OrphanedDomains.check_name()
+        );
+        assert_eq!(
+            file_anchors(&[], root).name,
             Repair::FileAnchors.check_name()
         );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// A file-anchors detail fixture: two broken files, a broken dir

@@ -264,9 +264,11 @@ impl StoreFiles {
 
     /// Whether the domain's live expertise file exists as a regular
     /// file — the report-only existence probes (doctor's orphan
-    /// check). IO belongs to the methods, existence questions to this
-    /// accessor (mulch-cde9); a caller stat-ing `domain_path` for the
-    /// same answer re-opens the path hand-out this closes.
+    /// check). ADR-0004 sanctions `domain_path` for existence probes
+    /// as path-as-subject, so this accessor is optional ownership, not
+    /// a mandated seam (mulch-cde9); it exists because the answer is
+    /// domain-shaped, and callers with a path already in hand for
+    /// lifecycle work may keep it.
     pub fn has_domain_file(&self, domain: &str) -> bool {
         self.domain_path(domain).is_file()
     }
