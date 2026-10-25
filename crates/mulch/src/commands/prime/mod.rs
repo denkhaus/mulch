@@ -109,26 +109,22 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     // Unknown-domain validation, requested first, then exclusions.
     let available = store.domains();
     for domain in &requested {
-        if !available.contains(domain) {
-            return Err(crate::commands::failure::unknown_domain_failure(
-                "prime",
-                domain,
-                &available,
-                json_mode,
-                crate::commands::failure::DomainFailure::Prime { excluded: false },
-            ));
-        }
+        crate::commands::store::ensure_domain(
+            "prime",
+            &store,
+            domain,
+            json_mode,
+            crate::commands::failure::DomainFailure::Prime { excluded: false },
+        )?;
     }
     for domain in &excluded {
-        if !available.contains(domain) {
-            return Err(crate::commands::failure::unknown_domain_failure(
-                "prime",
-                domain,
-                &available,
-                json_mode,
-                crate::commands::failure::DomainFailure::Prime { excluded: true },
-            ));
-        }
+        crate::commands::store::ensure_domain(
+            "prime",
+            &store,
+            domain,
+            json_mode,
+            crate::commands::failure::DomainFailure::Prime { excluded: true },
+        )?;
     }
     let target_domains = mulch::domain_set(&available, &mulch::DomainSpec::Union {
         domains: requested,

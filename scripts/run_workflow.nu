@@ -3,32 +3,24 @@
 # (thin launcher: `just run <workflow>`).
 #
 # Pipeline:
-#   1. guards: GitButler workspace healthy (parseable, no conflicted
-#      commits — any number of applied virtual branches is normal here)
+#   1. guard: warn on uncommitted changes (the ff-pull later needs a
+#      clean tree)
 #   2. fabro create <workflow> [--goal] --json   -> run id
 #      (or --adopt <run-id> to resume with an existing run)
 #   3. fabro start <id> + fabro attach <id>      -> live output
 #   4. fabro wait <id> --json                    -> status/reason truth
-#   5. integrate (auto-merge lands the run PR on origin/main; the local
-#      workspace follows via `but pull`):
+#   5. integrate: GitHub auto-merge lands the run PR on origin/main
+#      (squash), the checkout follows with `git pull --ff-only`:
 #        - post the required `lab-check` status LOCALLY on the run branch
 #          head (variant B, fabro-ab2c: no Actions runner involved)
-#        - GitHub auto-merge merges the PR -> run branch contained in
-#          origin/main -> `but pull` integrates the new target state into
-#          the workspace (applied virtual branches rebase on top)
+#        - detection is TREE EQUALITY (the squash means the run-branch
+#          tip is never an ancestor)
 #
-# GITBUTLER ADAPTATION (experiment, user directive 2026-10-03): this
-# checkout is a GitButler workspace (sits on `gitbutler/workspace`); the
-# TARGET is origin/main (the merge target of run PRs — main IS the
-# product line). Local work lives on applied virtual branches (one per
-# agent/line, the multi-agent experiment); they land via `but pr new` +
-# auto-merge, never by pushing main. The target cannot itself be a
-# virtual branch (gitbutler refuses applying the target). All VCS writes
-# go through `but`; read-only git (fetch, diff, rev-parse) stays allowed.
-# The seeds original's local squash-merge fallback is deliberately
-# REMOVED — `git merge --squash` behind the workspace's back is exactly
-# the forbidden class; a failed auto-merge becomes a loud ALARM with a
-# manual operator path instead of an automated workspace rewrite.
+# PLAIN-GIT POSTURE (post-GitButler, user directive 2026-10-17 —
+# mulch-e2df): this checkout sits on `main`; the TARGET is origin/main
+# (the merge target of run PRs). Integration is fetch + ff-pull only —
+# main keeps required-linear-history, so a diverged main is a loud
+# manual path, never a merge or rebase here.
 #
 # Production server is mirtuell (the local 127.0.0.1 server is for
 # TESTS only — fabro repo posture). Runs execute on the server-managed
@@ -73,21 +65,15 @@ def main [
 ]: nothing -> nothing {
     let fabro_bin = ($env.FABRO_BIN? | default $"($env.HOME)/.fabro/bin/fabro")
     let server = ($env.FABRO_SERVER? | default $SERVER_DEFAULT)
-    let base_branch = (if ($branch | is-empty) { 'main' } else { $branch })  # the ONLY base: the gitbutler target
+    let base_branch = (if ($branch | is-empty) { 'main' } else { $branch })  # the ONLY base: main (run PRs land there)
 
-    # ── 1. guards: GitButler workspace state (structured, not tree scraping) ──
-    let st = (do { but status --json } | complete)
-    ok $st 'but status'
-    let ws = (try { $st.stdout | from json } catch { null })
-    if $ws == null { fail 'but status --json did not parse — workspace state unknown' }
-    let conflicted = ($ws.stacks?.branches?.commits? | flatten | default [] | where {|c| $c.conflicted? | default false })
-    if ($conflicted | is-not-empty) {
-        fail $"($conflicted | length) conflicted commits in the workspace — resolve via but resolve before running"
+    # ── 1. guard: a clean tree (the ff-pull later needs one) ──
+    let dirty = (do { git status --porcelain } | complete)
+    ok $dirty 'git status'
+    if (($dirty.stdout | lines | compact | is-not-empty)) {
+        print 'run_workflow: WARN uncommitted changes present — the later ff-pull refuses on divergence; consider committing first'
     }
-    if (($ws.uncommittedChanges? | default [] | length) > 0) {
-        print 'run_workflow: WARN uncommitted changes present — but pull later refuses on conflict; consider committing first'
-    }
-    print $"run_workflow: target=origin/($base_branch) workflow=($workflow) (gitbutler workspace, ($ws.stacks?.branches?.name? | flatten | compact | default [] | length) applied branch(es))"
+    print $"run_workflow: target=origin/($base_branch) workflow=($workflow) (plain git on ($base_branch))"
 
     # ── 2. create (or adopt) ─────────────────────────────────────────
     let run_id = (if not ($adopt | is-empty) {
@@ -148,7 +134,7 @@ def main [
         exit 0
     }
 
-    # ── 5. integrate: wait for auto-merge, follow with but branch update ──
+    # ── 5. integrate: wait for auto-merge, follow with git pull --ff-only ──
     ok (do { git fetch origin } | complete) 'git fetch'
     let run_branch = $"origin/fabro/run/($run_id)"
     let has_branch = ((do { git rev-parse --verify $"refs/remotes/($run_branch)" } | complete).exit_code == 0)
@@ -169,9 +155,10 @@ def main [
         print $"run_workflow: WARN local lab-check post failed: ($detail)"
     }
 
-    # Auto-merge is the ONLY automated integration path (GitButler rule:
-    # no local git merge/rebase). Detection is TREE EQUALITY (GitHub
-    # auto-merge SQUASHES, so the run-branch tip is never an ancestor).
+    # Auto-merge is the ONLY automated integration path (linear-
+    # history rule: fetch + ff-pull only). Detection is TREE EQUALITY
+    # (GitHub auto-merge SQUASHES, so the run-branch tip is never an
+    # ancestor).
     mut landed = false
     let merge_deadline = 40
     for _ in 1..$merge_deadline {
@@ -181,9 +168,9 @@ def main [
         if $landed { break }
     }
     if not $landed {
-        fail $"auto-merge did not land within ($merge_deadline * 15) sec — MANUAL PATH: inspect the run PR checks on ($GITHUB_REPO), resolve the blocker, then 'but pull' once origin/($base_branch) moved"
+        fail $"auto-merge did not land within ($merge_deadline * 15) sec — MANUAL PATH: inspect the run PR checks on ($GITHUB_REPO), resolve the blocker, then 'git pull --ff-only' once origin/($base_branch) moved"
     }
-    print 'run_workflow: auto-merge landed — integrating the new target into the workspace'
-    ok (do { but pull } | complete) 'but pull'
+    print 'run_workflow: auto-merge landed — integrating the new target into the checkout'
+    ok (do { git pull --ff-only origin $base_branch } | complete) 'git pull --ff-only'
     print $"run_workflow: done — run ($run_id) integrated"
 }

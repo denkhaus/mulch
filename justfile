@@ -50,7 +50,7 @@ test-count:
     nu scripts/test-count.nu
 
 # Run a workflow end to end: create+start+attach, wait, integrate
-# (thin wrapper — logic lives in scripts/run_workflow.nu; GitButler-
-# adapted: integration via `but branch update main`).
+# (thin wrapper — logic lives in scripts/run_workflow.nu; integration
+# via GitHub auto-merge + `git pull --ff-only`, mulch-e2df).
 run *args:
     nu scripts/run_workflow.nu {{ args }}

@@ -26,6 +26,41 @@ struct Check {
 }
 
 impl Check {
+    /// A FINDINGS check (mulch-f8c7): Pass with `pass_message` when
+    /// nothing was found; `bad_status` with `bad_message(len)` and
+    /// the details otherwise. The two-branch template ~ten builders
+    /// hand-rolled; `fixable` applies to BOTH arms (the report
+    /// renders it either way — the gate ignores it on Pass).
+    /// Genuinely different
+    /// laws (governance's worst-status, duplicates' two-class
+    /// message) stay hand-built.
+    fn findings(
+        name: &'static str,
+        details: Vec<String>,
+        bad_status: Status,
+        fixable: bool,
+        pass_message: &str,
+        bad_message: impl Fn(usize) -> String,
+    ) -> Check {
+        if details.is_empty() {
+            Check {
+                name,
+                status: Status::Pass,
+                message: pass_message.into(),
+                fixable,
+                details: Vec::new(),
+            }
+        } else {
+            Check {
+                name,
+                status: bad_status,
+                message: bad_message(details.len()),
+                fixable,
+                details,
+            }
+        }
+    }
+
     /// An always-pass check with no details — the hardcoded passes
     /// (config, decay-config, upgrade & friends) whose reference
     /// implementations we satisfy by construction.
@@ -271,23 +306,14 @@ fn jsonl_integrity(domains: &[DomainLines]) -> Check {
             })
         })
         .collect();
-    if bad.is_empty() {
-        Check {
-            name:    Repair::JsonlIntegrity.check_name(),
-            status:  Status::Pass,
-            message: "All JSONL lines are valid JSON".into(),
-            fixable: true,
-            details: Vec::new(),
-        }
-    } else {
-        Check {
-            name:    Repair::JsonlIntegrity.check_name(),
-            status:  Status::Fail,
-            message: format!("{} invalid JSON line(s) found", bad.len()),
-            fixable: true,
-            details: bad,
-        }
-    }
+    Check::findings(
+        Repair::JsonlIntegrity.check_name(),
+        bad,
+        Status::Fail,
+        true,
+        "All JSONL lines are valid JSON",
+        |count| format!("{count} invalid JSON line(s) found"),
+    )
 }
 
 fn legacy_outcome(domains: &[DomainLines]) -> Check {
@@ -311,28 +337,16 @@ fn legacy_outcome(domains: &[DomainLines]) -> Check {
                 })
         })
         .collect();
-    if bad.is_empty() {
-        Check {
-            name:    Repair::LegacyOutcome.check_name(),
-            status:  Status::Pass,
-            message: "No legacy \"outcome\" fields on disk".into(),
-            fixable: true,
-            details: Vec::new(),
-        }
-    } else {
-        // The reference reports legacy fields as a warning, never a
-        // failure.
-        Check {
-            name:    Repair::LegacyOutcome.check_name(),
-            status:  Status::Warn,
-            message: format!(
-                "{} record(s) with legacy \"outcome\" field on disk",
-                bad.len()
-            ),
-            fixable: true,
-            details: bad,
-        }
-    }
+    // The reference reports legacy fields as a warning, never a
+    // failure.
+    Check::findings(
+        Repair::LegacyOutcome.check_name(),
+        bad,
+        Status::Warn,
+        true,
+        "No legacy \"outcome\" fields on disk",
+        |count| format!("{count} record(s) with legacy \"outcome\" field on disk"),
+    )
 }
 
 fn schema_validation(registry: &mulch::Registry, domains: &[DomainLines]) -> Check {
@@ -345,23 +359,14 @@ fn schema_validation(registry: &mulch::Registry, domains: &[DomainLines]) -> Che
             })
         })
         .collect();
-    if bad.is_empty() {
-        Check {
-            name:    Repair::SchemaValidation.check_name(),
-            status:  Status::Pass,
-            message: "All records pass schema validation".into(),
-            fixable: true,
-            details: Vec::new(),
-        }
-    } else {
-        Check {
-            name:    Repair::SchemaValidation.check_name(),
-            status:  Status::Fail,
-            message: format!("{} record(s) failed schema validation", bad.len()),
-            fixable: true,
-            details: bad,
-        }
-    }
+    Check::findings(
+        Repair::SchemaValidation.check_name(),
+        bad,
+        Status::Fail,
+        true,
+        "All records pass schema validation",
+        |count| format!("{count} record(s) failed schema validation"),
+    )
 }
 
 fn unknown_types(registry: &mulch::Registry, domains: &[DomainLines]) -> Check {
@@ -388,23 +393,14 @@ fn unknown_types(registry: &mulch::Registry, domains: &[DomainLines]) -> Check {
     // `checkUnknownTypes` never consults --allow-unknown-types (the
     // flag is validate's read-through hatch only — probe-pinned vs
     // ml 0.10.7: doctor still exits 1 with it).
-    if bad.is_empty() {
-        Check {
-            name:    "unknown-types",
-            status:  Status::Pass,
-            message: "All record types are registered".into(),
-            fixable: false,
-            details: Vec::new(),
-        }
-    } else {
-        Check {
-            name:    "unknown-types",
-            status:  Status::Fail,
-            message: format!("{} record(s) with unregistered types", bad.len()),
-            fixable: false,
-            details: bad,
-        }
-    }
+    Check::findings(
+        "unknown-types",
+        bad,
+        Status::Fail,
+        false,
+        "All record types are registered",
+        |count| format!("{count} record(s) with unregistered types"),
+    )
 }
 
 /// The unknown-types detail id suffix: ` [{id}]` when the record's
@@ -508,23 +504,14 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
             }
         }
     }
-    if details.is_empty() {
-        Check {
-            name:    Repair::StaleRecords.check_name(),
-            status:  Status::Pass,
-            message: "No stale records".into(),
-            fixable: true,
-            details: Vec::new(),
-        }
-    } else {
-        Check {
-            name: Repair::StaleRecords.check_name(),
-            status: Status::Warn,
-            message: format!("{} stale record(s) found", details.len()),
-            fixable: true,
-            details,
-        }
-    }
+    Check::findings(
+        Repair::StaleRecords.check_name(),
+        details,
+        Status::Warn,
+        true,
+        "No stale records",
+        |count| format!("{count} stale record(s) found"),
+    )
 }
 
 /// Duplicates: the reference's `checkDuplicates` (doctor.ts) — per
@@ -650,23 +637,14 @@ fn orphaned_domains(store: &mulch::StoreFiles) -> Check {
             ));
         }
     }
-    if details.is_empty() {
-        Check {
-            name:    Repair::OrphanedDomains.check_name(),
-            status:  Status::Pass,
-            message: "No orphaned domains".into(),
-            fixable: true,
-            details: Vec::new(),
-        }
-    } else {
-        Check {
-            name: Repair::OrphanedDomains.check_name(),
-            status: Status::Warn,
-            message: format!("{} orphaned domain issue(s)", details.len()),
-            fixable: true,
-            details,
-        }
-    }
+    Check::findings(
+        Repair::OrphanedDomains.check_name(),
+        details,
+        Status::Warn,
+        true,
+        "No orphaned domains",
+        |count| format!("{count} orphaned domain issue(s)"),
+    )
 }
 
 /// The domain names of the expertise `.jsonl` files on disk, in the
@@ -703,23 +681,14 @@ fn file_anchors(domains: &[DomainLines], project_root: &std::path::Path) -> Chec
             }
         }
     }
-    if details.is_empty() {
-        Check {
-            name:    Repair::FileAnchors.check_name(),
-            status:  Status::Pass,
-            message: "All file anchors resolve to existing paths".into(),
-            fixable: true,
-            details: Vec::new(),
-        }
-    } else {
-        Check {
-            name: Repair::FileAnchors.check_name(),
-            status: Status::Warn,
-            message: format!("{} broken file anchor(s) found", details.len()),
-            fixable: true,
-            details,
-        }
-    }
+    Check::findings(
+        Repair::FileAnchors.check_name(),
+        details,
+        Status::Warn,
+        true,
+        "All file anchors resolve to existing paths",
+        |count| format!("{count} broken file anchor(s) found"),
+    )
 }
 
 /// The reference's id bracket (`record.id ? `[${record.id}]` : ""`):

@@ -9,11 +9,17 @@
 
 use std::path::PathBuf;
 
+use mulch::hooks::HookEvent;
 use mulch::{record_summary, schema};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::cli::GlobalOpts;
+use crate::commands::hooks_surface::{Adopt, HookPhase, print_hook_warnings};
 use crate::output::{Failure, print_json, print_line, success_envelope};
+
+/// The pre-record block fallback (move.ts:234) — the move-specific
+/// spelling, not the record path's.
+const MOVE_BLOCK_DEFAULT: &str = "pre-record hook blocked the move";
 
 /// Runs `move`.
 pub(super) fn run(
@@ -40,17 +46,14 @@ pub(super) fn run(
             "Error: Source and target domain are the same — nothing to move.",
         ));
     }
-    let domains = store.domains();
     for domain in [source, target] {
-        if !domains.iter().any(|d| d == domain) {
-            return Err(crate::commands::failure::unknown_domain_failure(
-                "move",
-                domain,
-                &domains,
-                opts.json,
-                crate::commands::failure::DomainFailure::Move,
-            ));
-        }
+        crate::commands::store::ensure_domain(
+            "move",
+            &store,
+            domain,
+            opts.json,
+            crate::commands::failure::DomainFailure::Move,
+        )?;
     }
 
     let source_file = store.domain_path(source);
@@ -135,7 +138,6 @@ pub(super) fn run(
         }
     }
 
-    let summary = record_summary(store.registry(), &record);
     let incoming = incoming_references(
         store.registry(),
         store.root(),
@@ -143,6 +145,29 @@ pub(super) fn run(
         &target_file,
         record_id.as_deref(),
     );
+
+    // Pre-record against the TARGET domain (move.ts:226-247). The
+    // payload record KEEPS its id — the one deliberate divergence
+    // from the record path (mulch-0e87; do not "fix" by stripping).
+    // A block aborts with nothing written; an adopted mutation
+    // validates and REPLACES the record verbatim (no id re-stamp —
+    // the append's missing-id law covers it). Dry runs fire no hooks.
+    let mut hook_warnings: Vec<String> = Vec::new();
+    let mut record_to_write = record.clone();
+    if !dry_run {
+        let payload = json!({"domain": target, "record": record});
+        let phase = HookPhase::run(HookEvent::PreRecord, payload, &store, "move")?;
+        if let Some(reason) = phase.blocked_reason(MOVE_BLOCK_DEFAULT) {
+            return Err(Failure::error_line("move", reason));
+        }
+        match phase.adopt_record(store.registry()) {
+            Adopt::Keep => {}
+            Adopt::Replace(adopted) => record_to_write = Value::Object(adopted),
+            Adopt::Invalid(reason) => return Err(Failure::error_line("move", reason)),
+        }
+        hook_warnings = phase.into_warnings();
+    }
+    let summary = record_summary(store.registry(), &record_to_write);
 
     if !dry_run {
         let survivors: Vec<Value> = lines
@@ -155,7 +180,7 @@ pub(super) fn run(
 
         // Target: the seam's append-verbatim policy (existing bytes
         // preserved, newline guard included).
-        let mut moved = record.clone();
+        let mut moved = record_to_write.clone();
         mulch::assign_missing_id(store.registry(), &mut moved);
         let line = serde_json::to_string(&moved).unwrap_or_default();
         store
@@ -163,15 +188,30 @@ pub(super) fn run(
             .map_err(|source_err| {
                 Failure::handled("move", crate::output::chain_message(&source_err))
             })?;
+
+        // post-record with the WRITTEN record (move.ts:273-277):
+        // warn-only, fired after both writes.
+        hook_warnings.extend(HookPhase::run_warn_only(
+            HookEvent::PostRecord,
+            json!({"domain": target, "record": moved, "action": "created"}),
+            &store,
+            "move",
+        ));
     }
 
     if opts.json {
         let mut record_json = Map::new();
         record_json.insert(
             "id".into(),
-            record_id.clone().map_or(Value::Null, Value::String),
+            record_to_write.get("id").cloned().unwrap_or(Value::Null),
         );
-        record_json.insert("type".into(), Value::String(kind.clone()));
+        record_json.insert(
+            "type".into(),
+            record_to_write
+                .get("type")
+                .cloned()
+                .unwrap_or(Value::String(kind.clone())),
+        );
         record_json.insert("summary".into(), Value::String(summary.clone()));
         let mut fields = Map::new();
         if dry_run {
@@ -181,6 +221,17 @@ pub(super) fn run(
         fields.insert("targetDomain".into(), Value::String(target.into()));
         fields.insert("record".into(), Value::Object(record_json));
         fields.insert("incomingReferences".into(), Value::Array(incoming.clone()));
+        if !hook_warnings.is_empty() {
+            fields.insert(
+                "warnings".into(),
+                Value::Array(
+                    hook_warnings
+                        .iter()
+                        .map(|warning| Value::String(warning.clone()))
+                        .collect(),
+                ),
+            );
+        }
         print_json(&success_envelope("move", fields), false);
     } else if !opts.quiet {
         let id_part = record_id
@@ -230,6 +281,7 @@ pub(super) fn run(
             }
         }
         print_line(false, &text);
+        print_hook_warnings(&hook_warnings);
     }
     Ok(())
 }

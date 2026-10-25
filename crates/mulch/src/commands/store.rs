@@ -102,6 +102,28 @@ fn chain_message_from(error: &mulch::Error) -> String {
     crate::output::chain_message(error)
 }
 
+/// The domain-exists prologue half (D3, mulch-0e87): the check every
+/// domain-taking command runs, mapped onto ITS wording shape. The
+/// open stays with [`open_store`]/[`open_store_mut`] (callers differ
+/// on lock and timing); order-pinned commands interleave their own
+/// checks around this. Folds the `!domains.iter().any(...) +
+/// unknown_domain_failure(...)` couple that lived in eight commands.
+pub(crate) fn ensure_domain(
+    command: &'static str,
+    store: &mulch::StoreFiles,
+    domain: &str,
+    json: bool,
+    shape: DomainFailure,
+) -> Result<(), Failure> {
+    let domains = store.domains();
+    if domains.iter().any(|d| d == domain) {
+        return Ok(());
+    }
+    Err(unknown_domain_failure(
+        command, domain, &domains, json, shape,
+    ))
+}
+
 /// A domain file's mtime as the section-header's `updated …` suffix
 /// (`None` when absent) — the shared read behind search/query/prime
 /// (mulch-1c32: three byte-identical private copies). `status` keeps
@@ -181,12 +203,7 @@ pub(crate) fn locate_record(
     } else {
         open_store(command, config_message)?
     };
-    let domains = store.domains();
-    if !domains.iter().any(|d| d == domain) {
-        return Err(unknown_domain_failure(
-            command, domain, &domains, opts.json, shape,
-        ));
-    }
+    ensure_domain(command, &store, domain, opts.json, shape)?;
     let (records, position) =
         read_and_resolve(command, &store, domain, id, opts.allow_unknown_types)?;
     Ok((store, records, position))

@@ -15,7 +15,7 @@ use std::fmt::Write as _;
 use mulch::{LineRecord, resolve_record_id};
 
 use crate::cli::GlobalOpts;
-use crate::commands::failure::{DomainFailure, now_iso, resolve_failure, unknown_domain_failure};
+use crate::commands::failure::{DomainFailure, now_iso, resolve_failure};
 use crate::commands::store::{open_store, open_store_mut, read_and_resolve, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -35,16 +35,13 @@ pub(super) fn run(
         open_store_mut("archive", true)?
     };
 
-    let domains = store.domains();
-    if !domains.iter().any(|d| d == domain) {
-        return Err(unknown_domain_failure(
-            "archive",
-            domain,
-            &domains,
-            opts.json,
-            DomainFailure::Standard,
-        ));
-    }
+    crate::commands::store::ensure_domain(
+        "archive",
+        &store,
+        domain,
+        opts.json,
+        DomainFailure::Standard,
+    )?;
 
     // --reason is trimmed; whitespace-only is empty (plain and json
     // differ only in the shared Error:-prefix law).

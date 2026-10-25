@@ -105,16 +105,13 @@ pub(super) fn run(
         crate::commands::store::open_store_mut("delete", true)?
     };
 
-    let domains = store.domains();
-    if !domains.iter().any(|d| d == domain) {
-        return Err(crate::commands::failure::unknown_domain_failure(
-            "delete",
-            domain,
-            &domains,
-            opts.json,
-            crate::commands::failure::DomainFailure::Standard,
-        ));
-    }
+    crate::commands::store::ensure_domain(
+        "delete",
+        &store,
+        domain,
+        opts.json,
+        crate::commands::failure::DomainFailure::Standard,
+    )?;
 
     let mode = Mode::from_args(opts.json, id, records, all_except)?;
 
