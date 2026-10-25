@@ -4,7 +4,7 @@
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, RecordArgs};
-use crate::output::{Failure, print_json, print_line, success_envelope};
+use crate::output::{print_json, print_line, success_envelope};
 
 /// Which flag-path write decision is being reported (the upsert
 /// plan's shape): create, or a duplicate skip/update against the
@@ -27,16 +27,20 @@ impl RecordAction {
 }
 
 /// Builds the json success envelope for one flag-path decision:
-/// `action`/`wouldDo?`/`domain`/`type`/`index?`/`record?` (key order
-/// pinned from the reference). Dry-run mirrors the write decision —
-/// `action` reads `dry-run`, `wouldDo` carries the verb — and the
-/// reported record drops its write-time id.
+/// `action`/`wouldDo?`/`domain`/`type`/`index?`/`record?`/`warnings?`
+/// (key order pinned from the reference). Dry-run mirrors the write
+/// decision — `action` reads `dry-run`, `wouldDo` carries the verb —
+/// and the reported record drops its write-time id. The `warnings`
+/// array rides LAST and only when non-empty (the reference spreads it
+/// conditionally; hook warnings are the sole contributor here,
+/// mulch-7f49).
 fn record_envelope(
     action: RecordAction,
     domain: &str,
     record_type: Option<&str>,
     dry_run: bool,
     record: Option<Map<String, Value>>,
+    warnings: &[String],
 ) -> Value {
     let kind = mulch::effective_type(record_type);
     let verb = match action {
@@ -61,6 +65,12 @@ fn record_envelope(
             record.remove("id");
         }
         fields.insert("record".into(), Value::Object(record));
+    }
+    if !warnings.is_empty() {
+        fields.insert(
+            "warnings".into(),
+            Value::Array(warnings.iter().map(|w| Value::String(w.clone())).collect()),
+        );
     }
     success_envelope("record", fields)
 }
@@ -98,13 +108,16 @@ fn record_plain_line(
 }
 
 /// Renders one flag-path write decision on its channel: the json
-/// success envelope or the plain line (quiet-gated), one family for
-/// create/skip/update in dry-run and real runs.
+/// success envelope (warnings array last, only when non-empty) or the
+/// plain line (quiet-gated) followed by `Warning: {w}` lines on
+/// stderr — unconditional, after the success line, in collection
+/// order (reference: `for (const w of ...) console.error`).
 pub(super) fn report_record_action(
     opts: &GlobalOpts,
     args: &RecordArgs,
     action: RecordAction,
     record: Option<Map<String, Value>>,
+    warnings: &[String],
 ) {
     if opts.json {
         print_json(
@@ -114,6 +127,7 @@ pub(super) fn report_record_action(
                 args.record_type.as_deref(),
                 args.dry_run,
                 record,
+                warnings,
             ),
             false,
         );
@@ -127,6 +141,15 @@ pub(super) fn report_record_action(
                 args.dry_run,
             ),
         );
+        if !warnings.is_empty() {
+            #[allow(
+                clippy::print_stderr,
+                reason = "the warning lines are the CLI boundary"
+            )]
+            for warning in warnings {
+                eprintln!("Warning: {warning}");
+            }
+        }
     }
 }
 
@@ -135,12 +158,15 @@ pub(super) fn report_record_action(
 /// place, anonymous types (`convention`/`failure`) skip with the
 /// advisory.
 /// The anonymous-duplicate advisory (flag path, `Skip` arm): nothing
-/// is written; `--force` is the documented escape hatch.
+/// is written; `--force` is the documented escape hatch. The
+/// pre-record warnings (hooks fired before the decision was known)
+/// surface with the advisory on both channels.
 pub(super) fn skip_advisory(
     opts: &GlobalOpts,
     args: &RecordArgs,
     index: usize,
     record: Map<String, Value>,
+    warnings: &[String],
 ) {
     // Dry-run mirrors the write decision through the incoming record
     // (reported id-less); the real skip reports no record at all.
@@ -149,41 +175,8 @@ pub(super) fn skip_advisory(
         args,
         RecordAction::Skip { index },
         args.dry_run.then_some(record),
+        warnings,
     );
-}
-
-/// The named-duplicate upsert (flag path, `Update` arm): the plan's
-/// merged record (incoming fields, outcomes existing-first) replaces
-/// the line, with the builder's pre-assigned id LIFTED LAST so it
-/// lands after the appended outcomes (probe-pinned key order). The
-/// file rewrites compactly.
-pub(super) fn upsert_update(
-    opts: &GlobalOpts,
-    args: &RecordArgs,
-    store: &mulch::StoreFiles,
-    existing: &[mulch::LineRecord],
-    index: usize,
-    record: Map<String, Value>,
-    merged: Map<String, Value>,
-) -> Result<(), Failure> {
-    if args.dry_run {
-        report_record_action(opts, args, RecordAction::Update { index }, Some(record));
-        return Ok(());
-    }
-
-    // id LAST: lift the builder's pre-assigned id over the merged
-    // outcomes (the reference's `{ ...record, outcomes }` + write-time
-    // id placement).
-    let mut upserted = merged;
-    if let Some(id) = upserted.remove("id") {
-        upserted.insert("id".into(), id);
-    }
-    let mut lines: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
-    lines[index] = Value::Object(upserted.clone());
-    crate::commands::store::persist("record", store, &args.domain, &lines)?;
-
-    report_record_action(opts, args, RecordAction::Update { index }, Some(upserted));
-    Ok(())
 }
 
 #[cfg(test)]
@@ -217,8 +210,14 @@ mod report_family_tests {
             (RecordAction::Skip { index: 3 }, "skipped"),
             (RecordAction::Update { index: 3 }, "updated"),
         ] {
-            let envelope =
-                record_envelope(action, "d", Some("pattern"), true, Some(sample_record()));
+            let envelope = record_envelope(
+                action,
+                "d",
+                Some("pattern"),
+                true,
+                Some(sample_record()),
+                &[],
+            );
             assert_eq!(keys(&envelope), [
                 "success", "command", "action", "wouldDo", "domain", "type", "record",
             ]);
@@ -240,6 +239,7 @@ mod report_family_tests {
             None,
             false,
             Some(sample_record()),
+            &[],
         );
         assert_eq!(keys(&create), [
             "success", "command", "action", "domain", "type", "record"
@@ -248,7 +248,7 @@ mod report_family_tests {
         assert_eq!(create["type"], "convention");
         assert_eq!(create["record"]["id"], "mx-test");
 
-        let skip = record_envelope(RecordAction::Skip { index: 2 }, "d", None, false, None);
+        let skip = record_envelope(RecordAction::Skip { index: 2 }, "d", None, false, None, &[]);
         assert_eq!(keys(&skip), [
             "success", "command", "action", "domain", "type", "index"
         ]);
@@ -260,12 +260,30 @@ mod report_family_tests {
             None,
             false,
             Some(sample_record()),
+            &[],
         );
         assert_eq!(keys(&update), [
             "success", "command", "action", "domain", "type", "index", "record"
         ]);
         assert_eq!(update["index"], 3);
         assert_eq!(update["record"]["id"], "mx-test");
+    }
+
+    /// The hook-warnings array rides LAST in the envelope and only
+    /// when non-empty (mulch-7f49: pre-record warnings surface even
+    /// on a skip, both families join pre-then-post).
+    #[test]
+    fn warnings_ride_the_envelope_last_and_only_when_non_empty() {
+        let warned = record_envelope(RecordAction::Skip { index: 1 }, "d", None, false, None, &[
+            "hook `exit 5` exited with code 5".to_string(),
+        ]);
+        assert_eq!(keys(&warned), [
+            "success", "command", "action", "domain", "type", "index", "warnings"
+        ]);
+        assert_eq!(
+            warned["warnings"],
+            serde_json::json!(["hook `exit 5` exited with code 5"])
+        );
     }
 
     /// The six plain lines, word-for-word; a missing `--type`

@@ -2023,3 +2023,433 @@ fn record_invalid_json_parse_surface_matches_reference() {
     );
     assert_eq!(json.stdout, "");
 }
+
+// ---- sprint 42 (mulch-7f49): record lifecycle hooks ----
+//
+// Twin stores share one hooks/hook_settings block appended after
+// `ml init` + `ml add dev`; every probe live-compares both channels,
+// the exit code, and the store bytes. Two reference-side channels are
+// kept out of the comparison on purpose: (a) the pino diagnostics
+// line every failing hook logs on stderr (their log.ts header: "NOT
+// the product-output channel") — silenced with MULCH_LOG_LEVEL=silent
+// — and (b) the Bun EPIPE stack trace a hook leaks when it exits
+// without draining stdin — every fixture hook reads stdin first.
+
+/// Appends a hooks/hook_settings block to the store config (both
+/// sides of a twin fixture share it verbatim).
+fn append_hooks(dir: &Path, block: &str) {
+    let config = dir.join(".mulch").join("mulch.config.yaml");
+    let mut text = std::fs::read_to_string(&config).expect("init config");
+    text.push_str(block);
+    std::fs::write(&config, text).expect("hooks config");
+}
+
+/// The twin hook fixture: `ml init`, one `dev` domain, then the
+/// shared hook block.
+fn hook_fixture(dir: &Path, ml: &Path, block: &str) {
+    let _ = run_in(dir, ml, &["init"]);
+    let _ = run_in(dir, ml, &["add", "dev"]);
+    append_hooks(dir, block);
+}
+
+/// Runs the reference with its pino diagnostics channel silenced:
+/// failing hooks log a structured warn line on stderr that is not
+/// product output, so byte parity targets the product channels only.
+fn run_ref_quiet(dir: &Path, ml: &Path, args: &[&str]) -> Run {
+    let output = std::process::Command::new(ml)
+        .args(args)
+        .env("MULCH_LOG_LEVEL", "silent")
+        .current_dir(dir)
+        .output()
+        .expect("spawn reference");
+    Run {
+        code:   output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// Byte-compare one twin run pair (exit, stdout, stderr; timestamps
+/// normalized — the twin fixtures record `now` microseconds apart).
+fn assert_hook_pair(our: &Run, their: &Run, label: &str) {
+    assert_eq!(
+        our.code, their.code,
+        "exit {label}\nour stderr: {:?}\ntheir stderr: {:?}",
+        our.stderr, their.stderr
+    );
+    assert_eq!(
+        normalize(&our.stdout),
+        normalize(&their.stdout),
+        "stdout {label}"
+    );
+    assert_eq!(
+        normalize(&our.stderr),
+        normalize(&their.stderr),
+        "stderr {label}"
+    );
+}
+
+/// Compares a hook-captured payload file between the twin stores
+/// (missing files read empty — the dry-run/skip probes rely on that).
+fn assert_capture_same(ours: &TempDir, theirs: &TempDir, file: &str) {
+    let read = |dir: &TempDir| std::fs::read_to_string(dir.0.join(file)).unwrap_or_default();
+    assert_eq!(
+        normalize(&read(ours)),
+        normalize(&read(theirs)),
+        "{file} differs"
+    );
+}
+
+/// Store-byte compare for runs that record `now`: timestamps mask,
+/// everything else is byte law (the twin fixtures run microseconds
+/// apart).
+fn assert_hook_store_same(ours: &TempDir, theirs: &TempDir) {
+    assert_eq!(
+        normalize(&read_store_file(&ours.0, "expertise/dev.jsonl")),
+        normalize(&read_store_file(&theirs.0, "expertise/dev.jsonl")),
+        "dev.jsonl differs"
+    );
+}
+
+/// A flag-path record run's argument vector for `name`.
+fn record_args(name: &str, mode: &[&str]) -> Vec<String> {
+    let mut args = vec![
+        "record".to_string(),
+        "dev".to_string(),
+        "--type".to_string(),
+        "pattern".to_string(),
+        "--name".to_string(),
+        name.to_string(),
+        "--description".to_string(),
+        "d1".to_string(),
+    ];
+    args.extend(mode.iter().map(|flag| (*flag).to_string()));
+    args
+}
+
+/// A blocking pre-record hook (exit 3) aborts the flag path on both
+/// channels with the reference's reason text, forwarding the hook's
+/// stderr first; nothing is written.
+#[test]
+fn record_pre_hook_blocking_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let block =
+        "hooks:\n  pre-record:\n    - 'cat >/dev/null; printf from-hook-stderr >&2; exit 3'\n";
+    let ours = TempDir::new("hookblock-o");
+    let theirs = TempDir::new("hookblock-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    for mode in [&[] as &[&str], &["--json"]] {
+        let args = record_args("p1", mode);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &refs);
+        let their = run_ref_quiet(&theirs.0, &ml, &refs);
+        assert_hook_pair(&our, &their, &format!("blocked {mode:?}"));
+    }
+    assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), "");
+}
+
+/// A pre-record hook that overruns `hook_settings.timeout_ms` blocks
+/// with the timeout reason on both channels (exit 124 semantics).
+#[test]
+fn record_pre_hook_timeout_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let block =
+        "hooks:\n  pre-record:\n    - 'sleep 30 & wait'\nhook_settings:\n  timeout_ms: 150\n";
+    let ours = TempDir::new("hooktime-o");
+    let theirs = TempDir::new("hooktime-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    for mode in [&[] as &[&str], &["--json"]] {
+        let args = record_args("p1", mode);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &refs);
+        let their = run_ref_quiet(&theirs.0, &ml, &refs);
+        assert_hook_pair(&our, &their, &format!("timeout {mode:?}"));
+    }
+    assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), "");
+}
+
+/// A pre-record hook's valid echo is adopted: the mutated record
+/// replaces the input for dedup and write (write-time id appended
+/// last), and the untouched record passes through unchanged.
+#[test]
+fn record_pre_hook_mutation_adoption_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Mutates only p2's payload (grep over the drained stdin); p1's
+    // records pass through with the mutation gate closed.
+    let block = "hooks:\n  pre-record:\n    - 'x=$(cat); if echo \"$x\" | grep -q p2; then printf %s \"{\\\"payload\\\":{\\\"domain\\\":\\\"dev\\\",\\\"record\\\":{\\\"type\\\":\\\"pattern\\\",\\\"classification\\\":\\\"tactical\\\",\\\"recorded_at\\\":\\\"2026-01-01T00:00:00.000Z\\\",\\\"name\\\":\\\"p2-MUT\\\",\\\"description\\\":\\\"mutated\\\"}}}\"; fi'\n";
+    let ours = TempDir::new("hookmut-o");
+    let theirs = TempDir::new("hookmut-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    // p1 plain (create), p1 json (update — named dup), p2 plain
+    // (adopted create), p2 json (adopted again → update of p2-MUT).
+    for (name, mode) in [
+        ("p1", &[] as &[&str]),
+        ("p1", &["--json"]),
+        ("p2", &[] as &[&str]),
+        ("p2", &["--json"]),
+    ] {
+        let args = record_args(name, mode);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &refs);
+        let their = run_ref_quiet(&theirs.0, &ml, &refs);
+        assert_hook_pair(&our, &their, &format!("mutation {name} {mode:?}"));
+    }
+    assert_hook_store_same(&ours, &theirs);
+    // The adopted record landed with the hook's key order and the
+    // write-time id last.
+    let store = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert_eq!(store.lines().count(), 2);
+    assert!(store.contains("p2-MUT"));
+}
+
+/// A pre-record hook echoing an INVALID record fails with the
+/// reference's joined ajv sub-errors on both channels; the store
+/// stays untouched.
+#[test]
+fn record_pre_hook_invalid_mutation_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let block = "hooks:\n  pre-record:\n    - 'x=$(cat); if echo \"$x\" | grep -q p2; then printf %s \"{\\\"payload\\\":{\\\"domain\\\":\\\"dev\\\",\\\"record\\\":{\\\"type\\\":\\\"pattern\\\",\\\"classification\\\":\\\"tactical\\\",\\\"recorded_at\\\":\\\"2026-01-01T00:00:00.000Z\\\"}}}\"; fi'\n";
+    let ours = TempDir::new("hookinvmut-o");
+    let theirs = TempDir::new("hookinvmut-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    // p2's invalid echo aborts with the sub-error blob (probed:
+    // ` must have required property 'content'; … ; must match
+    // exactly one schema in oneOf`); p1 then records fine.
+    for (name, mode) in [
+        ("p2", &[] as &[&str]),
+        ("p2", &["--json"]),
+        ("p1", &[] as &[&str]),
+    ] {
+        let args = record_args(name, mode);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &refs);
+        let their = run_ref_quiet(&theirs.0, &ml, &refs);
+        assert_hook_pair(&our, &their, &format!("invalid mutation {name} {mode:?}"));
+    }
+    assert_hook_store_same(&ours, &theirs);
+    assert!(read_store_file(&ours.0, "expertise/dev.jsonl").contains("p1"));
+}
+
+/// A failing post-record hook only warns: plain mode prints the
+/// hook's forwarded stderr and a `Warning:` line after the success
+/// line; json mode carries the `warnings` array last in the envelope.
+#[test]
+fn record_post_hook_warning_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let block = "hooks:\n  post-record:\n    - 'cat >/dev/null; printf post-stderr >&2; exit 1'\n";
+    let ours = TempDir::new("hookpost-o");
+    let theirs = TempDir::new("hookpost-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    for mode in [&[] as &[&str], &["--json"]] {
+        let args = record_args("p1", mode);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &refs);
+        let their = run_ref_quiet(&theirs.0, &ml, &refs);
+        assert_hook_pair(&our, &their, &format!("post warning {mode:?}"));
+    }
+    assert_hook_store_same(&ours, &theirs);
+}
+
+/// Pre-record fires BEFORE the duplicate decision (even a skip runs
+/// it); post-record fires for actual writes only — a skipped
+/// duplicate is a no-op with no post hook.
+#[test]
+fn record_hook_skip_fires_pre_but_no_post() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let block = "hooks:\n  pre-record:\n    - 'cat > prefired.json'\n  post-record:\n    - 'cat > postfired.json'\n";
+    let ours = TempDir::new("hookskip-o");
+    let theirs = TempDir::new("hookskip-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    // Seed the anonymous duplicate, clear the captures, re-run: the
+    // skip advisory prints while only the pre hook fired.
+    for dir in [&ours.0, &theirs.0] {
+        let _ = run_in(dir, &ml, &[
+            "record",
+            "dev",
+            "--type",
+            "convention",
+            "--content",
+            "dup",
+        ]);
+        std::fs::remove_file(dir.join("prefired.json")).ok();
+        std::fs::remove_file(dir.join("postfired.json")).ok();
+    }
+    let args = ["record", "dev", "--type", "convention", "--content", "dup"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_ref_quiet(&theirs.0, &ml, &args);
+    assert_hook_pair(&our, &their, "skip hooks");
+    for dir in [&ours.0, &theirs.0] {
+        assert!(dir.join("prefired.json").is_file(), "pre fired in {dir:?}");
+        assert!(
+            !dir.join("postfired.json").is_file(),
+            "no post on skip in {dir:?}"
+        );
+    }
+}
+
+/// Dry-run fires NO hooks at all (no external side effects while
+/// previewing) and mirrors the write decision as before.
+#[test]
+fn record_hook_dry_run_fires_nothing() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let block = "hooks:\n  pre-record:\n    - 'cat > prefired.json'\n  post-record:\n    - 'cat > postfired.json'\n";
+    let ours = TempDir::new("hookdry-o");
+    let theirs = TempDir::new("hookdry-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    for mode in [&["--dry-run"] as &[&str], &["--dry-run", "--json"]] {
+        let args = record_args("p1", mode);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &refs);
+        let their = run_ref_quiet(&theirs.0, &ml, &refs);
+        assert_hook_pair(&our, &their, &format!("dry-run {mode:?}"));
+    }
+    for dir in [&ours.0, &theirs.0] {
+        assert!(
+            !dir.join("prefired.json").is_file(),
+            "no pre in dry-run {dir:?}"
+        );
+        assert!(
+            !dir.join("postfired.json").is_file(),
+            "no post in dry-run {dir:?}"
+        );
+    }
+}
+
+/// The hook payloads byte-pin against the reference: pre-record
+/// carries `{domain, record}` WITHOUT the write-time id; post-record
+/// carries the WRITTEN record (id last) plus `action` — for creates
+/// and updates alike.
+#[test]
+fn record_hook_payloads_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let block =
+        "hooks:\n  pre-record:\n    - 'cat > pre.json'\n  post-record:\n    - 'cat > post.json'\n";
+    let ours = TempDir::new("hookpay-o");
+    let theirs = TempDir::new("hookpay-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    // Create, then the named-duplicate update of the same record.
+    let create = record_args("p1", &[]);
+    let create_refs: Vec<&str> = create.iter().map(String::as_str).collect();
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &create_refs);
+    let their = run_ref_quiet(&theirs.0, &ml, &create_refs);
+    assert_hook_pair(&our, &their, "payload create");
+    assert_capture_same(&ours, &theirs, "pre.json");
+    assert_capture_same(&ours, &theirs, "post.json");
+
+    let mut update = record_args("p1", &[]);
+    // Replace the trailing description VALUE (d1 -> d1-NEW).
+    update.pop();
+    update.push("d1-NEW".to_string());
+    let update_refs: Vec<&str> = update.iter().map(String::as_str).collect();
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &update_refs);
+    let their = run_ref_quiet(&theirs.0, &ml, &update_refs);
+    assert_hook_pair(&our, &their, "payload update");
+    assert_capture_same(&ours, &theirs, "pre.json");
+    assert_capture_same(&ours, &theirs, "post.json");
+    assert_hook_store_same(&ours, &theirs);
+}
+
+/// The batch family: a blocked pre-record hook drops just that record
+/// (valid-records index) and the batch continues; the post-record
+/// hook fires per actual write with `{domain, record, action}` and
+/// its failure warns into the summary envelope's `warnings` array.
+#[test]
+fn record_batch_hook_drop_one_continue_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let block = "hooks:\n  pre-record:\n    - 'x=$(cat); if echo \"$x\" | grep -q b1; then exit 3; fi'\n  post-record:\n    - 'cat >> postbatch.json; exit 7'\n";
+    let ours = TempDir::new("hookbatch-o");
+    let theirs = TempDir::new("hookbatch-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join("b.json"),
+            "[{\"type\":\"pattern\",\"name\":\"b1\",\"description\":\"d\"},{\"type\":\"pattern\",\"name\":\"b2\",\"description\":\"d\"}]",
+        )
+        .expect("batch fixture");
+    }
+    for mode in [&[] as &[&str], &["--json"]] {
+        let mut args = vec!["record", "dev", "--batch", "b.json"];
+        args.extend_from_slice(mode);
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_ref_quiet(&theirs.0, &ml, &args);
+        assert_hook_pair(&our, &their, &format!("batch drop-one {mode:?}"));
+    }
+    assert_hook_store_same(&ours, &theirs);
+    // b2 wrote (twice across the two runs — the second as an
+    // update), b1 never did; the captured post payloads agree.
+    let store = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert!(store.contains("b2"));
+    assert!(!store.contains("b1"));
+    assert_capture_same(&ours, &theirs, "postbatch.json");
+}
+
+/// A batch pre-record hook echoing an invalid record drops that
+/// record with the invalid-mutation error; the rest still writes.
+#[test]
+fn record_batch_hook_invalid_mutation_drops_record() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let block = "hooks:\n  pre-record:\n    - 'x=$(cat); if echo \"$x\" | grep -q b2; then printf %s \"{\\\"payload\\\":{\\\"domain\\\":\\\"dev\\\",\\\"record\\\":{\\\"type\\\":\\\"pattern\\\",\\\"classification\\\":\\\"tactical\\\",\\\"recorded_at\\\":\\\"2026-01-01T00:00:00.000Z\\\"}}}\"; fi'\n";
+    let ours = TempDir::new("hookbinv-o");
+    let theirs = TempDir::new("hookbinv-t");
+    hook_fixture(&ours.0, &ml, block);
+    hook_fixture(&theirs.0, &ml, block);
+    for dir in [&ours.0, &theirs.0] {
+        std::fs::write(
+            dir.join("b.json"),
+            "[{\"type\":\"pattern\",\"name\":\"b1\",\"description\":\"d\"},{\"type\":\"pattern\",\"name\":\"b2\",\"description\":\"d\"}]",
+        )
+        .expect("batch fixture");
+    }
+    for mode in [&[] as &[&str], &["--json"]] {
+        let mut args = vec!["record", "dev", "--batch", "b.json"];
+        args.extend_from_slice(mode);
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_ref_quiet(&theirs.0, &ml, &args);
+        assert_hook_pair(&our, &their, &format!("batch invalid mutation {mode:?}"));
+    }
+    assert_hook_store_same(&ours, &theirs);
+    let store = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert!(store.contains("b1"));
+    assert!(!store.contains("b2"));
+}

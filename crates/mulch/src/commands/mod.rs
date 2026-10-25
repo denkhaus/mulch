@@ -14,6 +14,7 @@ mod doctor;
 mod edit;
 mod failure;
 mod git_context;
+mod hooks_surface;
 mod init;
 mod input;
 mod learn;

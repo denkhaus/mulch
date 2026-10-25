@@ -1,19 +1,24 @@
 //! `mulch record` — the record-creation surface: the command
-//! prologue (store, writer lock, auto-create, `--type` contract) and
+//! prologue (store phases, auto-create, `--type` contract) and
 //! dispatch into the flag path, the stdin/batch family, and the
 //! report family (mulch-d524 made every surface custom-type aware
-//! over the merged registry).
+//! over the merged registry). The pre/post-record lifecycle hooks
+//! (mulch-7f49) bracket the locked write exactly like the reference:
+//! pre-record fires BEFORE the writer lock (skipped in dry-run),
+//! post-record AFTER the actual write, outside the lock.
 
+use std::path::PathBuf;
+
+use mulch::hooks::{HookEvent, run_hooks};
 use mulch::truthy_str;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use crate::cli::{GlobalOpts, RecordArgs};
 use crate::commands::failure::now_iso;
+use crate::commands::hooks_surface::forward_hook_stderr;
 use crate::commands::record::batch::{read_batch_file, stdin_batch};
 use crate::commands::record::flag::{build_record, evidence_map};
-use crate::commands::record::report::{
-    RecordAction, report_record_action, skip_advisory, upsert_update,
-};
+use crate::commands::record::report::{RecordAction, report_record_action, skip_advisory};
 use crate::output::{Failure, print_line};
 
 mod batch;
@@ -21,14 +26,12 @@ mod flag;
 mod report;
 
 pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
-    // The writer lock wraps the whole load→mutate→save cycle of real
-    // runs; `--dry-run` reads lock-free like the reference's dry-run
-    // branch (mulch-228d).
-    let mut store = if args.dry_run {
-        crate::commands::store::open_store("record", false)?
-    } else {
-        crate::commands::store::open_store_mut("record", false)?
-    };
+    // Phase 1 opens the store LOCK-FREE (mulch-7f49): the reference
+    // reads its config, auto-creates the domain, and runs the
+    // pre-record hooks before any file lock; only the load→mutate→save
+    // cycle below takes the writer lock (`--dry-run` never locks at
+    // all, mulch-228d).
+    let mut store = crate::commands::store::open_store("record", false)?;
 
     // JS truthiness on the --batch flag: `--batch ""` is NO batch (the
     // reference's `if (options.batch)` gate) — the flag path runs with
@@ -133,47 +136,284 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
         }
     };
 
-    // Duplicate detection over the STRICT read (reference
-    // `readExpertiseFile` + `findDuplicate`): malformed lines and
-    // unregistered types abort before the write, and the dedup key is
-    // the type's dedup FIELD (registry dedupKey), never the id — a
-    // renamed record still dedupes after `edit --name` (mulch-ccf6).
-    let existing = crate::commands::store::read_domain_records(
-        "record",
-        &store,
-        &args.domain,
-        opts.allow_unknown_types,
-    )?;
-    // One decision owner (lib `upsert_plan`): named duplicates upsert
-    // with merged outcomes, anonymous ones skip, --force falls through
-    // to the create path below.
-    let working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
-    match mulch::upsert_plan(
-        store.registry(),
-        &working,
-        &Value::Object(record.clone()),
-        args.force,
-    ) {
-        mulch::UpsertPlan::Skip { index } => {
-            skip_advisory(opts, args, index, record);
-            return Ok(());
-        }
-        mulch::UpsertPlan::Update { index, merged } => {
-            return upsert_update(opts, args, &store, &existing, index, record, merged);
-        }
-        mulch::UpsertPlan::Create => {}
+    // The pre-record lifecycle hook (mulch-7f49): fires after the
+    // record is built and validated but before any file read —
+    // outside every lock. Payload `{domain, record}` with the
+    // builder's id stripped: the reference sends the built record
+    // id-less (ids are write-time, appendRecord's `if (!record.id)`)
+    // and re-stamps an adopted record only when the hook left no id.
+    // Dry-run skips the whole family (no external side effects while
+    // previewing).
+    let mut warnings: Vec<String> = Vec::new();
+    let mut record = record;
+    if !args.dry_run {
+        let (adopted, hook_warnings) = pre_record_phase(&store, &args.domain, record)?;
+        record = adopted;
+        warnings = hook_warnings;
     }
 
     if args.dry_run {
-        report_record_action(opts, args, RecordAction::Create, Some(record));
+        // Dry-run previews the write decision over the lock-free
+        // read (mulch-228d); no hooks fired, so no warnings exist.
+        let existing = crate::commands::store::read_domain_records(
+            "record",
+            &store,
+            &args.domain,
+            opts.allow_unknown_types,
+        )?;
+        let working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
+        match mulch::upsert_plan(
+            store.registry(),
+            &working,
+            &Value::Object(record.clone()),
+            args.force,
+        ) {
+            mulch::UpsertPlan::Skip { index } => {
+                skip_advisory(opts, args, index, record, &warnings);
+            }
+            mulch::UpsertPlan::Update { index, .. } => {
+                report_record_action(opts, args, RecordAction::Update { index }, Some(record), &[
+                ]);
+            }
+            mulch::UpsertPlan::Create => {
+                report_record_action(opts, args, RecordAction::Create, Some(record), &[]);
+            }
+        }
         return Ok(());
     }
 
-    let line = Value::Object(record.clone()).to_string();
-    store
-        .append_domain_line(&args.domain, &line)
-        .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
+    // Phase 2: the locked load→mutate→save. The writer lock wraps the
+    // cycle and drops before the post-record hooks fire — the
+    // reference runs them outside the lock so observation hooks can
+    // never stall lock holders (mulch-7f49).
+    let decision = {
+        let locked = crate::commands::store::open_store_mut("record", false)?;
+        // Duplicate detection over the STRICT read (reference
+        // `readExpertiseFile` + `findDuplicate`): malformed lines and
+        // unregistered types abort before the write, and the dedup key is
+        // the type's dedup FIELD (registry dedupKey), never the id — a
+        // renamed record still dedupes after `edit --name` (mulch-ccf6).
+        let existing = crate::commands::store::read_domain_records(
+            "record",
+            &locked,
+            &args.domain,
+            opts.allow_unknown_types,
+        )?;
+        // One decision owner (lib `upsert_plan`): named duplicates upsert
+        // with merged outcomes, anonymous ones skip, --force falls through
+        // to the create path below.
+        let working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
+        match mulch::upsert_plan(
+            locked.registry(),
+            &working,
+            &Value::Object(record.clone()),
+            args.force,
+        ) {
+            mulch::UpsertPlan::Skip { index } => Decision::Skip { index },
+            mulch::UpsertPlan::Update { index, merged } => {
+                // id LAST: lift the record's pre-assigned id over the
+                // merged outcomes (the reference's `{ ...record,
+                // outcomes }` + write-time id placement, mulch-351e).
+                let mut upserted = merged;
+                if let Some(id) = upserted.remove("id") {
+                    upserted.insert("id".into(), id);
+                }
+                let mut lines: Vec<Value> =
+                    existing.iter().map(|line| line.record.clone()).collect();
+                lines[index] = Value::Object(upserted.clone());
+                crate::commands::store::persist("record", &locked, &args.domain, &lines)?;
+                Decision::Written {
+                    action: RecordAction::Update { index },
+                    record: upserted,
+                }
+            }
+            mulch::UpsertPlan::Create => {
+                let line = Value::Object(record.clone()).to_string();
+                locked
+                    .append_domain_line(&args.domain, &line)
+                    .map_err(|source| {
+                        Failure::handled("record", crate::output::chain_message(&source))
+                    })?;
+                Decision::Written {
+                    action: RecordAction::Create,
+                    record,
+                }
+            }
+        }
+    };
 
-    report_record_action(opts, args, RecordAction::Create, Some(record));
+    match decision {
+        Decision::Skip { index } => {
+            // No post-record for a skipped duplicate (a no-op by
+            // design); the pre-record warnings still surface on both
+            // channels. The real skip reports no record — only the
+            // dry-run preview mirrors one, through skip_advisory
+            // above.
+            report_record_action(opts, args, RecordAction::Skip { index }, None, &warnings);
+        }
+        Decision::Written { action, record } => {
+            // Post-record fires for actual writes only, payload
+            // `{domain, record, action}` carrying the WRITTEN record
+            // (id included), outside the lock; failures only warn.
+            warnings.extend(post_record_phase(
+                &store,
+                &args.domain,
+                &record,
+                action_verb(action),
+            ));
+            report_record_action(opts, args, action, Some(record), &warnings);
+        }
+    }
     Ok(())
+}
+
+/// The locked write phase's outcome (the reference's `WriteOutcome`):
+/// a skip reports only, a write carries its record on to the
+/// post-record hook and the report.
+enum Decision {
+    /// A duplicate no-op: nothing written, no post-record.
+    Skip {
+        /// The existing duplicate line's 0-based index.
+        index: usize,
+    },
+    /// An actual write: created or updated.
+    Written {
+        /// Which write happened.
+        action: RecordAction,
+        /// The written record (id included).
+        record: Map<String, Value>,
+    },
+}
+
+/// The post-record payload's `action` verb of a write decision.
+fn action_verb(action: RecordAction) -> &'static str {
+    match action {
+        RecordAction::Create => "created",
+        RecordAction::Update { .. } => "updated",
+        RecordAction::Skip { .. } => "skipped",
+    }
+}
+
+/// The hooks' working directory (the reference spawns scripts in the
+/// CLI's cwd, which may be a project subdirectory).
+fn hook_cwd() -> Result<PathBuf, Failure> {
+    std::env::current_dir()
+        .map_err(|source| Failure::handled("record", format!("resolving cwd: {source}")))
+}
+
+/// The fallback block reason when the engine reports none (the
+/// reference's `?? "pre-record hook blocked the write"`).
+const BLOCK_DEFAULT: &str = "pre-record hook blocked the write";
+
+/// The mutation gate's `payload.record` read (`payload?.record`):
+/// JSON truthiness — absent, null, false, zero, and the empty string
+/// never adopt; any other value (objects, arrays, `true`, non-empty
+/// scalars) proceeds to the comparison.
+fn truthy_payload_record(payload: &Value) -> Option<&Value> {
+    let record = payload.get("record")?;
+    let truthy = !matches!(record, Value::Null | Value::Bool(false))
+        && !record.as_f64().is_some_and(|number| number == 0.0)
+        && record.as_str() != Some("");
+    truthy.then_some(record)
+}
+
+/// The invalid-mutation error text: the reference joins ajv's
+/// `instancePath message` sub-errors with `"; "` — no type hint on
+/// this surface (probe-pinned, ml 0.10.7).
+fn invalid_mutation_text(subs: &[mulch::schema::SubError]) -> String {
+    format!(
+        "pre-record hook produced an invalid record: {}",
+        mulch::schema::render_subs(subs).join(mulch::schema::SUB_SEP),
+    )
+}
+
+/// A hook failure with the reference's two-channel shape: plain mode
+/// says `Error: {reason}` on stderr, the json envelope carries the
+/// bare reason (probe-pinned).
+fn hook_failure(reason: String) -> Failure {
+    let mut failure = Failure::handled_on_stderr("record", format!("Error: {reason}"));
+    failure.envelope["error"] = Value::String(reason);
+    failure
+}
+
+/// Stamps the write-time id onto an adopted record: appended LAST
+/// when the hook left none (the reference's `if (!record.id)` law),
+/// kept verbatim — value AND position — when it carried one.
+fn ensure_write_id(
+    registry: &mulch::Registry,
+    mut record: Map<String, Value>,
+) -> Map<String, Value> {
+    if !record.contains_key("id") {
+        let record_type =
+            mulch::effective_type(record.get("type").and_then(Value::as_str)).to_string();
+        let id_key = registry.id_key_field(&record_type);
+        let id_value = record
+            .get(id_key)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        record.insert(
+            "id".into(),
+            Value::String(mulch::record_id(&record_type, id_value)),
+        );
+    }
+    record
+}
+
+/// The flag path's pre-record phase: runs the hook family outside
+/// every lock, payload `{domain, record}` id-less. A block aborts
+/// before any read with the reason on both channels; a valid mutation
+/// is adopted (the write-time id re-stamped only when absent), an
+/// invalid one fails with the reference's joined sub-errors. Returns
+/// the record for the locked phase and the warnings for the report.
+fn pre_record_phase(
+    store: &mulch::StoreFiles,
+    domain: &str,
+    record: Map<String, Value>,
+) -> Result<(Map<String, Value>, Vec<String>), Failure> {
+    // The payload carries the record id-less; the working copy keeps
+    // the builder's id — untouched unless a mutation adopts.
+    let mut sent = record.clone();
+    sent.remove("id");
+    let payload = json!({"domain": domain, "record": sent});
+    let result = run_hooks(HookEvent::PreRecord, payload, store, &hook_cwd()?);
+    forward_hook_stderr(&result.executions);
+    if result.blocked {
+        return Err(hook_failure(
+            result.block_reason.unwrap_or_else(|| BLOCK_DEFAULT.into()),
+        ));
+    }
+    let mut record = record;
+    if result.ran_any
+        && let Some(mutated) = truthy_payload_record(&result.payload)
+        && *mutated != Value::Object(sent)
+    {
+        if let mulch::schema::FullVerdict::Invalid { subs, .. } =
+            mulch::schema::full_verdict(store.registry(), mutated)
+        {
+            return Err(hook_failure(invalid_mutation_text(&subs)));
+        }
+        // A Valid verdict implies an object (the non-object arm is
+        // Invalid); the fallback only guards the type refinement.
+        if let Some(adopted) = mutated.as_object().cloned() {
+            record = ensure_write_id(store.registry(), adopted);
+        }
+    }
+    Ok((record, result.warnings))
+}
+
+/// The flag path's post-record phase: fires for actual writes only
+/// (created/updated — a skipped duplicate is a no-op), payload
+/// `{domain, record, action}` with the written record, outside the
+/// writer lock. Failures only warn.
+fn post_record_phase(
+    store: &mulch::StoreFiles,
+    domain: &str,
+    record: &Map<String, Value>,
+    action: &str,
+) -> Vec<String> {
+    let payload = json!({"domain": domain, "record": record, "action": action});
+    let cwd = hook_cwd().unwrap_or_default();
+    let result = run_hooks(HookEvent::PostRecord, payload, store, &cwd);
+    forward_hook_stderr(&result.executions);
+    result.warnings
 }

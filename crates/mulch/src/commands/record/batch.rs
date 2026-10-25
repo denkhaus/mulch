@@ -10,7 +10,7 @@ use std::path::Path;
 
 use mulch::json_error::jsc_parse_error;
 use mulch::{record_id, schema};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use crate::cli::{GlobalOpts, RecordArgs};
 use crate::commands::failure::now_iso;
@@ -112,22 +112,11 @@ pub(super) fn stdin_batch(
         single => vec![single],
     };
 
-    let existing = crate::commands::store::read_domain_records(
-        "record",
-        store,
-        &args.domain,
-        opts.allow_unknown_types,
-    )?;
-    // The working copy the reference dedupes against (`currentRecords`):
-    // existing records plus this batch's accepted appends — within-batch
-    // duplicates upsert too. Dry-run never mutates it (the reference
-    // counts a within-batch duplicate as another create there).
-    let mut working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
-    let mut created = 0usize;
-    let mut updated = 0usize;
-    let mut skipped = 0usize;
+    // Validation pass over the INPUT index (reference loop 1): the
+    // enrichment and the strict full-record verdict decide the
+    // valid-records list; every error keeps its original position.
+    let mut valid: Vec<Map<String, Value>> = Vec::new();
     let mut errors: Vec<Value> = Vec::new();
-
     for (index, item) in items.into_iter().enumerate() {
         let Some(object) = item.as_object().cloned() else {
             // Reference: ajv rejects non-objects with `must be object`
@@ -167,65 +156,183 @@ pub(super) fn stdin_batch(
             )));
             continue;
         }
-        let record_type =
-            mulch::effective_type(line.get("type").and_then(Value::as_str)).to_string();
-        let id_key = store.registry().id_key_field(&record_type);
-        let id_value = line
-            .get(id_key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let id = record_id(&record_type, &id_value);
-        // One decision owner (lib `upsert_plan`): the dedup field
-        // against the working copy, never the id (mulch-ccf6). The
-        // enriched record is safe here: the plan compares only `type`
-        // and the type's dedup field, which enrichment never touches.
-        let plan = mulch::upsert_plan(
-            store.registry(),
-            &working,
-            &Value::Object(line.clone()),
-            args.force,
-        );
+        valid.push(line);
+    }
 
+    // Hook pass over the VALID-RECORDS index (reference loop 2,
+    // before the lock): pre-record fires per record — a blocked hook
+    // drops just that record into `errors` and the batch continues; a
+    // valid mutation replaces the record for the write (ids stay
+    // write-time, so no stamping here). Dry-run skips the family.
+    let mut warnings: Vec<String> = Vec::new();
+    let mut records_to_write: Vec<Map<String, Value>> = Vec::new();
+    if args.dry_run {
+        records_to_write = valid;
+    } else {
+        let cwd = super::hook_cwd()?;
+        for (index, line) in valid.into_iter().enumerate() {
+            let sent = Value::Object(line.clone());
+            let payload = json!({"domain": args.domain, "record": sent.clone()});
+            let result =
+                mulch::hooks::run_hooks(mulch::hooks::HookEvent::PreRecord, payload, store, &cwd);
+            crate::commands::hooks_surface::forward_hook_stderr(&result.executions);
+            // Warnings count even for a blocked record (the reference
+            // pushes them before the blocked check).
+            warnings.extend(result.warnings.iter().cloned());
+            if result.blocked {
+                errors.push(Value::String(format!(
+                    "Record {index}: {}",
+                    result
+                        .block_reason
+                        .clone()
+                        .unwrap_or_else(|| super::BLOCK_DEFAULT.into()),
+                )));
+                continue;
+            }
+            let mut final_line = line;
+            if result.ran_any
+                && let Some(mutated) = super::truthy_payload_record(&result.payload)
+                && *mutated != sent
+            {
+                if let schema::FullVerdict::Invalid { subs, .. } =
+                    schema::full_verdict(store.registry(), mutated)
+                {
+                    errors.push(Value::String(format!(
+                        "Record {index}: {}",
+                        super::invalid_mutation_text(&subs),
+                    )));
+                    continue;
+                }
+                // A Valid verdict implies an object (the non-object
+                // arm is Invalid); the fallback only guards the type
+                // refinement.
+                if let Some(adopted) = mutated.as_object().cloned() {
+                    final_line = adopted;
+                }
+            }
+            records_to_write.push(final_line);
+        }
+    }
+
+    let mut created = 0usize;
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
+    // One entry per actual write — post-record fires on each of them
+    // after the lock releases (reference `writtenForPostHook`).
+    let mut written: Vec<(Map<String, Value>, &'static str)> = Vec::new();
+
+    if !records_to_write.is_empty() {
         if args.dry_run {
             // Count-only pass over the unmutated working copy
             // (within-batch duplicates count as creates here — the
             // reference never mutates its copy in dry-run either).
-            match plan {
-                mulch::UpsertPlan::Create => created += 1,
-                mulch::UpsertPlan::Update { .. } => updated += 1,
-                mulch::UpsertPlan::Skip { .. } => skipped += 1,
+            let existing = crate::commands::store::read_domain_records(
+                "record",
+                store,
+                &args.domain,
+                opts.allow_unknown_types,
+            )?;
+            let working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
+            for line in &records_to_write {
+                match mulch::upsert_plan(
+                    store.registry(),
+                    &working,
+                    &Value::Object(line.clone()),
+                    args.force,
+                ) {
+                    mulch::UpsertPlan::Create => created += 1,
+                    mulch::UpsertPlan::Update { .. } => updated += 1,
+                    mulch::UpsertPlan::Skip { .. } => skipped += 1,
+                }
             }
-            continue;
-        }
-        match plan {
-            mulch::UpsertPlan::Update { index, merged } => {
-                // The plan already merged the outcomes (existing
-                // first); an input id keeps its position, a generated
-                // one lands after the merged outcomes (reference
-                // write-time `if (!r.id)`).
-                let mut line = merged;
-                line.entry("id").or_insert_with(|| Value::String(id));
-                working[index] = Value::Object(line);
-                updated += 1;
+        } else {
+            // The locked load→mutate→save (reference `withFileLock`
+            // block): the writer lock wraps the whole pass and drops
+            // before the post-record hooks fire.
+            let locked = crate::commands::store::open_store_mut("record", false)?;
+            let existing = crate::commands::store::read_domain_records(
+                "record",
+                &locked,
+                &args.domain,
+                opts.allow_unknown_types,
+            )?;
+            // The working copy the reference dedupes against
+            // (`currentRecords`): existing records plus this batch's
+            // accepted appends — within-batch duplicates upsert too.
+            let mut working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
+            for line in records_to_write {
+                let record_type =
+                    mulch::effective_type(line.get("type").and_then(Value::as_str)).to_string();
+                let id_key = locked.registry().id_key_field(&record_type);
+                let id_value = line
+                    .get(id_key)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                // Write-time id (reference writeExpertiseFile's
+                // `if (!r.id)`), appended LAST when the record (or its
+                // hook mutation) carried none.
+                let id = record_id(&record_type, &id_value);
+                // One decision owner (lib `upsert_plan`): the dedup
+                // field against the working copy, never the id
+                // (mulch-ccf6). The adopted record is safe here: the
+                // plan compares only `type` and the type's dedup
+                // field, which enrichment never touches.
+                match mulch::upsert_plan(
+                    locked.registry(),
+                    &working,
+                    &Value::Object(line.clone()),
+                    args.force,
+                ) {
+                    mulch::UpsertPlan::Update { index, merged } => {
+                        // The plan already merged the outcomes
+                        // (existing first); an input id keeps its
+                        // position, a generated one lands after the
+                        // merged outcomes (reference write-time
+                        // `if (!r.id)`).
+                        let mut line = merged;
+                        line.entry("id").or_insert_with(|| Value::String(id));
+                        working[index] = Value::Object(line.clone());
+                        updated += 1;
+                        written.push((line, "updated"));
+                    }
+                    mulch::UpsertPlan::Skip { .. } => {
+                        skipped += 1;
+                    }
+                    mulch::UpsertPlan::Create => {
+                        let mut line = line;
+                        line.entry("id").or_insert_with(|| Value::String(id));
+                        working.push(Value::Object(line.clone()));
+                        created += 1;
+                        written.push((line, "created"));
+                    }
+                }
             }
-            mulch::UpsertPlan::Skip { .. } => {
-                skipped += 1;
-            }
-            mulch::UpsertPlan::Create => {
-                line.entry("id").or_insert_with(|| Value::String(id));
-                working.push(Value::Object(line));
-                created += 1;
+            // Partial writes (reference `processStdinRecords` + the
+            // batch caller): valid records WRITE even when others
+            // failed; the write guard is `created > 0 || updated > 0`
+            // (comments and blank lines drop, id-less survivors get
+            // ids — a skip-only or empty batch leaves the file
+            // byte-identical; mulch-ca49).
+            if created > 0 || updated > 0 {
+                crate::commands::store::persist("record", &locked, &args.domain, &working)?;
             }
         }
     }
-    // Partial writes (reference `processStdinRecords` + the batch
-    // caller): valid records WRITE even when others failed; the write
-    // guard is `created > 0 || updated > 0` (comments and blank lines
-    // drop, id-less survivors get ids — a skip-only or empty batch
-    // leaves the file byte-identical; mulch-ca49).
-    if !args.dry_run && (created > 0 || updated > 0) {
-        crate::commands::store::persist("record", store, &args.domain, &working)?;
+
+    // Post-record per actual write, OUTSIDE the lock (the reference
+    // fires observation hooks after releasing it): payload
+    // `{domain, record, action}` with the written record; failures
+    // only warn, into the shared warnings surface.
+    if !written.is_empty() {
+        let cwd = super::hook_cwd()?;
+        for (record, action) in &written {
+            let payload = json!({"domain": args.domain, "record": record, "action": action});
+            let result =
+                mulch::hooks::run_hooks(mulch::hooks::HookEvent::PostRecord, payload, store, &cwd);
+            crate::commands::hooks_surface::forward_hook_stderr(&result.executions);
+            warnings.extend(result.warnings);
+        }
     }
 
     let failed = !errors.is_empty();
@@ -270,6 +377,9 @@ pub(super) fn stdin_batch(
     if opts.json {
         // The result envelope always prints (stdout) — its success is
         // `errors empty || anything written` (the reference formula).
+        // The warnings array is ALWAYS present (the reference spreads
+        // `warnings: result.warnings` unconditionally): pre- and
+        // post-record hook warnings, collected across the batch.
         let mut fields = serde_json::Map::new();
         fields.insert("action".into(), Value::String(action.into()));
         fields.insert("domain".into(), Value::String(args.domain.clone()));
@@ -277,7 +387,10 @@ pub(super) fn stdin_batch(
         fields.insert("updated".into(), Value::from(updated as u64));
         fields.insert("skipped".into(), Value::from(skipped as u64));
         fields.insert("errors".into(), Value::Array(errors.clone()));
-        fields.insert("warnings".into(), Value::Array(Vec::new()));
+        fields.insert(
+            "warnings".into(),
+            Value::Array(warnings.iter().map(|w| Value::String(w.clone())).collect()),
+        );
         let mut body = serde_json::Map::new();
         body.insert("success".into(), Value::Bool(!failed || wrote));
         body.insert("command".into(), Value::String("record".into()));
