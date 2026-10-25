@@ -30,6 +30,9 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     // cycle below takes the writer lock (`--dry-run` never locks at
     // all, mulch-228d).
     let mut store = crate::commands::store::open_store("record", false)?;
+    // Aliases resolve onto the canonical domain (ADR-0006): every
+    // write and payload below addresses the canonical's file.
+    let domain = store.resolve_domain(&args.domain).to_string();
 
     // JS truthiness on the --batch flag: `--batch ""` is NO batch (the
     // reference's `if (options.batch)` gate) — the flag path runs with
@@ -69,16 +72,13 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     // SILENTLY (processStdinRecords has no notice line); the line is
     // the single-record path's alone (mulch-5fd8). It hits stdout
     // even in --json mode; it is quiet-gated (spec review).
-    let known = store.domains().iter().any(|d| d == &args.domain);
+    let known = store.domains().iter().any(|d| d == &domain);
     if !known {
         store
-            .register_domain(&args.domain)
+            .register_domain(&domain)
             .map_err(|source| Failure::handled("record", crate::output::chain_message(&source)))?;
         if !args.stdin && batch.is_none() {
-            print_line(
-                opts.quiet,
-                &format!("✓ Auto-created domain \"{}\"", args.domain),
-            );
+            print_line(opts.quiet, &format!("✓ Auto-created domain \"{domain}\""));
         }
     }
 
@@ -145,7 +145,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     let mut warnings: Vec<String> = Vec::new();
     let mut record = record;
     if !args.dry_run {
-        let (adopted, hook_warnings) = pre_record_phase(&store, &args.domain, record)?;
+        let (adopted, hook_warnings) = pre_record_phase(&store, &domain, record)?;
         record = adopted;
         warnings = hook_warnings;
     }
@@ -156,7 +156,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
         let existing = crate::commands::store::read_domain_records(
             "record",
             &store,
-            &args.domain,
+            &domain,
             opts.allow_unknown_types,
         )?;
         let working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
@@ -194,7 +194,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
         let existing = crate::commands::store::read_domain_records(
             "record",
             &locked,
-            &args.domain,
+            &domain,
             opts.allow_unknown_types,
         )?;
         // One decision owner (lib `upsert_plan`): named duplicates upsert
@@ -219,7 +219,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
                 let mut lines: Vec<Value> =
                     existing.iter().map(|line| line.record.clone()).collect();
                 lines[index] = Value::Object(upserted.clone());
-                crate::commands::store::persist("record", &locked, &args.domain, &lines)?;
+                crate::commands::store::persist("record", &locked, &domain, &lines)?;
                 Decision::Written {
                     action: RecordAction::Update { index },
                     record: upserted,
@@ -228,7 +228,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
             mulch::UpsertPlan::Create => {
                 let line = Value::Object(record.clone()).to_string();
                 locked
-                    .append_domain_line(&args.domain, &line)
+                    .append_domain_line(&domain, &line)
                     .map_err(|source| {
                         Failure::handled("record", crate::output::chain_message(&source))
                     })?;
@@ -255,7 +255,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
             // (id included), outside the lock; failures only warn.
             warnings.extend(post_record_phase(
                 &store,
-                &args.domain,
+                &domain,
                 &record,
                 action_verb(action),
             ));

@@ -40,17 +40,20 @@ pub(crate) fn run(
     let store = open_store("rank", true)?;
     let domains = store.domains();
     let domains_to_rank = match domain {
-        Some(wanted) => mulch::domain_set(&domains, &DomainSpec::One(wanted.to_string())).map_err(
-            |unknown| {
-                unknown_domain_failure(
-                    "rank",
-                    &unknown.domain,
-                    &unknown.available,
-                    opts.json,
-                    DomainFailure::RankHint,
-                )
-            },
-        )?,
+        // Aliases resolve onto canonical domains (ADR-0006).
+        Some(wanted) => mulch::domain_set(
+            &domains,
+            &DomainSpec::One(store.resolve_domain(wanted).to_string()),
+        )
+        .map_err(|unknown| {
+            unknown_domain_failure(
+                "rank",
+                &unknown.domain,
+                &unknown.available,
+                opts.json,
+                DomainFailure::RankHint,
+            )
+        })?,
         None => domains,
     };
 

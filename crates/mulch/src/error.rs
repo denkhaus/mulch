@@ -78,6 +78,14 @@ pub enum Error {
         /// The validation failure message.
         message: String,
     },
+    /// An invalid `domain_aliases` block (ADR-0006): malformed pairs,
+    /// a canonical side that is not a configured domain, an alias
+    /// colliding with a configured domain or itself, or a cycle.
+    #[error("invalid domain_aliases: {message}")]
+    DomainAliases {
+        /// The validation finding, worded for the config owner.
+        message: String,
+    },
 
     /// `mulch.config.yaml` is not valid YAML or not a mapping.
     #[error("parsing config {path}")]

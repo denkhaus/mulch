@@ -47,14 +47,29 @@ pub(super) fn run(
             "Error: Source and target domain are the same — nothing to move.",
         ));
     }
-    for domain in [source, target] {
-        crate::commands::store::ensure_domain(
+    // Aliases resolve onto canonical domains (ADR-0006): everything
+    // downstream — files, checks, output — addresses the canonical.
+    let source = crate::commands::store::ensure_domain(
+        "move",
+        &store,
+        source,
+        opts.json,
+        crate::commands::failure::DomainFailure::Move,
+    )?;
+    let target = crate::commands::store::ensure_domain(
+        "move",
+        &store,
+        target,
+        opts.json,
+        crate::commands::failure::DomainFailure::Move,
+    )?;
+    // Two aliases of ONE domain (or alias + domain) are the same
+    // target after resolution — guard before any write.
+    if source == target {
+        return Err(Failure::handled_on_stderr(
             "move",
-            &store,
-            domain,
-            opts.json,
-            crate::commands::failure::DomainFailure::Move,
-        )?;
+            "Error: Source and target domain are the same — nothing to move.",
+        ));
     }
 
     let source_file = store.domain_path(source);

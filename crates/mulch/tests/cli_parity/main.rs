@@ -7,6 +7,7 @@
 //! the module layout (mulch-3e7c): per-surface modules plus the
 //! shared `support` harness.
 
+mod aliases;
 mod archive;
 mod compact;
 mod custom_types;

@@ -2127,7 +2127,23 @@ fn record_args(name: &str, mode: &[&str]) -> Vec<String> {
     args
 }
 
-/// A blocking pre-record hook (exit 3) aborts the flag path on both
+/// The mutation-ignored warning's LAW bytes (mulch-5708): the prefix
+/// names the hook and the fate; the parser tail is runtime vocabulary
+/// (redacted by the normalizer — the reference's Bun texts differ
+/// from ours AND from Node's). Ungated: nothing reference-comparable.
+#[test]
+fn record_hook_garbage_stdout_law_bytes() {
+    use super::support::normalize_hook_parse_warning;
+    let line = "hook `cat; printf garbage` printed non-JSON on stdout (mutation ignored): key must be a string at line 1 column 2";
+    let normalized = normalize_hook_parse_warning(line);
+    assert_eq!(
+        normalized,
+        "hook `cat; printf garbage` printed non-JSON on stdout (mutation ignored): <parser text>"
+    );
+    // a clean line passes through untouched
+    assert_eq!(normalize_hook_parse_warning("plain"), "plain");
+}
+
 /// channels with the reference's reason text, forwarding the hook's
 /// stderr first; nothing is written.
 #[test]

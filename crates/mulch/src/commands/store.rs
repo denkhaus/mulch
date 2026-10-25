@@ -110,16 +110,20 @@ fn chain_message_from(error: &mulch::Error) -> String {
 /// unknown_domain_failure(...)` couple that lived in six commands
 /// across five files (move, archive, delete, prime, and edit/outcome
 /// through locate_record).
-pub(crate) fn ensure_domain(
+pub(crate) fn ensure_domain<'a>(
     command: &'static str,
-    store: &mulch::StoreFiles,
-    domain: &str,
+    store: &'a mulch::StoreFiles,
+    domain: &'a str,
     json: bool,
     shape: DomainFailure,
-) -> Result<(), Failure> {
+) -> Result<&'a str, Failure> {
+    // Aliases resolve FIRST (ADR-0006): the caller receives — and
+    // addresses files by — the canonical domain; a miss names the
+    // ALIAS the user typed.
+    let canonical = store.resolve_domain(domain);
     let domains = store.domains();
-    if domains.iter().any(|d| d == domain) {
-        return Ok(());
+    if domains.iter().any(|d| d == canonical) {
+        return Ok(canonical);
     }
     Err(unknown_domain_failure(
         command, domain, &domains, json, shape,
@@ -205,7 +209,7 @@ pub(crate) fn locate_record(
     } else {
         open_store(command, config_message)?
     };
-    ensure_domain(command, &store, domain, opts.json, shape)?;
+    let domain = ensure_domain(command, &store, domain, opts.json, shape)?;
     let (records, position) =
         read_and_resolve(command, &store, domain, id, opts.allow_unknown_types)?;
     Ok((store, records, position))

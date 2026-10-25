@@ -112,6 +112,10 @@ pub struct StoreFiles {
     /// The merged type registry (builtins + validated custom_types),
     /// built once at open (mulch-b4bd).
     registry: crate::ids::Registry,
+    /// The validated alias -> canonical map (ADR-0006): built once at
+    /// open from `domain_aliases`; resolution is transitive and
+    /// acyclic by construction.
+    aliases:  std::collections::HashMap<String, String>,
     /// The writer lock held by exclusive sessions; `None` for
     /// read-only sessions. Held for its drop side effect — releasing
     /// the lock — never read.
@@ -173,10 +177,15 @@ impl StoreFiles {
         let config = Config::parse(&text)?;
         config.ensure_supported()?;
         let registry = crate::ids::Registry::from_config(&config)?;
+        let aliases = config
+            .validated_domain_aliases()?
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
         Ok(StoreLocation::Open(Self {
             root: root.to_path_buf(),
             config,
             registry,
+            aliases,
             lock,
         }))
     }
@@ -254,6 +263,26 @@ impl StoreFiles {
     }
 
     /// Live domain names in config order.
+    /// Resolves a domain ADDRESS onto its canonical domain (ADR-0006,
+    /// mulch-b0f7): an alias chains transitively (validated acyclic
+    /// at open); a non-alias returns unchanged. Address-level only —
+    /// listing and file layout never change: an alias is not a
+    /// domain, and an alias-named file stays its own file (the
+    /// orphan checks flag it as usual).
+    #[must_use]
+    pub fn resolve_domain<'a>(&'a self, domain: &'a str) -> &'a str {
+        let mut current = domain;
+        let mut hops = 0;
+        while let Some(target) = self.aliases.get(current) {
+            current = target.as_str();
+            hops += 1;
+            if hops > self.aliases.len() {
+                return domain;
+            }
+        }
+        current
+    }
+
     pub fn domains(&self) -> Vec<String> {
         self.config
             .domains()
@@ -865,6 +894,49 @@ mod tests {
             store.updated_line_verdict("dev", 2, &valid_updated()),
             crate::schema::FullVerdict::Invalid { .. }
         ));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    fn alias_store(tag: &str, aliases: &str) -> (PathBuf, StoreFiles) {
+        let config = format!("version: '1'\ndomains:\n  dev: {{}}\n  rust: {{}}\n{aliases}");
+        super::testscratch::store_with(tag, &config, false)
+    }
+
+    /// Address resolution (ADR-0006): transitive chains, identity for
+    /// non-aliases. Catches a resolution that stops one hop short or
+    /// resolves configured domains away.
+    #[test]
+    fn resolve_domain_walks_chains_and_keeps_domains() {
+        let (root, store) = alias_store(
+            "resolve",
+            "domain_aliases:\n  develop: dev\n  devloop: develop\n  rs: rust\n",
+        );
+        assert_eq!(store.resolve_domain("devloop"), "dev");
+        assert_eq!(store.resolve_domain("develop"), "dev");
+        assert_eq!(store.resolve_domain("dev"), "dev");
+        assert_eq!(store.resolve_domain("rust"), "rust");
+        assert_eq!(store.resolve_domain("unconfigured"), "unconfigured");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The block survives a canonical config rewrite (write_config's
+    /// raw passthrough) — aliases are config data, not a view.
+    #[test]
+    fn alias_block_round_trips_through_write_config() {
+        let (root, mut store) = alias_store("roundtrip", "domain_aliases:\n  develop: dev\n");
+        store.adopt_domain("rust");
+        store.write_config().expect("rewrite");
+        let text = std::fs::read_to_string(root.join(".mulch/mulch.config.yaml")).expect("config");
+        assert!(text.contains("domain_aliases:"), "block survives: {text}");
+        assert!(text.contains("develop: dev"), "pair survives: {text}");
+        // and the store still validates after the rewrite
+        drop(store);
+        match StoreFiles::locate(&root).expect("reopen") {
+            StoreLocation::Open(reopened) => {
+                assert_eq!(reopened.resolve_domain("develop"), "dev");
+            }
+            other => panic!("expected open, got {other:?}"),
+        }
         std::fs::remove_dir_all(&root).ok();
     }
 

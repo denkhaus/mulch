@@ -57,16 +57,20 @@ pub(super) fn run(opts: &GlobalOpts, args: &SearchArgs) -> Result<(), Failure> {
     let boost_factor = effective_boost(&store, args.no_boost)?;
     let configured = store.domains();
     let domains = match domain_flag {
-        Some(domain) => mulch::domain_set(&configured, &DomainSpec::One(domain.to_string()))
-            .map_err(|unknown| {
-                unknown_domain_failure(
-                    "search",
-                    &unknown.domain,
-                    &unknown.available,
-                    opts.json,
-                    DomainFailure::SearchHint,
-                )
-            })?,
+        // Aliases resolve onto canonical domains (ADR-0006).
+        Some(domain) => mulch::domain_set(
+            &configured,
+            &DomainSpec::One(store.resolve_domain(domain).to_string()),
+        )
+        .map_err(|unknown| {
+            unknown_domain_failure(
+                "search",
+                &unknown.domain,
+                &unknown.available,
+                opts.json,
+                DomainFailure::SearchHint,
+            )
+        })?,
         None => configured,
     };
 

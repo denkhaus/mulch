@@ -51,6 +51,8 @@ pub(super) fn run(opts: &GlobalOpts, args: &QueryArgs) -> Result<(), Failure> {
         }
         configured
     } else if let Some(domain) = mulch::truthy_str(args.domain.as_deref()) {
+        // Aliases resolve onto canonical domains (ADR-0006).
+        let domain = store.resolve_domain(domain);
         mulch::domain_set(&configured, &DomainSpec::One(domain.to_string())).map_err(|unknown| {
             unknown_domain_failure(
                 "query",

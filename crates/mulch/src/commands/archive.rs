@@ -35,7 +35,7 @@ pub(super) fn run(
         open_store_mut("archive", true)?
     };
 
-    crate::commands::store::ensure_domain(
+    let domain = crate::commands::store::ensure_domain(
         "archive",
         &store,
         domain,

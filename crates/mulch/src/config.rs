@@ -219,6 +219,74 @@ impl Config {
         self.raw.get(yaml_str("custom_types"))
     }
 
+    /// The alias -> canonical pairs of the `domain_aliases` block
+    /// (config order), VALIDATED (ADR-0006, mulch-b0f7): every side
+    /// is a string, every canonical side is a configured domain, no
+    /// alias collides with a configured domain or itself, and the
+    /// graph is acyclic. An absent block is empty; a malformed one is
+    /// a typed error — never silently dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DomainAliases`] naming the first finding.
+    pub fn validated_domain_aliases(&self) -> Result<Vec<(String, String)>> {
+        let Some(value) = self.raw.get(yaml_str("domain_aliases")) else {
+            return Ok(Vec::new());
+        };
+        let Some(mapping) = value.as_mapping() else {
+            return Err(Error::DomainAliases {
+                message: "the block must be a mapping of alias -> canonical domain".into(),
+            });
+        };
+        let domains = self.domains();
+        let mut pairs = Vec::new();
+        for (alias, canonical) in mapping {
+            let (Some(alias), Some(canonical)) = (alias.as_str(), canonical.as_str()) else {
+                return Err(Error::DomainAliases {
+                    message: format!(
+                        "alias pair {alias:?} -> {canonical:?}: both sides must be domain-name strings"
+                    ),
+                });
+            };
+            if alias == canonical {
+                return Err(Error::DomainAliases {
+                    message: format!("{alias:?} maps onto itself"),
+                });
+            }
+            if domains.contains(&alias) {
+                return Err(Error::DomainAliases {
+                    message: format!(
+                        "{alias:?} is both a configured domain and an alias — rename one"
+                    ),
+                });
+            }
+            let alias_targets: Vec<&str> = mapping.keys().filter_map(|k| k.as_str()).collect();
+            if !domains.contains(&canonical) && !alias_targets.contains(&canonical) {
+                return Err(Error::DomainAliases {
+                    message: format!(
+                        "{alias:?} maps onto {canonical:?}, which is neither a configured domain nor another alias"
+                    ),
+                });
+            }
+            pairs.push((alias.to_string(), canonical.to_string()));
+        }
+        // Cycle detection: resolve every alias with a hop budget.
+        for (alias, _) in &pairs {
+            let mut current = alias.as_str();
+            let mut hops = 0;
+            while let Some((_, target)) = pairs.iter().find(|(a, _)| a == current) {
+                current = target.as_str();
+                hops += 1;
+                if hops > pairs.len() {
+                    return Err(Error::DomainAliases {
+                        message: format!("{alias:?} is part of an alias cycle"),
+                    });
+                }
+            }
+        }
+        Ok(pairs)
+    }
+
     /// The `domains` mapping (empty when absent), order preserved.
     fn domains_mapping(&self) -> serde_yaml::Value {
         self.raw
@@ -522,6 +590,62 @@ fn yaml_str(s: &str) -> serde_yaml::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn aliases(text: &str) -> crate::error::Result<Vec<(String, String)>> {
+        Config::parse(text).and_then(|config| config.validated_domain_aliases())
+    }
+
+    /// The domain_aliases validation table (ADR-0006). Catches: the
+    /// four rejections (unknown canonical, domain/alias collision,
+    /// self-map, cycle) plus the two acceptances (plain pairs,
+    /// transitive chains) and the absent/malformed block shapes.
+    #[test]
+    fn domain_aliases_validate_the_four_rejections() {
+        let base = "version: '1'\ndomains:\n  dev: {}\n  rust: {}\n";
+        // absent -> empty
+        assert_eq!(
+            aliases(base).expect("absent"),
+            Vec::<(String, String)>::new()
+        );
+        // plain pairs pass, config order preserved
+        let pairs = aliases(&format!(
+            "{base}domain_aliases:\n  develop: dev\n  rs: rust\n"
+        ))
+        .expect("pairs");
+        assert_eq!(pairs, vec![
+            ("develop".to_string(), "dev".to_string()),
+            ("rs".to_string(), "rust".to_string())
+        ]);
+        // transitive chains pass (devloop -> develop -> dev)
+        aliases(&format!(
+            "{base}domain_aliases:\n  develop: dev\n  devloop: develop\n"
+        ))
+        .expect("chain");
+        // unknown canonical
+        let err =
+            aliases(&format!("{base}domain_aliases:\n  x: nope\n")).expect_err("unknown canonical");
+        assert!(
+            err.to_string()
+                .contains("neither a configured domain nor another alias"),
+            "{err}"
+        );
+        // collision: alias is also a configured domain
+        let err = aliases(&format!("{base}domain_aliases:\n  rust: dev\n")).expect_err("collision");
+        assert!(
+            err.to_string()
+                .contains("both a configured domain and an alias"),
+            "{err}"
+        );
+        // self-map
+        let err = aliases(&format!("{base}domain_aliases:\n  x: x\n")).expect_err("self");
+        assert!(err.to_string().contains("maps onto itself"), "{err}");
+        // cycle
+        let err = aliases(&format!("{base}domain_aliases:\n  a: b\n  b: a\n")).expect_err("cycle");
+        assert!(err.to_string().contains("cycle"), "{err}");
+        // malformed block
+        let err = aliases(&format!("{base}domain_aliases:\n  - a\n")).expect_err("malformed");
+        assert!(err.to_string().contains("mapping"), "{err}");
+    }
 
     fn ladder() -> Governance {
         Governance {

@@ -195,6 +195,21 @@ expectation (the parity rule: never silently):
   This port raises the error at collection, so nothing prints, and
   nothing writes — even when earlier domains carried clean,
   compactable groups.
+- **Canonical-domain aliases (port extension, ADR-0006).** The
+  reference has no alias mechanism and ignores the `domain_aliases`
+  config block (probed); this port resolves alias domains onto
+  canonical ones at every domain-addressing entry (writes land in the
+  canonical's file; `prime`/`query`/… through an alias address the
+  canonical; move guards two aliases of one domain as the same
+  target). Strictly additive: files and listings never change, an
+  invalid block fails loudly. Expectation: identical behavior under
+  the reference except that aliases resolve — the reference sees the
+  block as inert config.
+- **Hook parse-error texts are runtime vocabulary (mulch-5708).** When
+  a hook prints non-JSON on stdout, the mutation-ignored warning
+  embeds the parser's message — the reference's runtime (Bun/Node
+  differ among themselves) vs ours (serde). Same law, runtime texts;
+  batteries normalize the parser tail instead of pinning it.
 - **Three doctor checks evaluate as unconditional pass** on clean
   stores only: `domain-violations`, `domain-rules-compatibility`,
   `decay-config`. Their warn/fail semantics land with the later

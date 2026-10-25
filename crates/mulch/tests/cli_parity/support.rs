@@ -733,6 +733,25 @@ pub(crate) fn assert_flaked_exit(
     );
 }
 
+/// Redacts the parser-text tail of a hook's mutation-ignored warning
+/// (`printed non-JSON on stdout (mutation ignored): <parser text>`):
+/// the LAW bytes are the prefix; the tail is runtime vocabulary
+/// (Bun/Node/serde each word their own parse errors — mulch-5708).
+pub(crate) fn normalize_hook_parse_warning(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            if let Some(index) = line.find("(mutation ignored): ") {
+                let mut cut = String::from(&line[..index]);
+                cut.push_str("(mutation ignored): <parser text>");
+                cut
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The hook's stdin capture (written by `cat > hook-stdin.txt` into
 /// the store's cwd during the run); `None` when the hook never fired.
 pub(crate) fn hook_stdin(dir: &Path) -> Option<String> {

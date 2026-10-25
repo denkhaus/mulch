@@ -105,7 +105,7 @@ pub(super) fn run(
         crate::commands::store::open_store_mut("delete", true)?
     };
 
-    crate::commands::store::ensure_domain(
+    let domain = crate::commands::store::ensure_domain(
         "delete",
         &store,
         domain,

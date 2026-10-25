@@ -51,17 +51,20 @@ pub(crate) fn run(
 
     let domains = store.domains();
     let to_check = match domain {
-        Some(wanted) => mulch::domain_set(&domains, &DomainSpec::One(wanted.to_string())).map_err(
-            |unknown| {
-                unknown_domain_failure(
-                    "ready",
-                    &unknown.domain,
-                    &unknown.available,
-                    opts.json,
-                    DomainFailure::ReadyOneLine,
-                )
-            },
-        )?,
+        // Aliases resolve onto canonical domains (ADR-0006).
+        Some(wanted) => mulch::domain_set(
+            &domains,
+            &DomainSpec::One(store.resolve_domain(wanted).to_string()),
+        )
+        .map_err(|unknown| {
+            unknown_domain_failure(
+                "ready",
+                &unknown.domain,
+                &unknown.available,
+                opts.json,
+                DomainFailure::ReadyOneLine,
+            )
+        })?,
         None => domains,
     };
 

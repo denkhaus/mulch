@@ -82,13 +82,20 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     }
 
     // positional domains first, then --domain, deduped first-wins.
+    // Aliases resolve onto canonical domains at entry (ADR-0006): a
+    // requested or excluded alias addresses the canonical domain.
     let mut requested: Vec<String> = Vec::new();
     for domain in args.domains.iter().chain(args.domain.iter()) {
-        if !requested.contains(domain) {
-            requested.push(domain.clone());
+        let resolved = store.resolve_domain(domain).to_string();
+        if !requested.contains(&resolved) {
+            requested.push(resolved);
         }
     }
-    let excluded: Vec<String> = args.exclude_domain.clone();
+    let excluded: Vec<String> = args
+        .exclude_domain
+        .iter()
+        .map(|domain| store.resolve_domain(domain).to_string())
+        .collect();
 
     let is_scoped =
         !requested.is_empty() || !excluded.is_empty() || args.context || !args.files.is_empty();

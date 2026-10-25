@@ -707,7 +707,10 @@ fn domain_check(
 ) -> Result<Vec<String>, Failure> {
     let domains = store.domains();
     match domain {
-        Some(domain) if domains.iter().any(|d| d == domain) => Ok(vec![domain.to_string()]),
+        // Aliases resolve onto the canonical domain first (ADR-0006).
+        Some(domain) if domains.iter().any(|d| d == store.resolve_domain(domain)) => {
+            Ok(vec![store.resolve_domain(domain).to_string()])
+        }
         Some(domain) => Err(compact_failure(
             json,
             format!("Domain \"{domain}\" not found in config."),
