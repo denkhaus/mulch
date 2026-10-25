@@ -813,6 +813,13 @@ pub(crate) fn contract_block(
 
 /// `getSessionEndReminder`: `custom` wins, then the style preset
 /// (`conditional` for absent/unknown styles).
+/// The `plain` arms inside the presets are unreachable through
+/// `prime` (the caller gates `format != "plain"`) — PARITY, not
+/// drift: the reference carries the same arm in its shared
+/// sessionClose for embedders (format.ts:533), and its prime gate
+/// skips the reminder for the same reason ours does (prime.ts:431:
+/// plain is the spawn-injection contract, embedders frame sessions
+/// themselves). Kept, not deleted.
 pub(crate) fn session_close(format: &str, config: Option<&mulch::SessionClose>) -> String {
     if let Some(custom) = config.and_then(|config| config.custom.as_deref())
         && !custom.is_empty()

@@ -24,11 +24,8 @@ use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, QueryArgs};
 use crate::commands::failure::{DomainFailure, unknown_domain_failure};
-use crate::commands::render::{
-    format_domain_expertise, format_domain_expertise_compact, format_domain_expertise_plain,
-    format_domain_expertise_xml,
-};
 use crate::commands::store::open_store;
+use crate::commands::truthy_owned;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `query` against the store at the current directory.
@@ -92,16 +89,20 @@ pub(super) fn run(opts: &GlobalOpts, args: &QueryArgs) -> Result<(), Failure> {
         print_json(&success_envelope("query", fields), false);
     } else {
         let now = Timestamp::now();
+        let format =
+            crate::commands::render::Format::parse(opts.format.as_deref().unwrap_or("markdown"));
         let mut sections = Vec::new();
         for domain in &domains {
             let records = filtered_records(&store, domain, &filter, opts, args.sort_by_score)?;
-            let last_updated = modified(&store, domain)?;
-            sections.push(render_section(
-                opts.format.as_deref().unwrap_or("markdown"),
+            let last_updated = crate::commands::store::domain_modified_ts("query", &store, domain)?;
+            sections.push(crate::commands::render::render_section(
+                format,
                 store.registry(),
                 domain,
                 &records,
                 last_updated,
+                None,
+                false,
                 now,
             ));
         }
@@ -109,13 +110,6 @@ pub(super) fn run(opts: &GlobalOpts, args: &QueryArgs) -> Result<(), Failure> {
         print_line(false, &sections.join("\n\n"));
     }
     Ok(())
-}
-
-/// An optional flag value under JS truthiness: `None` and `Some("")`
-/// both read as unset (query.ts gates every filter with
-/// `if (options.…)`).
-fn truthy_owned(value: Option<&str>) -> Option<String> {
-    mulch::truthy_str(value).map(ToString::to_string)
 }
 
 /// Reads one domain strictly, applies the filter chain, then the
@@ -138,41 +132,4 @@ fn filtered_records(
         mulch::scoring::sort_by_confirmation(&mut records);
     }
     Ok(records)
-}
-
-/// A domain file's mtime for the `updated …` header suffix
-/// (`getFileModTime`; `None` when the file does not exist).
-fn modified(store: &mulch::StoreFiles, domain: &str) -> Result<Option<Timestamp>, Failure> {
-    match store.domain_modified(domain) {
-        Ok(Some(time)) => Timestamp::try_from(time)
-            .map(Some)
-            .map_err(|source| Failure::handled_on_stderr("query", format!("Error: {source}"))),
-        Ok(None) => Ok(None),
-        Err(source) => Err(Failure::handled_on_stderr(
-            "query",
-            format!("Error: {source}"),
-        )),
-    }
-}
-
-/// The four domain-section families (query.ts:183-196); the default
-/// arm is the markdown family.
-fn render_section(
-    format: &str,
-    registry: &mulch::Registry,
-    domain: &str,
-    records: &[Value],
-    last_updated: Option<Timestamp>,
-    now: Timestamp,
-) -> String {
-    match format {
-        "compact" => {
-            format_domain_expertise_compact(registry, domain, records, last_updated, None, now)
-        }
-        "xml" => format_domain_expertise_xml(registry, domain, records, last_updated, None, now),
-        "plain" => {
-            format_domain_expertise_plain(registry, domain, records, last_updated, None, now)
-        }
-        _ => format_domain_expertise(registry, domain, records, last_updated, false, None, now),
-    }
 }

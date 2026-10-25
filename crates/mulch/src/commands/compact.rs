@@ -766,19 +766,6 @@ fn truthy_ids(records: &[Value]) -> Vec<String> {
         .collect()
 }
 
-/// JS truthiness of `payload.replacement` (the reference's
-/// `hookRes.payload?.replacement` guard): absent, null, false, 0 and
-/// `""` fall back to the mechanical merge; any object or array —
-/// even an empty one — is adopted.
-fn truthy_replacement(payload: &Value) -> bool {
-    match payload.get("replacement") {
-        None | Some(Value::Null | Value::Bool(false)) => false,
-        Some(Value::Number(number)) => number.as_f64().is_some_and(|n| n != 0.0),
-        Some(Value::String(text)) => !text.is_empty(),
-        Some(Value::Bool(true) | Value::Array(_) | Value::Object(_)) => true,
-    }
-}
-
 /// The reference's `{ ...payload.replacement }` spread: objects copy
 /// shallow; arrays and strings spread to index keys; every other
 /// scalar spreads to an empty object.
@@ -816,7 +803,7 @@ fn adopt_replacement(
     source_ids: &[String],
     registry: &mulch::Registry,
 ) -> Result<Option<Value>, String> {
-    if !truthy_replacement(payload) {
+    if crate::commands::hooks_surface::truthy_payload_field(payload, "replacement").is_none() {
         return Ok(None);
     }
     let mut record = spread_record(payload.get("replacement").unwrap_or(&Value::Null));
@@ -844,9 +831,9 @@ fn adopt_replacement(
     if let mulch::schema::FullVerdict::Invalid { subs, .. } =
         mulch::schema::full_verdict(registry, &record)
     {
-        return Err(format!(
-            "pre-compact hook produced an invalid record: {}",
-            render_subs(&subs).join("; ")
+        return Err(crate::commands::hooks_surface::invalid_hook_record_text(
+            "pre-compact",
+            &subs,
         ));
     }
     mulch::compact::stamp_id(&mut record, registry);

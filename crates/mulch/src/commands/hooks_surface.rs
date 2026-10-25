@@ -165,13 +165,13 @@ impl HookPhase {
         if !self.0.ran_any {
             return Adopt::Keep;
         }
-        let Some(mutated) = truthy_payload_record(&self.0.payload) else {
+        let Some(mutated) = truthy_payload_field(&self.0.payload, "record") else {
             return Adopt::Keep;
         };
         if let mulch::schema::FullVerdict::Invalid { subs, .. } =
             mulch::schema::full_verdict(registry, mutated)
         {
-            return Adopt::Invalid(invalid_mutation_text(&subs));
+            return Adopt::Invalid(invalid_hook_record_text("pre-record", &subs));
         }
         // A Valid verdict implies an object (the non-object arm is
         // Invalid); the fallback only guards the type refinement.
@@ -197,24 +197,24 @@ pub(crate) enum Adopt {
     Invalid(String),
 }
 
-/// The mutation gate's `payload.record` read (`payload?.record`):
-/// JSON truthiness — absent, null, false, zero, and the empty string
-/// never adopt; any other value (objects, arrays, `true`, non-empty
-/// scalars) is adopted after validation.
-fn truthy_payload_record(payload: &Value) -> Option<&Value> {
-    let record = payload.get("record")?;
-    let truthy = !matches!(record, Value::Null | Value::Bool(false))
-        && !record.as_f64().is_some_and(|number| number == 0.0)
-        && record.as_str() != Some("");
-    truthy.then_some(record)
+/// One hook-adoption gate's shared HALF (mulch-81ef): the truthy
+/// payload field and the invalid-record message. The truthiness law
+/// is [`mulch::jsval::truthy`] — both gates hand-rolled it before.
+/// The LAW around a gate stays with its caller: pre-record adopts
+/// verbatim, pre-compact backfills `supersedes` and re-stamps the id
+/// (ADR-0003) — neither belongs here.
+pub(crate) fn truthy_payload_field<'a>(payload: &'a Value, field: &str) -> Option<&'a Value> {
+    let value = payload.get(field)?;
+    mulch::jsval::truthy(value).then_some(value)
 }
 
-/// The invalid-mutation error text: the reference joins ajv's
-/// `instancePath message` sub-errors with `"; "` — no type hint on
-/// this surface (probe-pinned, ml 0.10.7).
-fn invalid_mutation_text(subs: &[mulch::schema::SubError]) -> String {
+/// The invalid-adoption message: `<phase> hook produced an invalid
+/// record: <subs>` — sub-errors joined with SUB_SEP (the reference's
+/// pre-compact path spells the joiner `"; "`, byte-equal to SUB_SEP;
+/// no type hint on either surface, probe-pinned ml 0.10.7).
+pub(crate) fn invalid_hook_record_text(phase: &str, subs: &[mulch::schema::SubError]) -> String {
     format!(
-        "pre-record hook produced an invalid record: {}",
+        "{phase} hook produced an invalid record: {}",
         mulch::schema::render_subs(subs).join(mulch::schema::SUB_SEP),
     )
 }

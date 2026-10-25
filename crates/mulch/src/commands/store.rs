@@ -102,6 +102,28 @@ fn chain_message_from(error: &mulch::Error) -> String {
     crate::output::chain_message(error)
 }
 
+/// A domain file's mtime as the section-header's `updated …` suffix
+/// (`None` when absent) — the shared read behind search/query/prime
+/// (mulch-1c32: three byte-identical private copies). `status` keeps
+/// its own inline map: its failure renders through the chain
+/// renderer, a different channel law.
+pub(crate) fn domain_modified_ts(
+    command: &'static str,
+    store: &mulch::StoreFiles,
+    domain: &str,
+) -> Result<Option<jiff::Timestamp>, Failure> {
+    match store.domain_modified(domain) {
+        Ok(Some(time)) => jiff::Timestamp::try_from(time)
+            .map(Some)
+            .map_err(|source| Failure::handled_on_stderr(command, format!("Error: {source}"))),
+        Ok(None) => Ok(None),
+        Err(source) => Err(Failure::handled_on_stderr(
+            command,
+            format!("Error: {source}"),
+        )),
+    }
+}
+
 /// The strict domain read with its failure mapped onto the command's
 /// handled shape (mulch-a8f4): the pair ten call sites repeated beside
 /// [`read_and_resolve`]. `render_core_error` owns the byte law

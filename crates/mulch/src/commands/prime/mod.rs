@@ -42,10 +42,7 @@ use crate::commands::prime::format::{
     ManifestDomain, contract_block, manifest_output, manifest_payload, prime_output_compact,
     prime_output_markdown, prime_output_plain, prime_output_xml, session_close,
 };
-use crate::commands::render::{
-    estimate_record_text, format_domain_expertise, format_domain_expertise_compact,
-    format_domain_expertise_plain, format_domain_expertise_xml,
-};
+use crate::commands::render::estimate_record_text;
 use crate::output::{Failure, print_line};
 
 mod format;
@@ -190,7 +187,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
             domain,
             opts.allow_unknown_types,
         )?;
-        let last_updated = modified(&store, domain)?;
+        let last_updated = crate::commands::store::domain_modified_ts("prime", &store, domain)?;
         loaded.push(Loaded {
             domain: domain.clone(),
             records: records.into_iter().map(|row| row.record).collect(),
@@ -394,6 +391,7 @@ fn full_mode_output(
     files_filter: bool,
     session_close_config: Option<&mulch::SessionClose>,
 ) -> Result<Value, Failure> {
+    let section_format = crate::commands::render::Format::parse(prime_format);
     let registry = store.registry();
     let prime_config = store.config().prime().ok().flatten();
     let tier_weights = resolve_tier_weights(
@@ -591,41 +589,19 @@ fn full_mode_output(
                 .into_iter()
                 .collect();
         let annotations = (!annotations.is_empty()).then_some(annotations);
-        sections.push(match prime_format {
-            "xml" => format_domain_expertise_xml(
-                registry,
-                &group.domain,
-                &group.records,
-                last_updated,
-                annotations.as_ref(),
-                now,
-            ),
-            "plain" => format_domain_expertise_plain(
-                registry,
-                &group.domain,
-                &group.records,
-                last_updated,
-                annotations.as_ref(),
-                now,
-            ),
-            "compact" => format_domain_expertise_compact(
-                registry,
-                &group.domain,
-                &group.records,
-                last_updated,
-                annotations.as_ref(),
-                now,
-            ),
-            _ => format_domain_expertise(
-                registry,
-                &group.domain,
-                &group.records,
-                last_updated,
-                args.full || opts.verbose,
-                annotations.as_ref(),
-                now,
-            ),
-        });
+        // The ONE family table (mulch-1c32): prime differs from
+        // search/query on exactly two axes — annotations and
+        // `--full || --verbose`.
+        sections.push(crate::commands::render::render_section(
+            section_format,
+            registry,
+            &group.domain,
+            &group.records,
+            last_updated,
+            annotations.as_ref(),
+            args.full || opts.verbose,
+            now,
+        ));
     }
 
     let mut output = match prime_format {
@@ -660,20 +636,6 @@ fn should_auto_flip_to_manifest(total_records: usize, total_domains: usize) -> b
 /// failure's envelope already carries the unprefixed sentence).
 fn prime_error(_json_mode: bool, message: &str) -> Failure {
     Failure::handled_on_stderr("prime", format!("Error: {message}"))
-}
-
-/// A domain file's mtime (`getFileModTime`; `None` when absent).
-fn modified(store: &StoreFiles, domain: &str) -> Result<Option<Timestamp>, Failure> {
-    match store.domain_modified(domain) {
-        Ok(Some(time)) => Timestamp::try_from(time)
-            .map(Some)
-            .map_err(|source| Failure::handled_on_stderr("prime", format!("Error: {source}"))),
-        Ok(None) => Ok(None),
-        Err(source) => Err(Failure::handled_on_stderr(
-            "prime",
-            format!("Error: {source}"),
-        )),
-    }
 }
 
 /// `computeTypeCounts`: first-seen type order (a missing type

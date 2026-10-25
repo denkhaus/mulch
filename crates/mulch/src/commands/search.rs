@@ -28,11 +28,8 @@ use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, SearchArgs};
 use crate::commands::failure::{DomainFailure, unknown_domain_failure};
-use crate::commands::render::{
-    format_domain_expertise, format_domain_expertise_compact, format_domain_expertise_plain,
-    format_domain_expertise_xml,
-};
 use crate::commands::store::open_store;
+use crate::commands::truthy_owned;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// `DEFAULT_SEARCH_BOOST_FACTOR` (schemas/config.ts:19).
@@ -73,6 +70,8 @@ pub(super) fn run(opts: &GlobalOpts, args: &SearchArgs) -> Result<(), Failure> {
         None => configured,
     };
 
+    let format =
+        crate::commands::render::Format::parse(opts.format.as_deref().unwrap_or("markdown"));
     let mut total: u64 = 0;
     let mut rows: Vec<Value> = Vec::new();
     let mut sections: Vec<String> = Vec::new();
@@ -107,13 +106,16 @@ pub(super) fn run(opts: &GlobalOpts, args: &SearchArgs) -> Result<(), Failure> {
         } else {
             if !matches.is_empty() {
                 total += matches.len() as u64;
-                let last_updated = modified(&store, domain)?;
-                sections.push(render_section(
-                    opts.format.as_deref().unwrap_or("markdown"),
+                let last_updated =
+                    crate::commands::store::domain_modified_ts("search", &store, domain)?;
+                sections.push(crate::commands::render::render_section(
+                    format,
                     store.registry(),
                     domain,
                     &matches,
                     last_updated,
+                    None,
+                    false,
                     now,
                 ));
             }
@@ -284,45 +286,4 @@ fn read_archived(store: &mulch::StoreFiles, domain: &str) -> Result<Vec<Value>, 
                 crate::commands::failure::render_core_error(&source),
             )
         })
-}
-
-/// An optional flag value under JS truthiness (`None` and `Some("")`
-/// both read as unset — search.ts gates with `if (options.…)`).
-fn truthy_owned(value: Option<&str>) -> Option<String> {
-    mulch::truthy_str(value).map(ToString::to_string)
-}
-
-/// A domain file's mtime for the `updated …` header suffix.
-fn modified(store: &mulch::StoreFiles, domain: &str) -> Result<Option<Timestamp>, Failure> {
-    match store.domain_modified(domain) {
-        Ok(Some(time)) => Timestamp::try_from(time)
-            .map(Some)
-            .map_err(|source| Failure::handled_on_stderr("search", format!("Error: {source}"))),
-        Ok(None) => Ok(None),
-        Err(source) => Err(Failure::handled_on_stderr(
-            "search",
-            format!("Error: {source}"),
-        )),
-    }
-}
-
-/// The four domain-section families (search.ts:271-284).
-fn render_section(
-    format: &str,
-    registry: &mulch::Registry,
-    domain: &str,
-    records: &[Value],
-    last_updated: Option<Timestamp>,
-    now: Timestamp,
-) -> String {
-    match format {
-        "compact" => {
-            format_domain_expertise_compact(registry, domain, records, last_updated, None, now)
-        }
-        "xml" => format_domain_expertise_xml(registry, domain, records, last_updated, None, now),
-        "plain" => {
-            format_domain_expertise_plain(registry, domain, records, last_updated, None, now)
-        }
-        _ => format_domain_expertise(registry, domain, records, last_updated, false, None, now),
-    }
 }

@@ -540,23 +540,6 @@ fn draining_hook(command: &str) -> String {
     format!("cat > /dev/null; {command}")
 }
 
-/// Drops the reference's pino warn lines (volatile time/pid/hostname)
-/// from a stderr stream — the landed engine never prints diagnostics
-/// (README DEVIATIONS: hook-run logging), so both sides fold to the
-/// product bytes.
-fn strip_hook_logs(text: &str) -> String {
-    let filtered = text
-        .lines()
-        .filter(|line| !line.starts_with("{\"level\":"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    if text.ends_with('\n') && !filtered.is_empty() {
-        filtered + "\n"
-    } else {
-        filtered
-    }
-}
-
 /// [`assert_compact_parity`] with the reference's pino warn lines
 /// folded out of both stderr streams (hook-configured stores).
 fn assert_compact_hook_parity(
@@ -573,8 +556,8 @@ fn assert_compact_hook_parity(
         "{label} stdout"
     );
     assert_eq!(
-        normalize(&strip_hook_logs(&our.stderr)),
-        promote_theirs(&normalize(&strip_hook_logs(&their.stderr))),
+        normalize(&strip_reference_hook_noise(&our.stderr)),
+        promote_theirs(&normalize(&strip_reference_hook_noise(&their.stderr))),
         "{label} stderr"
     );
     assert_eq!(
@@ -818,7 +801,7 @@ fn compact_apply_hook_replacement_overrides_flags() {
     assert_compact_hook_parity(&ours, &our, &theirs, &their, "apply-invalid");
     assert_eq!(our.code, 1);
     assert!(
-        strip_hook_logs(&our.stderr).starts_with(
+        strip_reference_hook_noise(&our.stderr).starts_with(
             "Error: pre-compact hook produced an invalid record:  must have required property \
              'content'"
         ),
@@ -890,7 +873,7 @@ fn compact_hook_stderr_is_forwarded() {
     let their = run_in(&theirs.0, &ml, &["compact", "--auto", "--yes"]);
     assert_compact_hook_parity(&ours, &our, &theirs, &their, "stderr-block");
     assert!(
-        strip_hook_logs(&our.stderr).starts_with("hook-boom\nhook-boom\nWarning: "),
+        strip_reference_hook_noise(&our.stderr).starts_with("hook-boom\nhook-boom\nWarning: "),
         "stderr was: {}",
         our.stderr
     );
@@ -993,7 +976,7 @@ fn compact_hook_engine_warnings_surface() {
     assert_eq!(run.code, 0);
     assert_eq!(run.stdout, "✓ Compacted 2 pattern records into 1 in dev\n");
     assert!(
-        strip_hook_logs(&run.stderr).starts_with(
+        strip_reference_hook_noise(&run.stderr).starts_with(
             "Warning: hook `cat > /dev/null; printf %s not-json` printed non-JSON on stdout \
              (mutation ignored): "
         ),

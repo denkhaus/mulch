@@ -315,6 +315,76 @@ pub(crate) fn xml_attr_escape(text: &str) -> String {
 
 /// `formatDomainExpertise` (markdown default): the `## domain`
 /// header plus one section per registry type with records.
+/// The output-format families (the reference's format switch):
+/// parsed ONCE at the command edge and threaded as a value — the
+/// family table lives in [`render_section`], so a new family or a
+/// fixed shared argument reaches every command at once (mulch-1c32:
+/// search, query and prime each carried their own copy of the table,
+/// and the copies had already drifted over `full`/annotations).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Format {
+    /// The default family (`format_domain_expertise`, full records).
+    Markdown,
+    Compact,
+    Xml,
+    Plain,
+}
+
+impl Format {
+    /// The reference's switch law: an unknown `--format` value falls
+    /// back to the markdown family (the old tables' `_` arm).
+    pub(crate) fn parse(raw: &str) -> Self {
+        match raw {
+            "compact" => Format::Compact,
+            "xml" => Format::Xml,
+            "plain" => Format::Plain,
+            _ => Format::Markdown,
+        }
+    }
+}
+
+/// The four domain-section families — ONE table (reference
+/// search.ts:271-284 / query.ts:183-196 / prime's section loop).
+/// `annotations` and `full` are the two axes callers differ on:
+/// search/query pass `None`/`false`, prime passes its surface
+/// annotations and `--full || --verbose`.
+pub(crate) fn render_section(
+    format: Format,
+    registry: &mulch::Registry,
+    domain: &str,
+    records: &[Value],
+    last_updated: Option<Timestamp>,
+    annotations: Option<&HashMap<String, String>>,
+    full: bool,
+    now: Timestamp,
+) -> String {
+    match format {
+        Format::Compact => format_domain_expertise_compact(
+            registry,
+            domain,
+            records,
+            last_updated,
+            annotations,
+            now,
+        ),
+        Format::Xml => {
+            format_domain_expertise_xml(registry, domain, records, last_updated, annotations, now)
+        }
+        Format::Plain => {
+            format_domain_expertise_plain(registry, domain, records, last_updated, annotations, now)
+        }
+        Format::Markdown => format_domain_expertise(
+            registry,
+            domain,
+            records,
+            last_updated,
+            full,
+            annotations,
+            now,
+        ),
+    }
+}
+
 pub(crate) fn format_domain_expertise(
     registry: &mulch::Registry,
     domain: &str,

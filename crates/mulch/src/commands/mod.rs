@@ -36,6 +36,13 @@ mod validate;
 use crate::cli::{Command, GlobalOpts};
 use crate::output::Failure;
 
+/// An owned truthy flag string (`None` for empty/falsy) — the shared
+/// adapter behind search/query's filter flags (mulch-1c32: two
+/// byte-identical private copies).
+pub(crate) fn truthy_owned(value: Option<&str>) -> Option<String> {
+    mulch::truthy_str(value).map(ToString::to_string)
+}
+
 /// Runs the parsed command.
 pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failure> {
     match command {
