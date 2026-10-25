@@ -163,16 +163,17 @@ expectation (the parity rule: never silently):
   there either). Per-command `--help` wording differs (clap renderer;
   the reference reuses its root template with the command name
   swapped in) — help text lists only implemented commands either way.
-- **`prime`, `prune`, and `compact` do not run `pre-*` hooks.** The
-  reference executes the config's `hooks.pre-prime` list (block/mutate
-  semantics) before rendering, its `hooks.pre-prune` list
-  (block-or-allow) between prune's preview and write phases, and its
-  `hooks.pre-compact` list (block/mutate; a hook's `{ replacement }`
-  overrides the mechanical merge); this port has no hook engine yet,
-  so a config that declares hooks surfaces them in the project-contract
-  block only. Expectation: identical output for hook-less configs (the
-  reference treats a missing hook config as no hooks); hook-bearing
-  configs skip the scripts (hooks parity is tracked in Seeds).
+- **Hook diagnostics: the reference's pino lines and Bun's EPIPE trace
+  are not ported.** A failing hook makes the reference log a structured
+  pino warn line (`{"level":40,...}` with time/pid/hostname) on stderr —
+  its own log channel, not product output, silenced with
+  `MULCH_LOG_LEVEL=silent` — and a hook that exits without draining
+  stdin can crash the reference after its output completes (Bun 1.4.0
+  dumps an `EPIPE: broken pipe` trace and exits 1). This port's engine
+  never prints (callers forward each script's captured stderr in
+  invocation order) and its stdin writer ignores a broken pipe, so both
+  artifacts are absent by construction. Hook stdout, blocking, timeout,
+  mutation, and warning semantics match the reference byte-for-byte.
 - **`compact --auto` aborts cleanly on a `manual`-strategy group.**
   The reference crashes with an uncaught-throw stack dump when a
   `manual` custom type reaches the mechanical merge; this port prints

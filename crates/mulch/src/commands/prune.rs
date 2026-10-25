@@ -3,10 +3,12 @@
 //! them), demote superseded and anchor-decayed records one tier per
 //! pass — or straight to the archive with `--aggressive`.
 //!
-//! DEVIATION (README): the reference runs configured `pre-prune`
-//! hooks between its preview and write phases (block-on-non-zero).
-//! This port ships no hook engine yet (mulch-7f49 seeds it); a store
-//! configuring hooks prunes as if none were configured.
+//! `pre-prune` hooks (mulch-7f49) run between the preview and the
+//! write phases, block-or-allow: skipped in `--dry-run` and when no
+//! domain produced candidates; the payload carries the raw candidate
+//! records per bucket, a non-zero exit (or timeout) aborts before
+//! any write, and the hook's stdout is IGNORED (no mutation even
+//! though it is a `pre-*` event).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -19,6 +21,7 @@ use serde_json::{Map, Value};
 use serde_yaml::Value as Yaml;
 
 use crate::cli::{GlobalOpts, PruneArgs};
+use crate::commands::hooks_surface::{forward_hook_stderr, print_hook_warnings};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Reference default for `decay.anchor_validity.threshold`
@@ -100,9 +103,8 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
         ));
     }
 
-    // Phase 3 — classify and write. Staleness wins over supersession
-    // on a record hitting both; a record both superseded AND
-    // anchor-decayed demotes one tier with both reasons stamped.
+    // The classification context every later phase reads: phase 2
+    // (the hook payload's buckets) and phase 3 (the writes) share it.
     let walk = PruneWalk {
         rule: &rule,
         now,
@@ -111,6 +113,53 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
         anchors: anchors.as_ref(),
         project_root: &project_root,
     };
+
+    // Phase 2 — pre-prune hooks (prune.ts:330): between the preview
+    // and the write phases; skipped in --dry-run (preview-only runs
+    // must not fire side-effecting hooks) and when no domain has
+    // candidates. LOCK NOTE: the reference takes its per-domain file
+    // locks only in the write phase, so its hook runs lock-free; this
+    // port opened the store under the writer lock up front — the hook
+    // observes the same config either way, only a concurrent writer
+    // would notice the held lock (acceptable seam deviation).
+    if !args.dry_run {
+        let candidate_rows = hook_candidate_rows(&live, &walk);
+        if !candidate_rows.is_empty() {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let hooks = mulch::hooks::run_hooks(
+                mulch::hooks::HookEvent::PrePrune,
+                serde_json::json!({"candidates": candidate_rows}),
+                &store,
+                &cwd,
+            );
+            // Ordering law: stderr forwarding comes right after the
+            // run, before the block error and warnings.
+            forward_hook_stderr(&hooks.executions);
+            if hooks.blocked {
+                let reason = hooks
+                    .block_reason
+                    .as_deref()
+                    .unwrap_or("pre-prune hook blocked");
+                return Err(Failure::handled_on_stderr(
+                    command,
+                    format!("Error: {reason}"),
+                ));
+            }
+            // Warnings plain-only (no warning source exists for
+            // pre-prune today — blocking and non-mutable — but the
+            // law is wired like the reference's loop).
+            if !opts.json {
+                print_hook_warnings(&hooks.warnings);
+            }
+            // Block-or-allow: the hook's stdout is ignored (probe
+            // PR-F — a hook printing candidate-reshaping JSON changes
+            // nothing); this port never reads hooks.payload here.
+        }
+    }
+
+    // Phase 3 — classify and write. Staleness wins over supersession
+    // on a record hitting both; a record both superseded AND
+    // anchor-decayed demotes one tier with both reasons stamped.
     let mut outcomes: Vec<DomainOutcome> = Vec::new();
     for (domain, records) in live {
         if let Some(outcome) = prune_domain(&domain, records, &walk, args.aggressive, &now_iso) {
@@ -639,6 +688,44 @@ fn render_plain(opts: &GlobalOpts, args: &PruneArgs, outcomes: &[DomainOutcome],
              next time to permanently delete.",
         );
     }
+}
+
+/// The pre-prune payload rows (prune.ts:302): per candidate domain
+/// — any bucket non-empty — the raw record objects per bucket in
+/// file order. Staleness wins (a stale record rides `stale` only);
+/// supersession and anchor decay can hit the SAME record, which then
+/// rides both buckets (probe PR-A: `mx-both001` in `demote` AND
+/// `anchor_decay`).
+fn hook_candidate_rows(live: &[(String, Vec<Value>)], walk: &PruneWalk) -> Vec<Value> {
+    let mut rows = Vec::new();
+    for (domain, records) in live {
+        let mut stale: Vec<Value> = Vec::new();
+        let mut demote: Vec<Value> = Vec::new();
+        let mut anchor_decay: Vec<Value> = Vec::new();
+        for record in records {
+            if walk.stale(record) {
+                stale.push(record.clone());
+                continue;
+            }
+            let superseded_hit =
+                PruneWalk::record_id(record).is_some_and(|id| walk.superseded_ids.contains(id));
+            if superseded_hit {
+                demote.push(record.clone());
+            }
+            if walk.anchor_decayed(record).is_some() {
+                anchor_decay.push(record.clone());
+            }
+        }
+        if !(stale.is_empty() && demote.is_empty() && anchor_decay.is_empty()) {
+            rows.push(serde_json::json!({
+                "domain": domain,
+                "stale": stale,
+                "demote": demote,
+                "anchor_decay": anchor_decay,
+            }));
+        }
+    }
+    rows
 }
 
 /// The cycle warning rides stderr (plain, non-quiet modes only).

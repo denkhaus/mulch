@@ -42,6 +42,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::{CompactArgs, GlobalOpts};
 use crate::commands::failure::now_iso;
+use crate::commands::hooks_surface::forward_hook_stderr;
 use crate::commands::store::{open_store, open_store_mut, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -745,22 +746,6 @@ fn stale_rule(store: &mulch::StoreFiles) -> StaleRule {
 /// The blocked fallback reason (the reference's
 /// `blockReason ?? "pre-compact hook blocked the compaction"`).
 const PRE_COMPACT_BLOCKED: &str = "pre-compact hook blocked the compaction";
-
-/// Forwards captured hook stderr (the engine never prints) — the
-/// ordering law: right after each run_hooks call, invocation order.
-fn forward_hook_stderr(executions: &[mulch::hooks::HookExecution]) {
-    use std::io::Write as _;
-    let mut stderr = std::io::stderr();
-    for execution in executions {
-        if execution.stderr.is_empty() {
-            continue;
-        }
-        let _ = stderr.write_all(execution.stderr.as_bytes());
-        if !execution.stderr.ends_with('\n') {
-            let _ = stderr.write_all(b"\n");
-        }
-    }
-}
 
 /// The `{domain, type, records}` pre-compact payload both compact
 /// paths send (`records` = the group's raw source records).

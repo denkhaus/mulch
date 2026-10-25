@@ -16,9 +16,13 @@
 //! - `--export` writes `output + \n` and confirms on stdout unless
 //!   `--quiet`/`--json`; the file content is byte-identical to the console
 //!   output.
-//! - Hooks: the reference runs `pre-prime` hooks here; this port has no hook
-//!   engine yet (README DEVIATIONS, seed mulch-e3a1) — a config that declares
-//!   them surfaces in the contract block only.
+//! - Hooks: `pre-prime` hooks run ONLY in the real render path (the full-mode
+//!   branch after the trust sort; the dry-run preview early-returns before them
+//!   and manifest mode never reaches them — probe P2/P3/P4). Payload
+//!   `{domains:[{domain,records}]}` over the loaded, context-filtered,
+//!   trust-sorted, PRE-budget records; blocking failures abort before any
+//!   output; plain mode forwards warnings, hook-mutated records re-sort by
+//!   trust and never surface unrequested domains.
 
 use std::collections::HashMap;
 
@@ -33,6 +37,7 @@ use serde_json::{Map, Value};
 use crate::cli::{GlobalOpts, PrimeArgs};
 use crate::commands::active_work::resolve_active_work;
 use crate::commands::git_context::GitContext;
+use crate::commands::hooks_surface::{forward_hook_stderr, print_hook_warnings};
 use crate::commands::prime::format::{
     ManifestDomain, contract_block, manifest_output, manifest_payload, prime_output_compact,
     prime_output_markdown, prime_output_plain, prime_output_xml, session_close,
@@ -338,7 +343,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
             annotation_context.as_ref(),
             files_to_filter.is_some(),
             session_close_config.as_ref(),
-        )
+        )?
     };
     let output = match output {
         Value::String(text) => text,
@@ -375,7 +380,7 @@ fn scope_note(kept: usize, total: usize, source: &str) {
 }
 
 /// The full-mode (record-bearing) pipeline: tier sort, dry-run
-/// preview, budget, annotations, the four families.
+/// preview, pre-prime hooks, budget, annotations, the four families.
 #[allow(clippy::too_many_arguments, reason = "the pipeline's inputs")]
 fn full_mode_output(
     opts: &GlobalOpts,
@@ -388,7 +393,7 @@ fn full_mode_output(
     annotation_context: Option<&ActiveContext>,
     files_filter: bool,
     session_close_config: Option<&mulch::SessionClose>,
-) -> Value {
+) -> Result<Value, Failure> {
     let registry = store.registry();
     let prime_config = store.config().prime().ok().flatten();
     let tier_weights = resolve_tier_weights(
@@ -476,8 +481,67 @@ fn full_mode_output(
                 Value::Null
             },
         );
-        return Value::Object(payload);
+        return Ok(Value::Object(payload));
     }
+
+    // pre-prime hooks (prime.ts:495) — the REAL render path only: the
+    // dry-run preview returned above, and manifest mode never enters
+    // this function. The payload carries the context-filtered,
+    // trust-sorted, PRE-budget records (probe P10: a budget that
+    // drops every record still hands all of them to the hook).
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let hook_payload = {
+        let domains: Vec<Value> = loaded
+            .iter()
+            .map(|(domain, records, _)| serde_json::json!({"domain": domain, "records": records}))
+            .collect();
+        serde_json::json!({"domains": domains})
+    };
+    let hooks =
+        mulch::hooks::run_hooks(mulch::hooks::HookEvent::PrePrime, hook_payload, store, &cwd);
+    // Ordering law: stderr forwarding comes right after the run,
+    // before the block error and warnings.
+    forward_hook_stderr(&hooks.executions);
+    if hooks.blocked {
+        let reason = hooks
+            .block_reason
+            .as_deref()
+            .unwrap_or("pre-prime hook blocked output");
+        return Err(Failure::handled_on_stderr(
+            "prime",
+            format!("Error: {reason}"),
+        ));
+    }
+    if !opts.json {
+        print_hook_warnings(&hooks.warnings);
+    }
+
+    // Mutation (prime.ts:515): a per-domain map over the hook's
+    // payload.domains — only well-shaped entries ({domain: string,
+    // records: array}) register and the LAST entry per domain wins;
+    // a domain outside the loaded set is IGNORED (never surface data
+    // the user did not ask for). Every loaded domain then re-sorts
+    // by trust so hook-mutated records keep the ranking.
+    let mut mutated: HashMap<String, Vec<Value>> = HashMap::new();
+    if hooks.ran_any
+        && let Some(domains) = hooks.payload.get("domains").and_then(Value::as_array)
+    {
+        for entry in domains {
+            if let (Some(domain), Some(records)) = (
+                entry.get("domain").and_then(Value::as_str),
+                entry.get("records").and_then(Value::as_array),
+            ) {
+                mutated.insert(domain.to_string(), records.clone());
+            }
+        }
+    }
+    let loaded: Vec<(String, Vec<Value>, Option<Timestamp>)> = loaded
+        .into_iter()
+        .map(|(domain, records, last_updated)| {
+            let records = mutated.get(&domain).cloned().unwrap_or(records);
+            (domain, sort_by_trust(&records, &tier_weights), last_updated)
+        })
+        .collect();
 
     if opts.json {
         let mut domains: Vec<Value> = Vec::new();
@@ -494,7 +558,7 @@ fn full_mode_output(
         let mut payload = Map::new();
         payload.insert("type".into(), Value::String("expertise".into()));
         payload.insert("domains".into(), Value::Array(domains));
-        return Value::Object(payload);
+        return Ok(Value::Object(payload));
     }
 
     // Plain rendering: budget first, then annotations, then the
@@ -588,7 +652,7 @@ fn full_mode_output(
             output.push_str(&reminder);
         }
     }
-    Value::String(output)
+    Ok(Value::String(output))
 }
 
 /// `shouldAutoFlipToManifest`: strict `>` on both thresholds.

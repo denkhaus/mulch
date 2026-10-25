@@ -785,3 +785,414 @@ fn prime_time_law_corners_match() {
     assert!(!our.stdout.contains("date only old first in corpus"));
     assert!(our.stdout.contains("... and 1 more record across 1 domain"));
 }
+
+// ---- pre-prime hooks (mulch-7f49; probed live 2026-10-25,
+// /tmp/sprint42/childB/probes/prime) ----
+
+/// Twin stores (the two-domain ranking fixture) whose config
+/// declares the given `hooks:`/`hook_settings:` YAML body.
+fn prime_hook_twins(tag: &str, hook_yaml: &str) -> (TempDir, TempDir) {
+    let config = format!("version: '1'\ndomains:\n  dev: {{}}\n  tooling: {{}}\n{hook_yaml}");
+    twin_seeded(
+        tag,
+        Some(config.as_str()),
+        &[("dev", DEV_SEED), ("tooling", TOOLING_SEED)],
+        &[],
+    )
+}
+
+/// Strips the reference runtime's stderr noise: the async EPIPE trace
+/// Bun 1.4.0's child-pipe teardown throws, the pino level-40 line a
+/// failed hook logs, and Bun's crash footer (probes:
+/// /tmp/sprint42/childB/probes/stab — none of it is the hook law's
+/// bytes, and the same flake flips successful reference exits to 1,
+/// which the tolerant exit asserts absorb).
+fn strip_reference_hook_noise(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_trace = false;
+    for line in text.lines() {
+        if line.starts_with("EPIPE: broken pipe") {
+            in_trace = true;
+            continue;
+        }
+        if in_trace {
+            // The trace rows (indentation not pinned): the errno/code
+            // rows, a blank, and the stack rows, ending at the first
+            // unrelated line.
+            let trimmed = line.trim_start();
+            let trace_row = line.is_empty()
+                || trimmed.starts_with("syscall:")
+                || trimmed.starts_with("errno:")
+                || trimmed.starts_with("code:")
+                || trimmed.starts_with("at ");
+            if trace_row {
+                continue;
+            }
+            in_trace = false;
+        }
+        if line.starts_with("{\"level\":40,") || line == "Bun v1.4.0 (Linux x64)" {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    format!("{}\n", out.trim_end_matches('\n'))
+}
+
+/// The reference's EPIPE flake can flip a successful run's exit to 1;
+/// ours must carry the law's exit, theirs may carry either.
+fn assert_flaked_exit(our: i32, their: i32, expected: i32, tag: &str) {
+    assert_eq!(our, expected, "{tag}: our exit is the law's");
+    assert!(
+        their == expected || their == 1,
+        "{tag}: reference exit {their} (law {expected}, flake 1)"
+    );
+}
+
+/// The hook's stdin capture (written by `cat > hook-stdin.txt` into
+/// the store's cwd during the run); `None` when the hook never fired.
+fn hook_stdin(dir: &Path) -> Option<String> {
+    std::fs::read_to_string(dir.join("hook-stdin.txt")).ok()
+}
+
+/// The payload law: `{"event":"pre-prime","payload":{"domains":[…]}}`
+/// over the loaded, trust-sorted, PRE-budget records — byte-compared
+/// against the reference's capture — plus full render parity in plain
+/// and json modes.
+#[test]
+fn prime_pre_prime_payload_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    for (tag, args) in [
+        ("ph-pay-plain", &["prime", "--all"][..]),
+        ("ph-pay-json", &["--json", "prime", "--all"][..]),
+    ] {
+        let (ours, theirs) = prime_hook_twins(
+            tag,
+            "hooks:\n  pre-prime:\n    - 'cat > \
+         hook-stdin.txt'\n",
+        );
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, their.code, "{tag} exit");
+        assert_eq!(
+            normalize(&our.stdout),
+            normalize(&promote_theirs(&their.stdout)),
+            "{tag} stdout"
+        );
+        assert_eq!(our.stderr, their.stderr, "{tag} stderr");
+        let (our_stdin, their_stdin) = (hook_stdin(&ours.0), hook_stdin(&theirs.0));
+        assert!(our_stdin.is_some(), "{tag}: our hook fired");
+        assert!(their_stdin.is_some(), "{tag}: reference hook fired");
+        assert_eq!(
+            our_stdin.as_deref(),
+            their_stdin.as_deref(),
+            "{tag}: hook stdin payload bytes"
+        );
+        // The payload is trust-sorted: dev's foundational leads even
+        // though the corpus file order puts it first-of-three with
+        // the convention and decision behind it, and tooling rides
+        // second.
+        let stdin = our_stdin.unwrap_or_default();
+        assert!(stdin.starts_with(
+            "{\"event\":\"pre-prime\",\"payload\":{\"domains\":[{\"domain\":\"dev\",\"records\":["
+        ));
+        assert!(stdin.contains("\"domain\":\"tooling\""));
+    }
+}
+
+/// The gate law: manifest mode and the dry-run preview (including its
+/// export) fire NO hooks; a real-path --export fires them before the
+/// file is written (probe P2/P3/P4 — the brief said export never
+/// fires them; the reference wins).
+#[test]
+fn prime_pre_prime_gates_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    for (tag, args) in [
+        ("ph-gate-manifest", &["prime", "--manifest"][..]),
+        ("ph-gate-dryrun", &["prime", "--all", "--dry-run"][..]),
+        (
+            "ph-gate-dryexport",
+            &["prime", "--all", "--dry-run", "--export", "out.md"][..],
+        ),
+    ] {
+        let (ours, theirs) = prime_hook_twins(
+            tag,
+            "hooks:\n  pre-prime:\n    - 'cat > \
+         hook-stdin.txt'\n",
+        );
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, their.code, "{tag} exit");
+        assert_eq!(
+            normalize(&our.stdout),
+            normalize(&promote_theirs(&their.stdout)),
+            "{tag} stdout"
+        );
+        assert_eq!(our.stderr, their.stderr, "{tag} stderr");
+        assert!(hook_stdin(&ours.0).is_none(), "{tag}: our hook stayed cold");
+        assert!(
+            hook_stdin(&theirs.0).is_none(),
+            "{tag}: reference hook stayed cold"
+        );
+    }
+
+    // A real-path export runs the hook first, then writes the file.
+    let (ours, theirs) = prime_hook_twins(
+        "ph-gate-export",
+        "hooks:\n  pre-prime:\n    - 'cat > hook-stdin.txt'\n",
+    );
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "prime", "--all", "--export", "out.md",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["prime", "--all", "--export", "out.md"]);
+    assert_eq!(our.code, their.code, "export exit");
+    assert_eq!(our.stdout, promote_theirs(&their.stdout), "export stdout");
+    assert!(
+        hook_stdin(&ours.0).is_some(),
+        "our hook fired before export"
+    );
+    assert!(
+        hook_stdin(&theirs.0).is_some(),
+        "reference hook fired before export"
+    );
+    assert_eq!(
+        promote_theirs(&std::fs::read_to_string(theirs.0.join("out.md")).expect("their export")),
+        std::fs::read_to_string(ours.0.join("out.md")).expect("our export"),
+        "export bytes"
+    );
+}
+
+/// Blocking: a non-zero exit (and a timeout under a short
+/// `hook_settings.timeout_ms`) aborts before any output — plain
+/// `Error: …` on stderr, the json failure envelope in json mode,
+/// exit 1 both sides.
+#[test]
+fn prime_pre_prime_blocking_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    for (tag, args, hook_yaml, json_mode, reason) in [
+        (
+            "ph-block-plain",
+            &["prime", "--all"][..],
+            "hooks:\n  pre-prime:\n    - 'exit 4'\n",
+            false,
+            "hook `exit 4` exited with code 4",
+        ),
+        (
+            "ph-block-json",
+            &["--json", "prime", "--all"][..],
+            "hooks:\n  pre-prime:\n    - 'exit 4'\n",
+            true,
+            "hook `exit 4` exited with code 4",
+        ),
+        (
+            "ph-block-timeout",
+            &["prime", "--all"][..],
+            "hooks:\n  pre-prime:\n    - 'sleep 30 & wait'\nhook_settings:\n  \
+             timeout_ms: 150\n",
+            false,
+            "hook `sleep 30 & wait` timed out after 150ms",
+        ),
+        (
+            "ph-block-timeout-json",
+            &["--json", "prime", "--all"][..],
+            "hooks:\n  pre-prime:\n    - 'sleep 30 & wait'\nhook_settings:\n  \
+             timeout_ms: 150\n",
+            true,
+            "hook `sleep 30 & wait` timed out after 150ms",
+        ),
+    ] {
+        let (ours, theirs) = prime_hook_twins(tag, hook_yaml);
+        let started = std::time::Instant::now();
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let our_elapsed = started.elapsed();
+        let their = run_in(&theirs.0, &ml, args);
+        assert_eq!(our.code, their.code, "{tag} exit");
+        assert_eq!(our.code, 1, "{tag}: blocked exits 1");
+        assert!(our.stdout.is_empty(), "{tag}: no stdout when blocked");
+        assert!(their.stdout.is_empty(), "{tag}: reference no stdout");
+        let expected = if json_mode {
+            super::support::error_envelope("prime", reason)
+        } else {
+            format!("Error: {reason}\n")
+        };
+        assert_eq!(our.stderr, expected, "{tag}: our stderr");
+        assert_eq!(
+            strip_reference_hook_noise(&their.stderr),
+            expected,
+            "{tag}: reference stderr (noise stripped)"
+        );
+        if tag.contains("timeout") {
+            assert!(
+                our_elapsed.as_secs() < 10,
+                "{tag}: group kill returned promptly"
+            );
+        }
+    }
+}
+
+/// A hook's stderr forwards verbatim (invocation order, trailing
+/// newline backfilled) in BOTH modes; warnings print plain-only —
+/// `--quiet` still warns, `--json` never does. The non-JSON parse
+/// warning's reason tail carries the parser's wording (documented
+/// deviation class), so the compare masks it on both sides.
+#[test]
+fn prime_hook_stderr_forward_and_warnings_match_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Successful hook writing stderr: forwarded, run still succeeds.
+    for (tag, args) in [
+        ("ph-fwd-plain", &["prime", "--all"][..]),
+        ("ph-fwd-json", &["--json", "prime", "--all"][..]),
+    ] {
+        let (ours, theirs) =
+            prime_hook_twins(tag, "hooks:\n  pre-prime:\n    - 'printf side-noise >&2'\n");
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_flaked_exit(our.code, their.code, 0, tag);
+        assert_eq!(
+            normalize(&our.stdout),
+            normalize(&promote_theirs(&their.stdout)),
+            "{tag} stdout"
+        );
+        assert_eq!(our.stderr, "side-noise\n", "{tag}: forwarded verbatim");
+        assert_eq!(
+            strip_reference_hook_noise(&their.stderr),
+            "side-noise\n",
+            "{tag}: reference forwarded the same bytes"
+        );
+    }
+
+    // Non-JSON stdout on a mutable event: one Warning line, plain
+    // only (quiet included, json excluded).
+    let warning_head = |stderr: &str| -> String {
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("Warning: hook `"))
+            .map(|line| {
+                format!(
+                    "{}<PARSE-ERROR>",
+                    line.split("(mutation ignored): ")
+                        .next()
+                        .unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    for (tag, args, warns) in [
+        ("ph-warn-plain", &["prime", "--all"][..], true),
+        ("ph-warn-quiet", &["prime", "--all", "--quiet"][..], true),
+        ("ph-warn-json", &["--json", "prime", "--all"][..], false),
+    ] {
+        let (ours, theirs) =
+            prime_hook_twins(tag, "hooks:\n  pre-prime:\n    - 'printf %s not-json'\n");
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_flaked_exit(our.code, their.code, 0, tag);
+        assert_eq!(
+            normalize(&our.stdout),
+            normalize(&promote_theirs(&their.stdout)),
+            "{tag} stdout"
+        );
+        let our_warned = our
+            .stderr
+            .lines()
+            .any(|line| line.starts_with("Warning: hook `"));
+        let their_warned = strip_reference_hook_noise(&their.stderr)
+            .lines()
+            .any(|line| line.starts_with("Warning: hook `"));
+        assert_eq!(our_warned, warns, "{tag}: our warning presence");
+        assert_eq!(their_warned, warns, "{tag}: reference warning presence");
+        if warns {
+            assert_eq!(
+                warning_head(&our.stderr),
+                warning_head(&strip_reference_hook_noise(&their.stderr)),
+                "{tag}: warning line (parse tail masked)"
+            );
+        } else {
+            assert!(our.stderr.is_empty(), "{tag}: json emits no warnings");
+        }
+    }
+}
+
+/// Mutation: a hook's domains JSON replaces the loaded records
+/// per-domain — an UNKNOWN domain is ignored (never surface data the
+/// user did not ask for), the surviving records RE-SORT by trust, and
+/// untouched domains keep their own records.
+#[test]
+fn prime_hook_mutation_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let mutation_json = r#"{"domains":[
+        {"domain":"dev","records":[
+            {"type":"pattern","classification":"observational","recorded_at":"2026-10-18T10:00:00.000Z","name":"Mut Obs","description":"mutated obs","id":"mx-300001"},
+            {"type":"pattern","classification":"foundational","recorded_at":"2026-10-18T10:00:00.000Z","name":"Mut Fnd","description":"mutated fnd","id":"mx-300002"}
+        ]},
+        {"domain":"ghost","records":[
+            {"type":"pattern","classification":"foundational","recorded_at":"2026-10-18T10:00:00.000Z","name":"Ghost","description":"never surfaced","id":"mx-300003"}
+        ]}
+    ]}"#;
+    let script = format!("printf %s \"{}\"", mutation_json.replace('"', "\\\""));
+    let hook_yaml = format!("hooks:\n  pre-prime:\n    - '{script}'\n");
+    for (tag, args) in [
+        ("ph-mut-plain", &["prime", "--all"][..]),
+        ("ph-mut-json", &["--json", "prime", "--all"][..]),
+    ] {
+        let (ours, theirs) = prime_hook_twins(tag, hook_yaml.as_str());
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_flaked_exit(our.code, their.code, 0, tag);
+        assert_eq!(
+            normalize(&our.stdout),
+            normalize(&promote_theirs(&their.stdout)),
+            "{tag} stdout"
+        );
+        assert!(
+            our.stderr.is_empty(),
+            "{tag}: our stderr clean, got: {:?}",
+            our.stderr
+        );
+        assert_eq!(
+            strip_reference_hook_noise(&their.stderr),
+            "\n",
+            "{tag}: reference stderr clean (noise stripped)"
+        );
+        // The mutation took: dev renders the two mutated records,
+        // trust-re-sorted (Fnd before the hook's first-listed Obs);
+        // the ghost never surfaces; tooling keeps its own records.
+        let fnd = our
+            .stdout
+            .find("Mut Fnd")
+            .expect("mutated foundational renders");
+        let obs = our
+            .stdout
+            .find("Mut Obs")
+            .expect("mutated observational renders");
+        assert!(fnd < obs, "{tag}: re-sort puts foundational first");
+        assert!(
+            our.stdout.contains("Anchored dir"),
+            "{tag}: untouched domain kept"
+        );
+        assert!(
+            !our.stdout.contains("files match"),
+            "{tag}: dev originals replaced"
+        );
+        assert!(
+            !our.stdout.contains("never surfaced"),
+            "{tag}: unknown domain ignored"
+        );
+    }
+}
