@@ -115,12 +115,9 @@ pub(crate) fn domain_modified_ts(
     match store.domain_modified(domain) {
         Ok(Some(time)) => jiff::Timestamp::try_from(time)
             .map(Some)
-            .map_err(|source| Failure::handled_on_stderr(command, format!("Error: {source}"))),
+            .map_err(|source| Failure::error_line(command, source)),
         Ok(None) => Ok(None),
-        Err(source) => Err(Failure::handled_on_stderr(
-            command,
-            format!("Error: {source}"),
-        )),
+        Err(source) => Err(Failure::error_line(command, format!("{source}"))),
     }
 }
 

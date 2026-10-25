@@ -434,7 +434,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::StoreLocation;
 
     /// One serial for every scratch name in this module: a pid alone
     /// repeats across runs (and the OS recycles pids), so a
@@ -451,18 +450,11 @@ mod tests {
     /// A scratch store with one configured domain and a raw config
     /// body (the hooks/hook_settings blocks under test).
     fn hook_store(tag: &str, extra_config: &str) -> (PathBuf, StoreFiles) {
-        let root = scratch_path(tag);
-        std::fs::remove_dir_all(&root).ok();
-        std::fs::create_dir_all(root.join(".mulch")).expect("temp dir");
-        std::fs::write(
-            root.join(".mulch").join("mulch.config.yaml"),
-            format!("version: '1'\ndomains:\n  dev: {{}}\n{extra_config}"),
+        crate::store_files::testscratch::store_with(
+            tag,
+            &format!("version: '1'\ndomains:\n  dev: {{}}\n{extra_config}"),
+            false,
         )
-        .expect("writable config");
-        match StoreFiles::locate(&root).expect("store opens") {
-            StoreLocation::Open(store) => (root, store),
-            other => panic!("expected an open store, got {other:?}"),
-        }
     }
 
     /// A command that writes its stdin and the MULCH_HOOK flag to

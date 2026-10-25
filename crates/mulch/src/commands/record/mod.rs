@@ -44,9 +44,9 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     if let Some(path) = batch
         && !path.exists()
     {
-        let mut failure = Failure::handled_on_stderr(
+        let mut failure = Failure::error_line(
             "record",
-            format!("Error: batch file not found: {}", path.display()),
+            format!("batch file not found: {}", path.display()),
         );
         failure.envelope["error"] =
             Value::String(format!("Batch file not found: {}", path.display()));
@@ -107,9 +107,9 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
             .map(|row| row.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(Failure::handled_on_stderr(
+        return Err(Failure::error_line(
             "record",
-            format!("Error: --type is required ({choices})"),
+            format!("--type is required ({choices})"),
         ));
     }
 
@@ -300,7 +300,7 @@ const BLOCK_DEFAULT: &str = "pre-record hook blocked the write";
 /// says `Error: {reason}` on stderr, the json envelope carries the
 /// bare reason (probe-pinned).
 fn hook_failure(reason: String) -> Failure {
-    let mut failure = Failure::handled_on_stderr("record", format!("Error: {reason}"));
+    let mut failure = Failure::error_line("record", &reason);
     failure.envelope["error"] = Value::String(reason);
     failure
 }

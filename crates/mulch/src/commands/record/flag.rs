@@ -93,7 +93,7 @@ pub(super) fn build_record(
             test_results: args.outcome_test_results.as_deref(),
         }
         .build()
-        .map_err(|message| Failure::handled_on_stderr("record", format!("Error: {message}")))?;
+        .map_err(|message| Failure::error_line("record", message))?;
         record.insert("outcomes".into(), Value::Array(vec![Value::Object(entry)]));
     }
     if !args.dir_anchors.is_empty() {

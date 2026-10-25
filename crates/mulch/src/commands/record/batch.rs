@@ -26,12 +26,7 @@ use crate::output::{Failure, failure_envelope, print_json, print_line};
 pub(super) fn read_batch_file(path: &Path) -> Result<String, Failure> {
     std::fs::read(path)
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .map_err(|source| {
-            Failure::handled_on_stderr(
-                "record",
-                format!("Error: {}", node_read_error(path, &source)),
-            )
-        })
+        .map_err(|source| Failure::error_line("record", node_read_error(path, &source)))
 }
 
 /// The reference's `readFileSync` failure text for the batch path
@@ -97,9 +92,9 @@ pub(super) fn stdin_batch(
         Ok(value) => value,
         Err(source) => {
             return Err(match jsc_parse_error(&raw) {
-                Some(detail) => Failure::handled_on_stderr(
+                Some(detail) => Failure::error_line(
                     "record",
-                    format!("Error: Failed to parse JSON from stdin: JSON Parse error: {detail}"),
+                    format!("Failed to parse JSON from stdin: JSON Parse error: {detail}"),
                 ),
                 // JSC accepts what serde rejected (a lone \u surrogate
                 // decodes there): keep the serde wording for that

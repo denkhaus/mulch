@@ -353,7 +353,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
 
     if let Some(path) = args.export.as_deref() {
         std::fs::write(path, format!("{output}\n"))
-            .map_err(|source| Failure::handled_on_stderr("prime", format!("Error: {source}")))?;
+            .map_err(|source| Failure::error_line("prime", source))?;
         if !json_mode && !opts.quiet {
             print_line(false, &format!("✓ Exported to {path}"));
         }
@@ -500,10 +500,7 @@ fn full_mode_output(
         "prime",
     )?;
     if let Some(reason) = phase.blocked_reason("pre-prime hook blocked output") {
-        return Err(Failure::handled_on_stderr(
-            "prime",
-            format!("Error: {reason}"),
-        ));
+        return Err(Failure::error_line("prime", reason));
     }
     if !opts.json {
         print_hook_warnings(phase.warnings());
@@ -629,7 +626,7 @@ fn should_auto_flip_to_manifest(total_records: usize, total_domains: usize) -> b
 /// The json/plain error surface of the guard clauses (the handled
 /// failure's envelope already carries the unprefixed sentence).
 fn prime_error(_json_mode: bool, message: &str) -> Failure {
-    Failure::handled_on_stderr("prime", format!("Error: {message}"))
+    Failure::error_line("prime", message)
 }
 
 /// `computeTypeCounts`: first-seen type order (a missing type

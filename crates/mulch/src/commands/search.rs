@@ -198,7 +198,7 @@ fn effective_boost(store: &mulch::StoreFiles, no_boost: bool) -> Result<f64, Fai
     Ok(store
         .config()
         .search()
-        .map_err(|source| Failure::handled_on_stderr("search", format!("Error: {source}")))?
+        .map_err(|source| Failure::error_line("search", source))?
         .map_or(DEFAULT_SEARCH_BOOST_FACTOR, |search| search.boost_factor))
 }
 

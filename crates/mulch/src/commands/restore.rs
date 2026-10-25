@@ -145,10 +145,9 @@ pub(super) fn run(opts: &GlobalOpts, id: &str) -> Result<(), Failure> {
     store
         .revive(&domain, &remaining, &restored)
         .map_err(|source| match source {
-            mulch::TransactionError::Archive(inner) => Failure::handled_on_stderr(
-                "restore",
-                format!("Error: {}", crate::output::chain_message(&inner)),
-            ),
+            mulch::TransactionError::Archive(inner) => {
+                Failure::error_line("restore", crate::output::chain_message(&inner))
+            }
             mulch::TransactionError::Live(inner) => {
                 Failure::handled("restore", crate::output::chain_message(&inner))
             }

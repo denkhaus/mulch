@@ -1232,19 +1232,7 @@ mod tests {
 
     /// A throwaway store with one live domain `d` for the pass tests.
     fn temp_store(tag: &str) -> (std::path::PathBuf, mulch::StoreFiles) {
-        let dir = std::env::temp_dir().join(format!("mulch-doctor-{tag}-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(dir.join(".mulch").join("expertise")).expect("temp store");
-        std::fs::write(
-            dir.join(".mulch").join("mulch.config.yaml"),
-            "version: '1'\ndomains:\n  d: {}\n",
-        )
-        .expect("config");
-        let store = match mulch::StoreFiles::locate(&dir).expect("store opens") {
-            mulch::StoreLocation::Open(store) => store,
-            other => panic!("store must open, got {other:?}"),
-        };
-        (dir, store)
+        crate::commands::testscratch::store_with(tag, "version: '1'\ndomains:\n  d: {}\n", true)
     }
 
     fn read_domain(store: &mulch::StoreFiles, domain: &str) -> String {

@@ -65,13 +65,12 @@ pub(crate) fn run(
         None => domains,
     };
 
-    let since_ms =
-        match since {
-            Some(raw) => Some(mulch::parse_duration(raw).map_err(|message| {
-                Failure::handled_on_stderr("ready", format!("Error: {message}"))
-            })?),
-            None => None,
-        };
+    let since_ms = match since {
+        Some(raw) => Some(
+            mulch::parse_duration(raw).map_err(|message| Failure::error_line("ready", message))?,
+        ),
+        None => None,
+    };
 
     let mut all: Vec<ReadyEntry> = Vec::new();
     for domain in to_check {
@@ -236,13 +235,12 @@ fn summary(store: &mulch::StoreFiles, record: &Value) -> Result<Option<Value>, F
     if let Some(name) = raw_type.and_then(Value::as_str)
         && store.registry().row(name).is_some()
     {
-        return mulch::record_summary_value(store.registry(), record).map_err(|not_a_string| {
-            Failure::handled_on_stderr("ready", format!("Error: {not_a_string}"))
-        });
+        return mulch::record_summary_value(store.registry(), record)
+            .map_err(|not_a_string| Failure::error_line("ready", not_a_string));
     }
-    Err(Failure::handled_on_stderr(
+    Err(Failure::error_line(
         "ready",
-        format!("Error: Unknown record type: {}", type_text(record)),
+        format!("Unknown record type: {}", type_text(record)),
     ))
 }
 

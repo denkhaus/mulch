@@ -64,6 +64,18 @@ impl Failure {
         failure
     }
 
+    /// The `Error:` prefix idiom, named once (mulch-39eb): plain
+    /// stderr renders `Error: <message>`, the json envelope carries
+    /// the bare message ([`Failure::handled`] strips the prefix this
+    /// adds). Sites with MULTI-LINE or hint-carrying wordings
+    /// (`commands::failure`'s domain shapes) deliberately stay on
+    /// `handled*` — the deviators are visible by not calling this.
+    pub(crate) fn error_line(command: &str, message: impl std::fmt::Display) -> Self {
+        let mut failure = Self::handled(command, format!("Error: {message}"));
+        failure.envelope_to_stderr = true;
+        failure
+    }
+
     /// Builds a handled error with the reference envelope shape.
     pub(crate) fn handled(command: &str, error: impl Into<String>) -> Self {
         let error = error.into();

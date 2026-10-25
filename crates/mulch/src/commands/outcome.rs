@@ -162,9 +162,9 @@ fn append(
     let mut record: Map<String, Value> = match records[position].record.as_object().cloned() {
         Some(object) => object,
         None => {
-            return Err(Failure::handled_on_stderr(
+            return Err(Failure::error_line(
                 "outcome",
-                format!("Error: Record \"{id}\" is not a JSON object."),
+                format!("Record \"{id}\" is not a JSON object."),
             ));
         }
     };
@@ -183,7 +183,7 @@ fn append(
         test_results: flags.test_results.as_deref(),
     }
     .build()
-    .map_err(|message| Failure::handled_on_stderr("outcome", format!("Error: {message}")))?;
+    .map_err(|message| Failure::error_line("outcome", message))?;
 
     let total = {
         let array = record

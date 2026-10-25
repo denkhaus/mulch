@@ -193,9 +193,9 @@ pub(super) fn run(
     if opts.allow_unknown_types {
         for (_, kind, _) in &deleted {
             if !store.registry().is_known(kind) {
-                return Err(Failure::handled_on_stderr(
+                return Err(Failure::error_line(
                     "delete",
-                    format!("Error: Unknown record type: {kind}"),
+                    format!("Unknown record type: {kind}"),
                 ));
             }
         }

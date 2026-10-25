@@ -70,9 +70,9 @@ pub(super) fn run(
     let archived = record.get("status").and_then(Value::as_str) == Some("archived");
     if archived {
         let shown = record_id.clone().unwrap_or_else(|| id.to_string());
-        return Err(Failure::handled_on_stderr(
+        return Err(Failure::error_line(
             "move",
-            format!("Error: Record {shown} is archived. Run `mulch restore {shown}` first."),
+            format!("Record {shown} is archived. Run `mulch restore {shown}` first."),
         ));
     }
 

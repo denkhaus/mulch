@@ -127,7 +127,7 @@ fn compact_failure(json: bool, message: impl AsRef<str>) -> Failure {
     if json {
         Failure::handled_on_stderr("compact", message.to_string())
     } else {
-        Failure::handled_on_stderr("compact", format!("Error: {message}"))
+        Failure::error_line("compact", message)
     }
 }
 

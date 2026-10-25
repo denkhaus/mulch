@@ -681,6 +681,45 @@ fn valid_domain(domain: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// The shared scratch-store builders for the lib's unit tests
+/// (mulch-a115: four near-identical per-module copies folded —
+/// store_files, doctor, repair, hooks). Callers own cleanup
+/// (`remove_dir_all` at test end), the folded helpers' contract.
+#[cfg(test)]
+pub(crate) mod testscratch {
+    use std::path::PathBuf;
+
+    use crate::{StoreFiles, StoreLocation};
+
+    /// A fresh scratch root with `.mulch` present (a previous run's
+    /// leftovers removed) — the config write needs the directory.
+    fn root(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mulch-scratch-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join(".mulch")).expect("scratch root");
+        dir
+    }
+
+    /// A scratch store over the given config body; `expertise_dir`
+    /// pre-creates `.mulch/expertise` for the tests that write domain
+    /// files directly.
+    pub(crate) fn store_with(
+        tag: &str,
+        config: &str,
+        expertise_dir: bool,
+    ) -> (PathBuf, StoreFiles) {
+        let dir = root(tag);
+        if expertise_dir {
+            std::fs::create_dir_all(dir.join(".mulch").join("expertise")).expect("expertise dir");
+        }
+        std::fs::write(dir.join(".mulch").join("mulch.config.yaml"), config).expect("config");
+        match StoreFiles::locate(&dir).expect("store opens") {
+            StoreLocation::Open(store) => (dir, store),
+            other => panic!("expected an open store, got {other:?}"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -690,17 +729,7 @@ mod tests {
     /// A scratch store with one configured domain (the reference
     /// probe's layout: `ml prune` over a two-record expertise file).
     fn scratch(tag: &str) -> (PathBuf, StoreFiles) {
-        let root = std::env::temp_dir().join(format!("mulch-archive-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(root.join(".mulch")).expect("temp dir");
-        std::fs::write(
-            root.join(".mulch").join("mulch.config.yaml"),
-            "version: '1'\ndomains:\n  dev: {}\n",
-        )
-        .expect("writable config");
-        match StoreFiles::locate(&root).expect("store opens") {
-            StoreLocation::Open(store) => (root, store),
-            other => panic!("expected an open store, got {other:?}"),
-        }
+        super::testscratch::store_with(tag, "version: '1'\ndomains:\n  dev: {}\n", false)
     }
 
     /// A throwaway store with a raw `dev` body (byte laws, not parsed

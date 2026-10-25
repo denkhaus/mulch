@@ -57,10 +57,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
             "Invalid decay.anchor_validity config: {}. Edit .mulch/mulch.config.yaml.",
             errors.join("; ")
         );
-        return Err(Failure::handled_on_stderr(
-            command,
-            format!("Error: {message}"),
-        ));
+        return Err(Failure::error_line(command, message));
     }
     let anchors = if args.check_anchors {
         Some(resolve_anchor_params(&anchor_block))
@@ -132,10 +129,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
                 command,
             )?;
             if let Some(reason) = phase.blocked_reason("pre-prune hook blocked") {
-                return Err(Failure::handled_on_stderr(
-                    command,
-                    format!("Error: {reason}"),
-                ));
+                return Err(Failure::error_line(command, reason));
             }
             // Warnings plain-only (no warning source exists for
             // pre-prune today — blocking and non-mutable — but the

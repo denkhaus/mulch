@@ -134,10 +134,9 @@ pub(super) fn run(
                 mulch::TransactionError::Live(inner) => {
                     Failure::handled("archive", crate::output::chain_message(&inner))
                 }
-                mulch::TransactionError::Archive(inner) => Failure::handled_on_stderr(
-                    "archive",
-                    format!("Error: {}", crate::output::chain_message(&inner)),
-                ),
+                mulch::TransactionError::Archive(inner) => {
+                    Failure::error_line("archive", crate::output::chain_message(&inner))
+                }
             })?;
     }
 
@@ -147,9 +146,9 @@ pub(super) fn run(
     if opts.allow_unknown_types {
         for line in &archived {
             if !store.registry().is_known(&line.record_type()) {
-                return Err(Failure::handled_on_stderr(
+                return Err(Failure::error_line(
                     "archive",
-                    format!("Error: Unknown record type: {}", line.record_type()),
+                    format!("Unknown record type: {}", line.record_type()),
                 ));
             }
         }
@@ -237,7 +236,7 @@ fn prologue_failure(json: bool, text: &str) -> Failure {
         };
         Failure::handled_on_stderr("archive", capitalized)
     } else {
-        Failure::handled_on_stderr("archive", format!("Error: {text}"))
+        Failure::error_line("archive", text)
     }
 }
 

@@ -124,3 +124,32 @@ pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failu
         Command::Prime(args) => prime::run(opts, args),
     }
 }
+
+/// The bin crate's scratch-store builder for command unit tests
+/// (mulch-a115). The LIB's tests have their own copy
+/// (`store_files::testscratch`) — a dependency's `#[cfg(test)]`
+/// items are invisible here, so the same law lives in both crates,
+/// each documented to point at the other.
+#[cfg(test)]
+pub(crate) mod testscratch {
+    /// A scratch store over the given config body; `expertise_dir`
+    /// pre-creates `.mulch/expertise`.
+    pub(crate) fn store_with(
+        tag: &str,
+        config: &str,
+        expertise_dir: bool,
+    ) -> (std::path::PathBuf, mulch::StoreFiles) {
+        let dir =
+            std::env::temp_dir().join(format!("mulch-cmd-scratch-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).expect("scratch root");
+        if expertise_dir {
+            std::fs::create_dir_all(dir.join(".mulch").join("expertise")).expect("expertise dir");
+        }
+        std::fs::write(dir.join(".mulch").join("mulch.config.yaml"), config).expect("config");
+        match mulch::StoreFiles::locate(&dir).expect("store opens") {
+            mulch::StoreLocation::Open(store) => (dir, store),
+            other => panic!("expected an open store, got {other:?}"),
+        }
+    }
+}

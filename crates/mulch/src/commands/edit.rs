@@ -33,9 +33,9 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     let mut record: Map<String, Value> = match records[position].record.as_object().cloned() {
         Some(object) => object,
         None => {
-            return Err(Failure::handled_on_stderr(
+            return Err(Failure::error_line(
                 "edit",
-                format!("Error: Record \"{}\" is not a JSON object.", args.id),
+                format!("Record \"{}\" is not a JSON object.", args.id),
             ));
         }
     };
@@ -160,7 +160,7 @@ fn append_outcome_without_time(
         test_results: flags.test_results.as_deref(),
     }
     .build()
-    .map_err(|message| Failure::handled_on_stderr("edit", format!("Error: {message}")))?;
+    .map_err(|message| Failure::error_line("edit", message))?;
     let outcomes_entry = record
         .entry("outcomes")
         .or_insert_with(|| Value::Array(Vec::new()));
