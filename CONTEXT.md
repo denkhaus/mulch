@@ -35,6 +35,17 @@ The command layer: stdout/stderr, exit codes, envelopes, and every
 wording.
 _Avoid_: CLI layer, frontend
 
+**Alias**:
+A configured alternative NAME for a domain, resolving onto the
+canonical at every addressing entry (ADR-0006). Not a domain: it
+never lists, never owns a file.
+_Avoid_: synonym, alternate domain
+
+**Canonical domain**:
+The configured domain an alias resolves to; the one whose file every
+write lands in.
+_Avoid_: target domain, real domain
+
 **Registry row**:
 One record type's declared shape — payload fields, id/dedup key,
 summary law, compaction strategy. Registry-named laws get lib bodies

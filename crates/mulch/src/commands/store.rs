@@ -119,7 +119,9 @@ pub(crate) fn ensure_domain<'a>(
 ) -> Result<&'a str, Failure> {
     // Aliases resolve FIRST (ADR-0006): the caller receives — and
     // addresses files by — the canonical domain; a miss names the
-    // ALIAS the user typed.
+    // ALIAS the user typed. The return borrows from BOTH inputs: the
+    // canonical may live in the store's alias map or be the argument
+    // itself (a non-alias) — hence the twice-bound lifetime.
     let canonical = store.resolve_domain(domain);
     let domains = store.domains();
     if domains.iter().any(|d| d == canonical) {

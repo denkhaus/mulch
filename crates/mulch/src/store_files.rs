@@ -262,7 +262,6 @@ impl StoreFiles {
         &self.registry
     }
 
-    /// Live domain names in config order.
     /// Resolves a domain ADDRESS onto its canonical domain (ADR-0006,
     /// mulch-b0f7): an alias chains transitively (validated acyclic
     /// at open); a non-alias returns unchanged. Address-level only —
@@ -276,6 +275,8 @@ impl StoreFiles {
         while let Some(target) = self.aliases.get(current) {
             current = target.as_str();
             hops += 1;
+            // Cannot happen: the config walk validated acyclicity at
+            // open; the bound is paranoia against a future drift.
             if hops > self.aliases.len() {
                 return domain;
             }
@@ -283,6 +284,7 @@ impl StoreFiles {
         current
     }
 
+    /// Live domain names in config order.
     pub fn domains(&self) -> Vec<String> {
         self.config
             .domains()

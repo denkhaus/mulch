@@ -239,6 +239,7 @@ impl Config {
             });
         };
         let domains = self.domains();
+        let alias_targets: Vec<&str> = mapping.keys().filter_map(|k| k.as_str()).collect();
         let mut pairs = Vec::new();
         for (alias, canonical) in mapping {
             let (Some(alias), Some(canonical)) = (alias.as_str(), canonical.as_str()) else {
@@ -260,7 +261,6 @@ impl Config {
                     ),
                 });
             }
-            let alias_targets: Vec<&str> = mapping.keys().filter_map(|k| k.as_str()).collect();
             if !domains.contains(&canonical) && !alias_targets.contains(&canonical) {
                 return Err(Error::DomainAliases {
                     message: format!(
@@ -600,7 +600,7 @@ mod tests {
     /// self-map, cycle) plus the two acceptances (plain pairs,
     /// transitive chains) and the absent/malformed block shapes.
     #[test]
-    fn domain_aliases_validate_the_four_rejections() {
+    fn domain_aliases_validation_table() {
         let base = "version: '1'\ndomains:\n  dev: {}\n  rust: {}\n";
         // absent -> empty
         assert_eq!(

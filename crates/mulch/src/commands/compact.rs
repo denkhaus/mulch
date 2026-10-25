@@ -708,13 +708,16 @@ fn domain_check(
     let domains = store.domains();
     match domain {
         // Aliases resolve onto the canonical domain first (ADR-0006).
-        Some(domain) if domains.iter().any(|d| d == store.resolve_domain(domain)) => {
-            Ok(vec![store.resolve_domain(domain).to_string()])
+        Some(domain) => {
+            let canonical = store.resolve_domain(domain);
+            domains
+                .iter()
+                .find(|d| *d == canonical)
+                .map(|_| vec![canonical.to_string()])
+                .ok_or_else(|| {
+                    compact_failure(json, format!("Domain \"{domain}\" not found in config."))
+                })
         }
-        Some(domain) => Err(compact_failure(
-            json,
-            format!("Domain \"{domain}\" not found in config."),
-        )),
         None => Ok(domains),
     }
 }

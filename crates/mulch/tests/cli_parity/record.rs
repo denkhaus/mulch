@@ -2131,6 +2131,30 @@ fn record_args(name: &str, mode: &[&str]) -> Vec<String> {
 /// names the hook and the fate; the parser tail is runtime vocabulary
 /// (redacted by the normalizer — the reference's Bun texts differ
 /// from ours AND from Node's). Ungated: nothing reference-comparable.
+/// The binary-level case (mulch-5708): a hook printing garbage stdout
+/// takes the mutation-ignored path; the warning's LAW bytes (prefix +
+/// fate) are pinned through the normalizer — the parser tail is
+/// runtime vocabulary, redacted. Ungated: nothing reference-comparable.
+#[test]
+fn record_hook_garbage_stdout_warns_the_law_bytes() {
+    let dir = TempDir::new("garbage-o");
+    let ml = Path::new(mulch_bin());
+    hook_fixture(
+        &dir.0,
+        ml,
+        "hooks:\n  pre-record:\n    - 'cat >/dev/null; printf not-json-at-all'\n",
+    );
+    let args = record_args("p1", &[]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let run = run_in(&dir.0, ml, &refs);
+    assert_eq!(run.code, 0, "a warn-only path: the record still writes");
+    let normalized = normalize_hook_parse_warning(run.stderr.trim_end());
+    assert!(
+        normalized.starts_with("Warning: hook `cat >/dev/null; printf not-json-at-all` printed non-JSON on stdout (mutation ignored): <parser text>"),
+        "law bytes with the tail redacted: {normalized}"
+    );
+}
+
 #[test]
 fn record_hook_garbage_stdout_law_bytes() {
     use super::support::normalize_hook_parse_warning;
@@ -2144,6 +2168,7 @@ fn record_hook_garbage_stdout_law_bytes() {
     assert_eq!(normalize_hook_parse_warning("plain"), "plain");
 }
 
+/// A blocking pre-record hook (exit 3) aborts the flag path on both
 /// channels with the reference's reason text, forwarding the hook's
 /// stderr first; nothing is written.
 #[test]
