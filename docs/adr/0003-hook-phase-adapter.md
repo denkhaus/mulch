@@ -7,17 +7,16 @@
   deliberately printless: it returns per-execution diagnostics and
   every caller owns forwarding. Sprint 42 then wired five consumers
   (record single + batch, prime, prune, compact `--auto` and
-  `--apply`), which produced seven call sites that each re-implement
-  the same ritual — `run_hooks` → forward stderr → blocked? →
-  fallback reason → (for the mutable pre-record events) validate and
-  adopt the hook's record. The channel half was already folded
-  (`forward_hook_stderr`, `print_hook_warnings`, `hook_cwd`), but the
-  ritual itself still lives per site, the mutation-adoption gate has
-  TWO homes (`pre_record_phase` and the inline batch loop), and each
-  site spells the cwd policy differently (`Result` in record,
-  `unwrap_or_default` in prime/compact — an empty path that fails at
-  spawn and would spuriously block a `pre-*` event — and
-  `unwrap_or_else(".")` in prune).
+  `--apply`): eight call sites that each re-implemented the same
+  ritual — `run_hooks` → forward stderr → blocked? → fallback reason
+  → (for the mutable pre-record events) validate and adopt the
+  hook's record. Sprint 42's review fold had already collapsed the
+  channel half into `forward_hook_stderr`, `print_hook_warnings` and
+  `hook_cwd` (before it, the cwd spellings were `Result`,
+  `unwrap_or_default` and `unwrap_or_else(".")` — an empty path fails
+  at spawn and would spuriously block a `pre-*` event). What was left
+  per site: the ritual itself, and the mutation-adoption gate with
+  TWO homes (`pre_record_phase` and the inline batch loop).
 
 ## Decision
 
@@ -64,8 +63,8 @@ id regeneration) is a different gate and stays in `compact.rs`.
   policy into a CLI module keeps that boundary exactly as it is; the
   engine stays embeddable and printless.
 - The ritual is one law with one ordering rule (stderr before the
-  block error, before the warnings). Seven copies mean seven chances
-  to reorder it.
+  block error, before the warnings). Eight copies meant eight
+  chances to reorder it.
 - The adoption gate is the sharpest case: change the guard, the
   verdict call, or the invalid-mutation text once and you must
   remember the second copy. Sprint 42's spec review found exactly
@@ -85,9 +84,9 @@ id regeneration) is a different gate and stays in `compact.rs`.
   place to read, but the adapter then knows write-phase details of
   one command; rejected (user decision 2026-10-25).
 - A `Failure` factory (closure) inside the adapter: shorter call
-  sites, but three commands need three different failure shapes
-  (record's two-channel envelope, prime/prune's plain
-  `handled_on_stderr`, compact's json-gated `compact_failure`);
+  sites, but the five renderings differ (record's two-channel
+  envelope, prime/prune's plain `handled_on_stderr`, compact's
+  json-gated `compact_failure`, batch's `Record {i}:` string);
   rejected in favour of returning the bare reason.
 - Move the adoption law into the lib next to `full_verdict`: it is a
   CLI-phase law (it reads a `HookResult`), and the lib would need a
@@ -103,5 +102,14 @@ id regeneration) is a different gate and stays in `compact.rs`.
   the adoption table (keep / replace / invalid / echo) is testable
   without a store or a CLI run.
 - Post-* consumers (warn-only) treat `run`'s `Result` as a diagnostic:
-  an unresolvable cwd skips the observation hook with a warning, it
-  never fails a command whose write already happened.
+  an unresolvable cwd skips the observation hook with a warning
+  (carrying the actual failure message), it never fails a command
+  whose write already happened.
+- The cwd is now resolved PER PHASE, not per command: compact `--auto`
+  and record `--batch` used to abort before their loops, so (a) a run
+  with no compactable group / empty batch now succeeds despite an
+  unreadable cwd and (b) a cwd failure after some groups were written
+  returns a `Failure` after partial writes. Both need the process's
+  cwd to be unlinked under it; they are recorded here rather than
+  engineered around, because resolving once would re-introduce a
+  second cwd owner.

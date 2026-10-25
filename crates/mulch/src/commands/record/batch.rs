@@ -176,7 +176,7 @@ pub(super) fn stdin_batch(
                 HookPhase::run(mulch::hooks::HookEvent::PreRecord, payload, store, "record")?;
             // Warnings count even for a blocked record (the reference
             // pushes them before the blocked check).
-            warnings.extend(phase.warnings().iter().cloned());
+            warnings.extend_from_slice(phase.warnings());
             if let Some(reason) = phase.blocked_reason(super::BLOCK_DEFAULT) {
                 errors.push(Value::String(format!("Record {index}: {reason}")));
                 continue;

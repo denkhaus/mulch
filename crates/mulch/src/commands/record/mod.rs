@@ -354,7 +354,7 @@ fn pre_record_phase(
         Adopt::Replace(adopted) => record = ensure_write_id(store.registry(), adopted),
         Adopt::Invalid(reason) => return Err(hook_failure(reason)),
     }
-    Ok((record, phase.warnings().to_vec()))
+    Ok((record, phase.into_warnings()))
 }
 
 /// The flag path's post-record phase: fires for actual writes only

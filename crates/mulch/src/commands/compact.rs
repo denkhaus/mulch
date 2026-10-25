@@ -390,10 +390,11 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
                 &store,
                 "compact",
             )?;
-            let replacement = if let Some(reason) = phase.blocked_reason(PRE_COMPACT_BLOCKED) {
+            if let Some(reason) = phase.blocked_reason(PRE_COMPACT_BLOCKED) {
                 warnings.push(group_warning(&domain, &candidate.r#type, reason));
                 continue;
-            } else {
+            }
+            let replacement =
                 match adopt_replacement(phase.payload(), &truthy_ids(&matched), store.registry()) {
                     Err(reason) => {
                         warnings.push(group_warning(&domain, &candidate.r#type, &reason));
@@ -407,8 +408,7 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
                         merge_records(&matched, row, &now_iso(), store.registry())
                             .map_err(|message| compact_failure(opts.json, message))?
                     }
-                }
-            };
+                };
             let remove: HashSet<Option<String>> = matched.iter().map(id_of).collect();
             updated.retain(|record| !remove.contains(&id_of(record)));
             updated.push(replacement);

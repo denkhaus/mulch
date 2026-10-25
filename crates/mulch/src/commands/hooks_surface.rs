@@ -21,7 +21,7 @@ use crate::output::Failure;
 /// DURING the run; forwarding the collected bytes right after the
 /// `run_hooks` call (before the command prints anything else) produces
 /// the same byte stream.
-pub(crate) fn forward_hook_stderr(executions: &[HookExecution]) {
+fn forward_hook_stderr(executions: &[HookExecution]) {
     use std::io::Write as _;
     let mut stderr = std::io::stderr();
     for execution in executions {
@@ -68,6 +68,7 @@ fn hook_cwd(command: &str) -> Result<PathBuf, Failure> {
 /// (`run` already forwarded stderr). Consumers read the resolved
 /// outcome instead of re-implementing run → forward → block →
 /// adopt.
+#[must_use = "a phase carries the block and adoption outcome; dropping it skips the gate"]
 #[derive(Debug)]
 pub(crate) struct HookPhase(HookResult);
 
@@ -98,9 +99,11 @@ impl HookPhase {
     }
 
     /// The block reason when the event blocked, `fallback` standing in
-    /// for an engine result that carried none. Each caller renders its
-    /// own `Failure` (the reference's four shapes are parity-pinned)
-    /// and keeps its own fallback wording.
+    /// for an engine result that carried none. The result borrows
+    /// either the engine's reason or `fallback` (the reference's `??`
+    /// is nullish-only: an EMPTY reason still wins). Each caller
+    /// renders its own `Failure` (the reference's five renderings are
+    /// parity-pinned) and keeps its own fallback wording.
     pub(crate) fn blocked_reason<'a>(&'a self, fallback: &'a str) -> Option<&'a str> {
         self.0
             .blocked
@@ -111,7 +114,8 @@ impl HookPhase {
     /// observation hook with a warning instead of failing the caller —
     /// the write already happened, and the reference's spawn failure
     /// is a warn-only hook failure too. Returns the warnings for the
-    /// caller's channel.
+    /// caller's channel; a skipped phase's warning carries the actual
+    /// failure message, not a guessed cause.
     pub(crate) fn run_warn_only(
         event: HookEvent,
         payload: Value,
@@ -119,11 +123,8 @@ impl HookPhase {
         command: &str,
     ) -> Vec<String> {
         match Self::run(event, payload, store, command) {
-            Ok(phase) => phase.warnings().to_vec(),
-            Err(_) => vec![format!(
-                "{} hook skipped: the working directory is unavailable",
-                event.key()
-            )],
+            Ok(phase) => phase.into_warnings(),
+            Err(failure) => vec![format!("{} hook skipped: {}", event.key(), failure.message)],
         }
     }
 
@@ -132,6 +133,13 @@ impl HookPhase {
     /// channel.
     pub(crate) fn warnings(&self) -> &[String] {
         &self.0.warnings
+    }
+
+    /// Consumes the phase for its warnings: the hand-off sites that
+    /// OWN the warning list (record's report, the post-* loop) move it
+    /// instead of cloning.
+    pub(crate) fn into_warnings(self) -> Vec<String> {
+        self.0.warnings
     }
 
     /// The (possibly mutated) payload; input when no mutable hook
@@ -175,6 +183,7 @@ impl HookPhase {
 }
 
 /// A `pre-record` adoption decision.
+#[must_use = "an invalid adoption is a hook rejection; dropping it writes the wrong record"]
 #[derive(Debug)]
 pub(crate) enum Adopt {
     /// No mutation (or an untruthy one): keep the record the caller
@@ -229,8 +238,36 @@ mod tests {
         })
     }
 
+    /// A blocked phase with an optional engine reason.
+    fn blocked_phase(reason: Option<&str>) -> HookPhase {
+        HookPhase(HookResult {
+            ran_any:      true,
+            blocked:      true,
+            block_reason: reason.map(str::to_string),
+            warnings:     Vec::new(),
+            payload:      Value::Null,
+            executions:   Vec::new(),
+        })
+    }
+
     fn registry() -> mulch::Registry {
         mulch::Registry::builtins()
+    }
+
+    #[test]
+    fn blocked_reason_prefers_the_engine_reason_and_falls_back() {
+        assert_eq!(phase(false, Value::Null).blocked_reason("fallback"), None);
+        assert_eq!(
+            blocked_phase(Some("boom")).blocked_reason("fallback"),
+            Some("boom")
+        );
+        // The reference's `??` is nullish-only: an EMPTY reason is a
+        // reason and beats the fallback.
+        assert_eq!(blocked_phase(Some("")).blocked_reason("fallback"), Some(""));
+        assert_eq!(
+            blocked_phase(None).blocked_reason("fallback"),
+            Some("fallback")
+        );
     }
 
     #[test]
@@ -246,6 +283,12 @@ mod tests {
         assert!(matches!(absent.adopt_record(&registry()), Adopt::Keep));
         let null = phase(true, json!({"record": null}));
         assert!(matches!(null.adopt_record(&registry()), Adopt::Keep));
+        // The rest of the JS truthiness table: false, zero and the
+        // empty string never adopt.
+        for falsy in [json!(false), json!(0), json!("")] {
+            let skipped = phase(true, json!({"record": falsy}));
+            assert!(matches!(skipped.adopt_record(&registry()), Adopt::Keep));
+        }
     }
 
     #[test]
@@ -261,6 +304,10 @@ mod tests {
         match hooked.adopt_record(&registry()) {
             Adopt::Replace(record) => {
                 assert_eq!(record.get("name").and_then(Value::as_str), Some("n"));
+                // The adapter never stamps the write-time id: the flag
+                // path stamps after adopting, batch leaves it to the
+                // write.
+                assert!(!record.contains_key("id"), "adopted record carries an id");
             }
             other => panic!("expected Replace, got {other:?}"),
         }
@@ -271,10 +318,14 @@ mod tests {
         let broken = phase(true, json!({"record": {"type": "pattern"}}));
         match broken.adopt_record(&registry()) {
             Adopt::Invalid(reason) => {
+                // The parity-pinned shape: ajv's sub-errors joined with
+                // "; " after the fixed prefix.
                 assert!(
                     reason.starts_with("pre-record hook produced an invalid record: "),
                     "unexpected text: {reason}"
                 );
+                assert!(reason.contains("must have required property"));
+                assert!(reason.contains("; "), "sub-errors not joined: {reason}");
             }
             other => panic!("expected Invalid, got {other:?}"),
         }
