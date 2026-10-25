@@ -185,7 +185,7 @@ pub fn merge_outcomes(existing: &Value, mut incoming: Map<String, Value>) -> Map
 ///
 /// # Errors
 ///
-/// [`Error::Write`] on I/O failure.
+/// [`crate::error::Error::Write`] on I/O failure.
 pub fn write_records(
     registry: &crate::ids::Registry,
     path: &Path,

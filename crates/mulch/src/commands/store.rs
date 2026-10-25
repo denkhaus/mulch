@@ -86,7 +86,7 @@ fn open_located(
 }
 
 /// The crate-local alias for the output module's chain renderer.
-pub(crate) fn chain_message_from(error: &mulch::Error) -> String {
+fn chain_message_from(error: &mulch::Error) -> String {
     crate::output::chain_message(error)
 }
 

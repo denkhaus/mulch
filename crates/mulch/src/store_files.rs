@@ -14,6 +14,9 @@
 //!   a 0-byte file.
 //! - [`StoreFiles::append_domain_line`] — append verbatim, existing bytes
 //!   preserved.
+//! - [`StoreFiles::rewrite_domain_text`] — replace a domain file's bytes
+//!   verbatim, for the line-preserving repair passes that rebuild the body
+//!   themselves (ADR-0004).
 //! - [`StoreFiles::rewrite_archive`] / [`StoreFiles::archive_records`] — the
 //!   soft-archive writes (reference `writeArchiveFile` / `archiveRecords`):
 //!   banner + compact lines, no id assignment; an empty record set still writes
@@ -21,10 +24,20 @@
 //! - [`StoreFiles::move_to_archive`] / [`StoreFiles::revive`] — the two-file
 //!   transaction seam owning the live↔archive write ORDER (mulch-4cde);
 //!   failures carry [`TransactionError`] naming the failed half.
+//! - [`StoreFiles::write_config`] / [`StoreFiles::remove_domain`] — config
+//!   writes always go through the canonical YAML serializer with defaults
+//!   backfilled (`Config::to_yaml`), and domain removal keeps the config's
+//!   domain order.
 //!
-//! Config writes always go through the canonical YAML serializer with
-//! defaults backfilled (`Config::to_yaml`), and domain removal keeps the
-//! config's domain order.
+//! Every one of those writes goes through the module's one atomic
+//! temp+rename (`atomic_write`), so a lock-free reader — status, prime,
+//! validate — never observes a half-written file.
+//!
+//! Read policies for domain TEXT (as opposed to parsed records):
+//! - [`StoreFiles::read_domain_text`] — the raw body, `None` when the file is
+//!   absent, an error on non-UTF-8 (ADR-0004).
+//! - [`StoreFiles::read_lenient`] / [`StoreFiles::read_domain`] — parsed views,
+//!   both treating a missing file as empty.
 
 use std::path::{Path, PathBuf};
 
@@ -213,12 +226,16 @@ impl StoreFiles {
 
     /// The live expertise file of a domain.
     ///
-    /// A PATH accessor for lifecycle operations (unlink, rename) and
-    /// for the tests. Text IO goes through [`Self::read_domain_text`]
-    /// / [`Self::rewrite_domain_text`], record writes through
-    /// [`Self::rewrite_domain`] / [`Self::append_domain_line`] — so
-    /// every write keeps the one atomic temp+rename law instead of
-    /// handing callers a path to `fs::write` into.
+    /// A PATH accessor: needed where the file itself is the subject —
+    /// lifecycle operations (unlink in `delete`, rename in `move`), the
+    /// existence probe in doctor's orphan pass, and the tests. Text IO
+    /// belongs to [`Self::read_domain_text`] /
+    /// [`Self::rewrite_domain_text`] (ADR-0004), record writes to
+    /// [`Self::rewrite_domain`] / [`Self::append_domain_line`] /
+    /// [`Self::rewrite_archive`] — every one of those keeps the
+    /// module's single atomic temp+rename law. A caller taking this
+    /// path to `std::fs::write` re-opens the torn-read hole the methods
+    /// exist to close.
     pub fn domain_path(&self, domain: &str) -> PathBuf {
         self.root.join("expertise").join(format!("{domain}.jsonl"))
     }
@@ -244,7 +261,7 @@ impl StoreFiles {
     /// Replaces one domain file's bytes with `body`, verbatim — no
     /// trailing newline is added, the caller owns the body (the
     /// line-preserving repair passes rebuild it line by line) — via
-    /// the same [`atomic_write`] as every other store write.
+    /// the same `atomic_write` as every other store write.
     ///
     /// # Errors
     ///
@@ -427,18 +444,7 @@ impl StoreFiles {
         if !records.is_empty() {
             body.push('\n');
         }
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos());
-        let temp = PathBuf::from(format!("{}.tmp.{unique:x}", path.display()));
-        std::fs::write(&temp, body).map_err(|source| Error::Write {
-            path: temp.clone(),
-            source,
-        })?;
-        std::fs::rename(&temp, &path).map_err(|source| {
-            std::fs::remove_file(&temp).ok();
-            Error::Write { path, source }
-        })
+        atomic_write(&path, body.as_bytes())
     }
 
     /// Moves records into a domain's soft-archive (`archiveRecords`):
@@ -879,6 +885,46 @@ mod tests {
             .filter(|name| name.contains(".tmp."))
             .collect();
         assert!(leftovers.is_empty(), "scratch files left: {leftovers:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn domain_text_write_replaces_the_inode() {
+        // The discriminator a plain `fs::write` fails: rename swaps the
+        // inode, an in-place write mutates the bytes a hard link shares.
+        let (root, store) = scratch("text-inode");
+        let expertise = root.join(".mulch/expertise");
+        std::fs::create_dir_all(&expertise).expect("expertise dir");
+        let path = expertise.join("dev.jsonl");
+        std::fs::write(&path, "old\n").expect("seed");
+        let witness = expertise.join("witness");
+        std::fs::hard_link(&path, &witness).expect("hard link");
+
+        store.rewrite_domain_text("dev", "new\n").expect("write");
+        assert_eq!(std::fs::read_to_string(&path).expect("file"), "new\n");
+        // The sibling link still sees the OLD inode's bytes.
+        assert_eq!(std::fs::read_to_string(&witness).expect("witness"), "old\n");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn domain_text_read_rejects_non_utf8() {
+        // The repair passes re-emit the text they read, so a lossy
+        // decode MUST be a typed error rather than changed bytes.
+        let (root, store) = scratch("text-binary");
+        let expertise = root.join(".mulch/expertise");
+        std::fs::create_dir_all(&expertise).expect("expertise dir");
+        std::fs::write(expertise.join("dev.jsonl"), [0xff, 0xfe, b'\n']).expect("seed");
+
+        match store.read_domain_text("dev") {
+            Err(Error::Read { path, .. }) => {
+                assert!(
+                    path.ends_with(".mulch/expertise/dev.jsonl"),
+                    "path: {path:?}"
+                );
+            }
+            other => panic!("expected a typed read error, got {other:?}"),
+        }
         std::fs::remove_dir_all(&root).ok();
     }
 }

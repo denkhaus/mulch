@@ -1072,7 +1072,7 @@ fn migrate_legacy_line(record: &Value) -> Option<String> {
 fn read_domain_text(store: &mulch::StoreFiles, domain: &str) -> Result<Option<String>, Failure> {
     store
         .read_domain_text(domain)
-        .map_err(|source| Failure::handled("doctor", store_error(&source)))
+        .map_err(|source| store_failure(&source))
 }
 
 /// The store's atomic domain-text rewrite for the two line-preserving
@@ -1080,13 +1080,7 @@ fn read_domain_text(store: &mulch::StoreFiles, domain: &str) -> Result<Option<St
 fn write_domain_text(store: &mulch::StoreFiles, domain: &str, body: &str) -> Result<(), Failure> {
     store
         .rewrite_domain_text(domain, body)
-        .map_err(|source| Failure::handled("doctor", store_error(&source)))
-}
-
-/// A store failure in doctor's handled shape (the shared chain
-/// rendering, like every other command's `persist`).
-fn store_error(source: &mulch::Error) -> String {
-    crate::commands::store::chain_message_from(source)
+        .map_err(|source| store_failure(&source))
 }
 
 /// The `--json` shape of one check.
