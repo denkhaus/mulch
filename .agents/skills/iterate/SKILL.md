@@ -244,6 +244,15 @@ suite proved the eight call sites unchanged while `blocked_reason`'s
 three arms — engine reason, empty reason, fallback — and the falsy
 adoption rows went untested until the review asked; a `#[must_use]`
 seam plus private internals stops consumers bypassing it).
+**A pin must name the wrong implementation it catches — and be seen red
+against it**: an assertion of absence ("no scratch file left", "no panic",
+"compiles") passes against the naive implementation too. Before writing a
+consolidation claim, COUNT the copies of the mechanism with a grep, and
+before trusting a new test, patch the mechanism to the naive form and watch
+the test fail (sprint 44: ADR-0004 claimed one atomicity owner while
+`rewrite_archive` still held its own temp+rename, and the round-trip test
+would have passed against a plain `fs::write`; the hard-link inode witness
+was verified red, and the archive copy was folded).
 Clean up reviewer children.
 A sprint is NOT closed until its SHORT reflection (step 6) ran and
 `sprints_reflected` caught up.
