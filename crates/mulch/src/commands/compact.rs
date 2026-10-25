@@ -565,8 +565,7 @@ fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Fail
         .map(|(_, line)| line.record.clone())
         .collect();
     remaining.push(replacement.clone());
-    // Both halves share compact's handled shape (the closure shadows
-    // the archived-set name only after the last use).
+    // Both halves share compact's handled shape.
     store
         .move_to_archive(domain, &remaining, &source, &now_iso(), "compacted")
         .map_err(|error| {

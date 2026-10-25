@@ -162,8 +162,8 @@ pub(crate) fn resolve_failure(command: &str, error: ResolveError) -> Failure {
 /// The strict flag-value failure (utils/numeric-flags.ts wording,
 /// mulch-a878): `Error: --<flag> must be a <what> (got "<raw>").` on
 /// stderr; the JSON envelope drops the `Error: ` prefix (the shared
-/// handled law). One owner beside [`persist`] — rank, ready, and
-/// prime carried private copies.
+/// handled law). One owner beside [`super::store::persist`] — rank,
+/// ready, and prime carried private copies.
 pub(crate) fn flag_value_failure(
     command: &'static str,
     flag: &str,

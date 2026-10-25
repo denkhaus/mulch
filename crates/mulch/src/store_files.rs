@@ -52,10 +52,10 @@ const ARCHIVE_BANNER: &str = "# ARCHIVED — not for active use. Run `mulch rest
 pub enum TransactionError {
     /// The live domain rewrite failed.
     #[error("live rewrite failed: {0}")]
-    Live(Error),
+    Live(#[source] Error),
     /// The soft-archive write failed.
     #[error("archive write failed: {0}")]
-    Archive(Error),
+    Archive(#[source] Error),
 }
 
 impl TransactionError {

@@ -65,7 +65,7 @@ fn main() -> ExitCode {
     }
     let timing = cli.opts.timing;
 
-    let outcome = commands::dispatch(&cli, command);
+    let outcome = commands::dispatch(&cli.opts, command);
     if timing {
         report_timing(started);
     }

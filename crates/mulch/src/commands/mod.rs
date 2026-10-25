@@ -32,18 +32,17 @@ mod status;
 mod store;
 mod validate;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Command, GlobalOpts};
 use crate::output::Failure;
 
 /// Runs the parsed command.
-pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
-    let _ = &cli.command;
+pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failure> {
     match command {
-        Command::Init => init::run(&cli.opts),
-        Command::Status => status::run(&cli.opts),
-        Command::Validate => validate::run(&cli.opts),
-        Command::Doctor { fix } => doctor::run(&cli.opts, *fix),
-        Command::Prune(args) => prune::run(&cli.opts, args),
+        Command::Init => init::run(opts),
+        Command::Status => status::run(opts),
+        Command::Validate => validate::run(opts),
+        Command::Doctor { fix } => doctor::run(opts, *fix),
+        Command::Prune(args) => prune::run(opts, args),
         Command::Archive {
             domain,
             id,
@@ -51,23 +50,23 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
             reason,
             dry_run,
         } => archive::run(
-            &cli.opts,
+            opts,
             domain,
             id.as_deref(),
             records.as_deref(),
             reason,
             *dry_run,
         ),
-        Command::Restore { id } => restore::run(&cli.opts, id),
-        Command::Compact(args) => compact::run(&cli.opts, args),
-        Command::Add { domain } => add::run(&cli.opts, domain.clone()),
-        Command::Record(args) => record::run(&cli.opts, args),
-        Command::Edit(args) => edit::run(&cli.opts, args),
+        Command::Restore { id } => restore::run(opts, id),
+        Command::Compact(args) => compact::run(opts, args),
+        Command::Add { domain } => add::run(opts, domain.clone()),
+        Command::Record(args) => record::run(opts, args),
+        Command::Edit(args) => edit::run(opts, args),
         Command::Outcome {
             domain,
             id,
             outcome,
-        } => outcome::run(&cli.opts, domain, id, outcome),
+        } => outcome::run(opts, domain, id, outcome),
         Command::Delete {
             domain,
             id,
@@ -75,7 +74,7 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
             all_except,
             dry_run,
         } => delete::run(
-            &cli.opts,
+            opts,
             id.as_deref(),
             records.as_deref(),
             all_except.as_deref(),
@@ -86,30 +85,23 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
             domain,
             yes,
             dry_run,
-        } => delete_domain::run(&cli.opts, domain, *yes, *dry_run),
+        } => delete_domain::run(opts, domain, *yes, *dry_run),
         Command::MoveRecord {
             source_domain,
             id,
             target_domain,
             dry_run,
             force,
-        } => move_cmd::run(
-            &cli.opts,
-            source_domain,
-            id,
-            target_domain,
-            *dry_run,
-            *force,
-        ),
-        Command::Query(args) => query::run(&cli.opts, args),
-        Command::Search(args) => search::run(&cli.opts, args),
+        } => move_cmd::run(opts, source_domain, id, target_domain, *dry_run, *force),
+        Command::Query(args) => query::run(opts, args),
+        Command::Search(args) => search::run(opts, args),
         Command::Rank {
             domain,
             record_type,
             limit,
             min_score,
         } => rank::run(
-            &cli.opts,
+            opts,
             domain.as_deref(),
             record_type.as_deref(),
             limit,
@@ -119,13 +111,8 @@ pub(crate) fn dispatch(cli: &Cli, command: &Command) -> Result<(), Failure> {
             limit,
             domain,
             since,
-        } => ready::run(
-            &cli.opts,
-            limit.as_str(),
-            domain.as_deref(),
-            since.as_deref(),
-        ),
-        Command::Learn { since } => learn::run(&cli.opts, since),
-        Command::Prime(args) => prime::run(&cli.opts, args),
+        } => ready::run(opts, limit.as_str(), domain.as_deref(), since.as_deref()),
+        Command::Learn { since } => learn::run(opts, since),
+        Command::Prime(args) => prime::run(opts, args),
     }
 }
