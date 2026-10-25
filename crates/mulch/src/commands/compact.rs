@@ -405,8 +405,17 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
                 }
                 Ok(Some(record)) => record,
                 Ok(None) => {
+                    // The reference's mergeRecords throws
+                    // `Unknown record type: <type>` here — an uncaught
+                    // throw dumps a Bun stack trace (the same crash
+                    // class as the manual-strategy group); we render
+                    // the thrown message as a clean error (mulch-2809,
+                    // README DEVIATIONS).
                     let Some(row) = store.registry().row(&candidate.r#type) else {
-                        continue;
+                        return Err(compact_failure(
+                            opts.json,
+                            format!("Unknown record type: {}", candidate.r#type),
+                        ));
                     };
                     // The mechanical merge is a lib law (ADR-0005);
                     // the channel renders the two refusals here.

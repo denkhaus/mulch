@@ -37,7 +37,41 @@ pub struct ShelfLife {
     pub observational: u64,
 }
 
+/// One rung of the governance ladder. The ladder itself is a format
+/// law — `>= hard_limit` then `>= warn_entries` then `>= max_entries`,
+/// checked in exactly that order — so the verdict lives here beside
+/// the values it reads (ADR-0005: registry/config-named laws get a
+/// lib body; the four channel WORDINGS stay in the commands and are
+/// byte-pinned by the parity batteries).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// At or over `hard_limit`.
+    Hard,
+    /// At or over `warn_entries` (and under `hard_limit`).
+    Warn,
+    /// At or over `max_entries` (and under `warn_entries`).
+    Approaching,
+    /// Below every threshold.
+    Ok,
+}
+
 impl Governance {
+    /// The ladder verdict for a live-record count. The fired rung's
+    /// threshold is the matching field — the callers that name it
+    /// (`doctor`) read it off this struct in their match arms.
+    #[must_use]
+    pub fn tier(self, count: u64) -> Tier {
+        if count >= self.hard_limit {
+            Tier::Hard
+        } else if count >= self.warn_entries {
+            Tier::Warn
+        } else if count >= self.max_entries {
+            Tier::Approaching
+        } else {
+            Tier::Ok
+        }
+    }
+
     /// The reference governance defaults (100/150/200) — the format
     /// contract, owned here (mulch-53cb).
     #[must_use]
@@ -488,6 +522,47 @@ fn yaml_str(s: &str) -> serde_yaml::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ladder() -> Governance {
+        Governance {
+            max_entries:  10,
+            warn_entries: 15,
+            hard_limit:   20,
+        }
+    }
+
+    /// The ladder's decision table. Catches: (a) `>` where the law is
+    /// `>=` (every boundary count below must fire its rung), (b) a
+    /// reordered ladder (a count above TWO thresholds must take the
+    /// HIGHER rung — checking warn before hard would answer Warn for
+    /// 25), (c) a lost arm (an under-everything count must stay Ok).
+    #[test]
+    fn tier_boundaries_and_order() {
+        let cases = [
+            (9_u64, Tier::Ok),
+            (10, Tier::Approaching),
+            (14, Tier::Approaching),
+            (15, Tier::Warn),
+            (19, Tier::Warn),
+            (20, Tier::Hard),
+            (25, Tier::Hard),
+            (u64::MAX, Tier::Hard),
+        ];
+        for (count, want) in cases {
+            assert_eq!(ladder().tier(count), want, "count {count}");
+        }
+    }
+
+    /// The defaults the parity batteries see (100/150/200): the same
+    /// ladder at reference scale.
+    #[test]
+    fn tier_at_reference_defaults() {
+        let governance = Governance::reference_default();
+        assert_eq!(governance.tier(99), Tier::Ok);
+        assert_eq!(governance.tier(100), Tier::Approaching);
+        assert_eq!(governance.tier(150), Tier::Warn);
+        assert_eq!(governance.tier(200), Tier::Hard);
+    }
 
     const REFERENCE_SERIALIZED: &str = "\
 version: '1'

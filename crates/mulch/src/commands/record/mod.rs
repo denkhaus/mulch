@@ -305,29 +305,6 @@ fn hook_failure(reason: String) -> Failure {
     failure
 }
 
-/// Stamps the write-time id onto an adopted record: appended LAST
-/// when the hook left none (the reference's `if (!record.id)` law),
-/// kept verbatim — value AND position — when it carried one.
-fn ensure_write_id(
-    registry: &mulch::Registry,
-    mut record: Map<String, Value>,
-) -> Map<String, Value> {
-    if !record.contains_key("id") {
-        let record_type =
-            mulch::effective_type(record.get("type").and_then(Value::as_str)).to_string();
-        let id_key = registry.id_key_field(&record_type);
-        let id_value = record
-            .get(id_key)
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        record.insert(
-            "id".into(),
-            Value::String(mulch::record_id(&record_type, id_value)),
-        );
-    }
-    record
-}
-
 /// The flag path's pre-record phase: runs the hook family outside
 /// every lock, payload `{domain, record}` id-less. A block aborts
 /// before any read with the reason on both channels; a valid mutation
@@ -351,7 +328,7 @@ fn pre_record_phase(
     let mut record = record;
     match phase.adopt_record(store.registry()) {
         Adopt::Keep => {}
-        Adopt::Replace(adopted) => record = ensure_write_id(store.registry(), adopted),
+        Adopt::Replace(adopted) => record = mulch::ensure_write_id(store.registry(), adopted),
         Adopt::Invalid(reason) => return Err(hook_failure(reason)),
     }
     Ok((record, phase.into_warnings()))

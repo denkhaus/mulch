@@ -185,6 +185,11 @@ expectation (the parity rule: never silently):
   The reference crashes with an uncaught-throw stack dump when a
   `manual` custom type reaches the mechanical merge; this port prints
   the thrown message as a plain `Error:` line (exit 1) and leaves the
+  store untouched. The same crash class (mulch-2809): a group of
+  records whose type is not registered — reachable under
+  `--allow-unknown-types` — makes the reference's `mergeRecords`
+  throw `Unknown record type: <type>` uncaught; this port prints the
+  thrown message as a plain `Error:` line (exit 1) and leaves the
   store untouched.
 - **Three doctor checks evaluate as unconditional pass** on clean
   stores only: `domain-violations`, `domain-rules-compatibility`,

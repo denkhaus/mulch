@@ -811,18 +811,19 @@ fn governance_limits(governance: &mulch::Governance, domains: &[DomainLines]) ->
     let mut worst = Status::Pass;
     for domain in domains {
         let count = u64::try_from(records_of(domain).count()).unwrap_or(0);
-        let (tier, threshold, wording) = if count >= governance.hard_limit {
-            (Status::Fail, governance.hard_limit, "over hard limit of")
-        } else if count >= governance.warn_entries {
-            (
+        // The ladder verdict is the lib's (ADR-0005); the check
+        // statuses and detail wordings stay here.
+        let (tier, threshold, wording) = match governance.tier(count) {
+            mulch::Tier::Hard => (Status::Fail, governance.hard_limit, "over hard limit of"),
+            mulch::Tier::Warn => (
                 Status::Warn,
                 governance.warn_entries,
                 "over warn threshold of",
-            )
-        } else if count >= governance.max_entries {
-            (Status::Warn, governance.max_entries, "approaching limit of")
-        } else {
-            continue;
+            ),
+            mulch::Tier::Approaching => {
+                (Status::Warn, governance.max_entries, "approaching limit of")
+            }
+            mulch::Tier::Ok => continue,
         };
         details.push(format!(
             "{}: {count} records ({wording} {threshold})",

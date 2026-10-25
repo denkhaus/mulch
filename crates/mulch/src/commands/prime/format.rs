@@ -277,14 +277,11 @@ fn format_type_counts(counts: &[(String, u64)]) -> String {
 /// `manifestStatusSuffix` — the governance thresholds.
 fn manifest_status_suffix(count: usize, governance: &mulch::Governance) -> String {
     let count = u64::try_from(count).unwrap_or(u64::MAX);
-    if count >= governance.hard_limit {
-        " ⚠ OVER HARD LIMIT — must decompose".into()
-    } else if count >= governance.warn_entries {
-        " ⚠ consider splitting domain".into()
-    } else if count >= governance.max_entries {
-        " — approaching limit".into()
-    } else {
-        String::new()
+    match governance.tier(count) {
+        mulch::Tier::Hard => " ⚠ OVER HARD LIMIT — must decompose".into(),
+        mulch::Tier::Warn => " ⚠ consider splitting domain".into(),
+        mulch::Tier::Approaching => " — approaching limit".into(),
+        mulch::Tier::Ok => String::new(),
     }
 }
 
@@ -468,14 +465,11 @@ pub(crate) fn manifest_payload(
             }
             row.insert("type_counts".into(), Value::Object(counts));
             let count = u64::try_from(domain.count).unwrap_or(u64::MAX);
-            let status = if count >= governance.hard_limit {
-                "over_hard_limit"
-            } else if count >= governance.warn_entries {
-                "over_warn_threshold"
-            } else if count >= governance.max_entries {
-                "approaching_limit"
-            } else {
-                "ok"
+            let status = match governance.tier(count) {
+                mulch::Tier::Hard => "over_hard_limit",
+                mulch::Tier::Warn => "over_warn_threshold",
+                mulch::Tier::Approaching => "approaching_limit",
+                mulch::Tier::Ok => "ok",
             };
             let mut health = Map::new();
             health.insert("status".into(), Value::String(status.into()));

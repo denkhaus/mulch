@@ -88,12 +88,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     // schema or nothing is written (reference edit.ts).
     let updated = Value::Object(record.clone());
     if let mulch::schema::FullVerdict::Invalid { subs, .. } =
-        crate::commands::store::updated_record_verdict(
-            &store,
-            &args.domain,
-            records[position].line,
-            &updated,
-        )
+        store.updated_line_verdict(&args.domain, records[position].line, &updated)
     {
         return Err(updated_record_failed(&subs, opts.json));
     }

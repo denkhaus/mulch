@@ -184,13 +184,24 @@ impl DomainStatus {
             _ => String::new(),
         };
         let _ = write!(line, "{range}");
-        // Governance thresholds, then rotting (reference order)
-        if count64(self.count) >= self.hard_limit {
-            let _ = write!(line, " ⚠ OVER HARD LIMIT — must decompose");
-        } else if count64(self.count) >= self.warn_entries {
-            let _ = write!(line, " ⚠ consider splitting domain");
-        } else if count64(self.count) >= self.max_entries {
-            let _ = write!(line, " — approaching limit");
+        // Governance thresholds, then rotting (reference order). The
+        // ladder verdict is the lib's (ADR-0005); the wording stays.
+        let ladder = mulch::Governance {
+            max_entries:  self.max_entries,
+            warn_entries: self.warn_entries,
+            hard_limit:   self.hard_limit,
+        };
+        match ladder.tier(count64(self.count)) {
+            mulch::Tier::Hard => {
+                let _ = write!(line, " ⚠ OVER HARD LIMIT — must decompose");
+            }
+            mulch::Tier::Warn => {
+                let _ = write!(line, " ⚠ consider splitting domain");
+            }
+            mulch::Tier::Approaching => {
+                let _ = write!(line, " — approaching limit");
+            }
+            mulch::Tier::Ok => {}
         }
         if self.rotting {
             match self.rotting_days {

@@ -208,7 +208,19 @@ pub fn write_records(
     atomic_write(path, body.as_bytes())
 }
 
-/// Assigns the deterministic id when a record lacks one.
+/// Stamps the write-time id onto an adopted record (reference record
+/// hooks: `if (!record.id)`): appended LAST when the hook left none,
+/// kept verbatim — value AND position — when it carried one.
+///
+/// One of the THREE write-time id laws, each pinned by a different
+/// reference path (mulch-9e28 keeps them side by side here):
+/// - [`assign_missing_id`] — the file-write law (`writeExpertiseFile`):
+///   replaces the id when absent OR not a string; a surviving id keeps its
+///   position.
+/// - [`ensure_write_id`] (below) — the hook-adoption law: replaces only when
+///   ABSENT; a hook-provided id is never touched.
+/// - [`crate::compact::stamp_id`] — the compaction law (`generateRecordId`):
+///   ALWAYS recomputed and moved LAST.
 pub fn assign_missing_id(registry: &crate::ids::Registry, record: &mut Value) {
     let Some(object) = record.as_object_mut() else {
         return;
@@ -224,6 +236,32 @@ pub fn assign_missing_id(registry: &crate::ids::Registry, record: &mut Value) {
         .unwrap_or_default()
         .to_string();
     object.insert("id".into(), Value::String(record_id(&kind, &key_value)));
+}
+
+/// Stamps the write-time id onto an adopted record: appended LAST
+/// when the hook left none (the reference's `if (!record.id)` law),
+/// kept verbatim — value AND position — when it carried one.
+///
+/// The hook-adoption arm of the write-time id trio — see
+/// [`assign_missing_id`]'s doc for the three policies.
+pub fn ensure_write_id(
+    registry: &crate::ids::Registry,
+    mut record: serde_json::Map<String, Value>,
+) -> serde_json::Map<String, Value> {
+    if !record.contains_key("id") {
+        let record_type =
+            crate::ids::effective_type(record.get("type").and_then(Value::as_str)).to_string();
+        let id_key = registry.id_key_field(&record_type);
+        let id_value = record
+            .get(id_key)
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        record.insert(
+            "id".into(),
+            Value::String(crate::ids::record_id(&record_type, id_value)),
+        );
+    }
+    record
 }
 
 #[cfg(test)]

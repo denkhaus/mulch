@@ -39,7 +39,8 @@ mod time;
 mod upsert;
 
 pub use config::{
-    Config, Governance, Prime, SUPPORTED_VERSION, Search, SessionClose, ShelfLife, TierWeights,
+    Config, Governance, Prime, SUPPORTED_VERSION, Search, SessionClose, ShelfLife, Tier,
+    TierWeights,
 };
 pub use error::{Error, Result};
 pub use ids::{
@@ -66,8 +67,8 @@ pub use scoring::{apply_confirmation_boost, confirmation_score};
 pub use store_files::{StoreFiles, StoreLocation, TransactionError};
 pub use time::{date_ms, js_date_ms, now_ms, parse_js_date, time_ago, time_ago_ts, timestamp_ms};
 pub use upsert::{
-    OutcomeEntry, UpsertPlan, assign_missing_id, find_duplicate, merge_outcomes, upsert_plan,
-    write_records,
+    OutcomeEntry, UpsertPlan, assign_missing_id, ensure_write_id, find_duplicate, merge_outcomes,
+    upsert_plan, write_records,
 };
 
 /// The reference implementation this crate is read+write compatible with

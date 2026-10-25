@@ -401,6 +401,41 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
 }
 
 #[test]
+fn compact_auto_unknown_type_group_is_a_clean_error() {
+    // mulch-2809: with --allow-unknown-types the read KEEPS records of
+    // unregistered types, they form a candidate group, and the
+    // reference's mergeRecords throws `Unknown record type: <type>`
+    // uncaught — a Bun stack-dump crash, the same class as the manual
+    // group below. This port renders the thrown message as a clean
+    // Error line and leaves the store untouched (README DEVIATIONS).
+    // Ungated on purpose: the reference's own bytes ARE a stack trace,
+    // so there is nothing byte-comparable to run against.
+    let config = "version: '1'\n\
+domains:\n  dev: {}\n\
+governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\n\
+classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30\n";
+    let stale = days_ago(40);
+    let body = format!(
+        "{{\"type\":\"weird\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"content\":\"w1\"}}\n\
+{{\"type\":\"weird\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"content\":\"w2\"}}\n"
+    );
+    let (ours, _theirs) = twin_seeded("cp-unknown", Some(config), &[("dev", body.as_str())], &[]);
+    let before = read_store_file(&ours.0, "expertise/dev.jsonl");
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact",
+        "--auto",
+        "--yes",
+        "--allow-unknown-types",
+    ]);
+    assert_eq!(run.code, 1);
+    // The summary block prints before the apply phase reaches the
+    // merge (same flow as the manual abort).
+    assert!(run.stdout.starts_with("\nCompaction summary:\n"));
+    assert_eq!(run.stderr, "Error: Unknown record type: weird\n");
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), before);
+}
+
+#[test]
 fn compact_manual_strategy_is_a_clean_abort() {
     // The reference CRASHES on a manual-strategy group in --auto (an
     // uncaught throw from mergeRecords dumps a Bun stack trace); this

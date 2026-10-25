@@ -199,6 +199,44 @@ impl StoreFiles {
         lines
     }
 
+    /// The write gate for an UPDATED line of a domain (reference
+    /// edit/move: the in-memory copy carries the raw line's keys, so a
+    /// singular `outcome` key the strict reader normalized away still
+    /// reports as an additional property). `line` is the target's
+    /// physical (1-based) line number.
+    ///
+    /// Lives here (mulch-9e28, ADR-0005) because the verdict needs the
+    /// RAW key set of the target line — the narrow read only
+    /// [`StoreFiles::read_lenient`] provides — so the law belongs to
+    /// the seam that owns the read; the two commands (edit, move) keep
+    /// only their channel wordings.
+    pub fn updated_line_verdict(
+        &self,
+        domain: &str,
+        line: usize,
+        updated: &serde_json::Value,
+    ) -> crate::schema::FullVerdict {
+        let raw_had_outcome = self.read_lenient(domain).into_iter().any(|finding| {
+            matches!(&finding,
+                LenientLine::Record { line: at, record }
+                    if *at == line
+                        && record
+                            .as_object()
+                            .is_some_and(|object| object.contains_key("outcome")))
+        });
+        if !raw_had_outcome {
+            return crate::schema::full_verdict(&self.registry, updated);
+        }
+        // Key presence alone decides the additional-property report; the
+        // reference's undefined value is unrepresentable in JSON, and
+        // null behaves identically there.
+        let mut augmented = updated.clone();
+        if let Some(object) = augmented.as_object_mut() {
+            object.insert("outcome".into(), serde_json::Value::Null);
+        }
+        crate::schema::full_verdict(&self.registry, &augmented)
+    }
+
     /// The `.mulch` directory.
     pub fn root(&self) -> &Path {
         &self.root
@@ -652,6 +690,126 @@ mod tests {
             StoreLocation::Open(store) => (root, store),
             other => panic!("expected an open store, got {other:?}"),
         }
+    }
+
+    /// A throwaway store with a raw `dev` body (byte laws, not parsed
+    /// records) — the fixture for [`StoreFiles::updated_line_verdict`]
+    /// (moved from the command with the law, mulch-9e28).
+    fn verdict_store(tag: &str, body: &str) -> (PathBuf, StoreFiles) {
+        let (root, store) = scratch(tag);
+        std::fs::create_dir_all(root.join(".mulch/expertise")).expect("expertise dir");
+        std::fs::write(root.join(".mulch/expertise/dev.jsonl"), body).expect("domain body");
+        (root, store)
+    }
+
+    fn valid_updated() -> serde_json::Value {
+        serde_json::json!({
+            "type": "pattern",
+            "classification": "tactical",
+            "recorded_at": "2026-10-20T10:00:00.000Z",
+            "name": "Kept",
+            "description": "kept body",
+            "id": "mx-123456",
+        })
+    }
+
+    #[test]
+    fn updated_verdict_without_singular_outcome_is_the_plain_one() {
+        // Catches: gating the verdict on the raw key set at all — the
+        // plain path must equal full_verdict, so a valid update stays
+        // valid and a missing field stays invalid for its own reason.
+        let body = format!("{}\n", valid_updated());
+        let (root, store) = verdict_store("plain", &body);
+        assert!(matches!(
+            store.updated_line_verdict("dev", 1, &valid_updated()),
+            crate::schema::FullVerdict::Valid
+        ));
+        let mut missing = valid_updated();
+        missing
+            .as_object_mut()
+            .expect("object")
+            .remove("description");
+        let crate::schema::FullVerdict::Invalid { subs, .. } =
+            store.updated_line_verdict("dev", 1, &missing)
+        else {
+            panic!("a record without description must be invalid");
+        };
+        let rendered = crate::schema::render_subs(&subs).join(crate::schema::SUB_SEP);
+        assert!(
+            rendered.contains("description"),
+            "the missing field is reported: {rendered}"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn updated_verdict_augments_on_a_raw_singular_outcome() {
+        // Catches: trusting the strict reader's normalized view — the
+        // raw `outcome` key must surface as an additional property.
+        let body = format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "pattern",
+                "classification": "tactical",
+                "recorded_at": "2026-10-20T10:00:00.000Z",
+                "name": "Kept",
+                "description": "kept body",
+                "id": "mx-123456",
+                "outcome": {"status": "success"},
+            })
+        );
+        let (root, store) = verdict_store("outcome", &body);
+        let crate::schema::FullVerdict::Invalid { subs, .. } =
+            store.updated_line_verdict("dev", 1, &valid_updated())
+        else {
+            panic!("the singular outcome key must fail the record");
+        };
+        let rendered = crate::schema::render_subs(&subs).join(crate::schema::SUB_SEP);
+        assert!(
+            rendered.contains("must NOT have additional properties"),
+            "additional-property finding, got {rendered}"
+        );
+
+        // Key presence alone decides (the reference's `undefined` is
+        // unrepresentable in JSON): null augments identically.
+        let mut raw = valid_updated();
+        raw.as_object_mut()
+            .expect("object")
+            .insert("outcome".into(), serde_json::Value::Null);
+        let body = format!("{raw}\n");
+        let (root2, store2) = verdict_store("outcome-null", &body);
+        assert!(matches!(
+            store2.updated_line_verdict("dev", 1, &valid_updated()),
+            crate::schema::FullVerdict::Invalid { .. }
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&root2).ok();
+    }
+
+    #[test]
+    fn updated_verdict_is_line_exact() {
+        // Catches: leaking another line's `outcome` key onto the
+        // target — the augmentation must follow the PHYSICAL line.
+        let other = serde_json::json!({
+            "type": "pattern",
+            "classification": "tactical",
+            "recorded_at": "2026-10-19T10:00:00.000Z",
+            "name": "Other",
+            "description": "other body",
+            "id": "mx-654321",
+            "outcome": {"status": "success"},
+        });
+        let body = format!("{}\n{other}\n", valid_updated());
+        let (root, store) = verdict_store("line-exact", &body);
+        assert!(matches!(
+            store.updated_line_verdict("dev", 1, &valid_updated()),
+            crate::schema::FullVerdict::Valid
+        ));
+        assert!(matches!(
+            store.updated_line_verdict("dev", 2, &valid_updated()),
+            crate::schema::FullVerdict::Invalid { .. }
+        ));
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
