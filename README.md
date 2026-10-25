@@ -26,7 +26,9 @@ schema validity (`schema::verdict`), record summaries
 (`record_summary`), anchor validity (`anchors::validity`), and
 staleness decay (`stale::StaleRule`) — and the
 write-model helpers built on them (`UpsertPlan`, `OutcomeEntry`,
-`value_text`); commands render, the lib decides.
+`value_text`), and the two-file transaction seam
+(`move_to_archive`/`revive`, whose `TransactionError` names the failed
+half); commands render, the lib decides.
 
 Freeze policy (ADR-0023 in denkhaus/fabro): no upstream following. The
 format is frozen on our side; we extend additively for our own reasons.

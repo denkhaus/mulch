@@ -119,18 +119,27 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
     }
     let mut totals = Totals::default();
     for outcome in &outcomes {
-        if !args.dry_run {
+        // `--hard` deletes: the live rewrite alone, no archive write.
+        // Dry-run writes nothing at all.
+        if !args.dry_run && args.hard {
             crate::commands::store::persist(command, &store, &outcome.domain, &outcome.kept)?;
         }
         // The default shelf reason covers the staleness path;
         // bottom-out records pre-stamp their own reason and the
-        // archive seam preserves it. `--hard` deletes: no archive
-        // write. Dry-run writes nothing at all.
+        // archive seam preserves it. Both halves of the soft path
+        // share prune's handled shape, so the transaction error
+        // collapses to one mapping.
         if !args.dry_run && !args.hard {
             store
-                .archive_records(&outcome.domain, &outcome.archived, &now_iso, "stale")
+                .move_to_archive(
+                    &outcome.domain,
+                    &outcome.kept,
+                    &outcome.archived,
+                    &now_iso,
+                    "stale",
+                )
                 .map_err(|source| {
-                    Failure::handled(command, crate::output::chain_message(&source))
+                    Failure::handled(command, crate::output::chain_message(source.as_error()))
                 })?;
         }
         totals.pruned += outcome.pruned;

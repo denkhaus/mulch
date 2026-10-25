@@ -19,7 +19,7 @@ use mulch::{LineRecord, resolve_record_id, value_text};
 
 use crate::cli::GlobalOpts;
 use crate::commands::failure::render_core_error;
-use crate::commands::store::{open_store_mut, persist, read_domain_records};
+use crate::commands::store::{open_store_mut, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `restore` (mutating: the store writer lock spans the whole
@@ -117,14 +117,6 @@ pub(super) fn run(opts: &GlobalOpts, id: &str) -> Result<(), Failure> {
         .filter(|(index, _)| *index != position)
         .map(|(_, line)| line.record.clone())
         .collect();
-    store
-        .rewrite_archive(&domain, &remaining)
-        .map_err(|source| {
-            Failure::handled_on_stderr(
-                "restore",
-                format!("Error: {}", crate::output::chain_message(&source)),
-            )
-        })?;
 
     // The original reason surfaces in the output and survives a
     // rollback re-archive; archives written before the reason stamp
@@ -141,13 +133,26 @@ pub(super) fn run(opts: &GlobalOpts, id: &str) -> Result<(), Failure> {
     // The reference's race-lost rollback (re-archive with the
     // original reason) has no equivalent here: the store writer lock
     // spans the pre-check and the live write, so a duplicate cannot
-    // appear in between, and persist reports I/O failures as errors
-    // without a conflict signal.
+    // appear in between, and the transaction seam reports I/O
+    // failures as errors without a conflict signal.
 
     let mut restored: Vec<serde_json::Value> =
         existing.iter().map(|line| line.record.clone()).collect();
     restored.push(live.clone());
-    persist("restore", &store, &domain, &restored)?;
+    // Revive owns the archive-first order (the reference's restore
+    // sequence); the two halves carry different parity surfaces, so
+    // the transaction error maps per half.
+    store
+        .revive(&domain, &remaining, &restored)
+        .map_err(|source| match source {
+            mulch::TransactionError::Archive(inner) => Failure::handled_on_stderr(
+                "restore",
+                format!("Error: {}", crate::output::chain_message(&inner)),
+            ),
+            mulch::TransactionError::Live(inner) => {
+                Failure::handled("restore", crate::output::chain_message(&inner))
+            }
+        })?;
 
     if opts.json {
         // RAW summary (mulch-f06a): absent OMITS the key, non-strings

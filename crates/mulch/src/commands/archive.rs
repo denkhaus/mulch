@@ -16,9 +16,7 @@ use mulch::{LineRecord, resolve_record_id};
 
 use crate::cli::GlobalOpts;
 use crate::commands::failure::{DomainFailure, now_iso, resolve_failure, unknown_domain_failure};
-use crate::commands::store::{
-    open_store, open_store_mut, persist, read_and_resolve, read_domain_records,
-};
+use crate::commands::store::{open_store, open_store_mut, read_and_resolve, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `archive`. Real runs hold the writer lock across the cycle;
@@ -119,16 +117,27 @@ pub(super) fn run(
             .filter(|(index, _)| !indices.contains(index))
             .map(|(_, line)| line.record.clone())
             .collect();
-        persist("archive", &store, domain, &survivors)?;
         let archived_values: Vec<serde_json::Value> =
             archived.iter().map(|line| line.record.clone()).collect();
+        // The two halves carry different parity surfaces (the live
+        // write's handled shape vs the archive write's Error:-prefixed
+        // stderr shape), so the transaction error maps per half.
         store
-            .archive_records(domain, &archived_values, &now_iso(), &stamped_reason)
-            .map_err(|source| {
-                Failure::handled_on_stderr(
+            .move_to_archive(
+                domain,
+                &survivors,
+                &archived_values,
+                &now_iso(),
+                &stamped_reason,
+            )
+            .map_err(|source| match source {
+                mulch::TransactionError::Live(inner) => {
+                    Failure::handled("archive", crate::output::chain_message(&inner))
+                }
+                mulch::TransactionError::Archive(inner) => Failure::handled_on_stderr(
                     "archive",
-                    format!("Error: {}", crate::output::chain_message(&source)),
-                )
+                    format!("Error: {}", crate::output::chain_message(&inner)),
+                ),
             })?;
     }
 

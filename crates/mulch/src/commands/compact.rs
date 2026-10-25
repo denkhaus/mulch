@@ -33,7 +33,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::{CompactArgs, GlobalOpts};
 use crate::commands::failure::now_iso;
-use crate::commands::store::{open_store, open_store_mut, persist, read_domain_records};
+use crate::commands::store::{open_store, open_store_mut, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One candidate member line (the reference's display triple). The
@@ -384,11 +384,11 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
         }
 
         if changed {
-            persist("compact", &store, &domain, &updated)?;
+            // Both halves share compact's handled shape.
             store
-                .archive_records(&domain, &to_archive, &now_iso(), "compacted")
-                .map_err(|source| {
-                    Failure::handled("compact", crate::output::chain_message(&source))
+                .move_to_archive(&domain, &updated, &to_archive, &now_iso(), "compacted")
+                .map_err(|error| {
+                    Failure::handled("compact", crate::output::chain_message(error.as_error()))
                 })?;
         }
         index = end;
@@ -565,10 +565,13 @@ fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Fail
         .map(|(_, line)| line.record.clone())
         .collect();
     remaining.push(replacement.clone());
-    persist("compact", &store, domain, &remaining)?;
+    // Both halves share compact's handled shape (the closure shadows
+    // the archived-set name only after the last use).
     store
-        .archive_records(domain, &source, &now_iso(), "compacted")
-        .map_err(|source| Failure::handled("compact", crate::output::chain_message(&source)))?;
+        .move_to_archive(domain, &remaining, &source, &now_iso(), "compacted")
+        .map_err(|error| {
+            Failure::handled("compact", crate::output::chain_message(error.as_error()))
+        })?;
 
     if opts.json {
         let mut fields = Map::new();

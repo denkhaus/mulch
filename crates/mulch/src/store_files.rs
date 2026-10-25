@@ -18,6 +18,9 @@
 //!   soft-archive writes (reference `writeArchiveFile` / `archiveRecords`):
 //!   banner + compact lines, no id assignment; an empty record set still writes
 //!   the banner alone.
+//! - [`StoreFiles::move_to_archive`] / [`StoreFiles::revive`] — the two-file
+//!   transaction seam owning the live↔archive write ORDER (mulch-4cde);
+//!   failures carry [`TransactionError`] naming the failed half.
 //!
 //! Config writes always go through the canonical YAML serializer with
 //! defaults backfilled (`Config::to_yaml`), and domain removal keeps the
@@ -38,6 +41,34 @@ use crate::upsert::write_records;
 /// (user directive 2026-10-13, the same law as the record retry-echo),
 /// so ours reads `mulch restore`.
 const ARCHIVE_BANNER: &str = "# ARCHIVED — not for active use. Run `mulch restore <id>` to revive.";
+
+/// Which half of a two-file store transaction failed (mulch-4cde).
+/// The variants name the HALF, not the order — [`StoreFiles::revive`]
+/// writes the archive half first, [`StoreFiles::move_to_archive`] the
+/// live half. Callers map each half onto their own parity-pinned
+/// failure surface (they differ per command); [`Self::as_error`]
+/// exposes the underlying store error for chain rendering.
+#[derive(Debug, thiserror::Error)]
+pub enum TransactionError {
+    /// The live domain rewrite failed.
+    #[error("live rewrite failed: {0}")]
+    Live(Error),
+    /// The soft-archive write failed.
+    #[error("archive write failed: {0}")]
+    Archive(Error),
+}
+
+impl TransactionError {
+    /// The underlying store error of the failed half (what the
+    /// commands' chain renderer prints — the wrapper's own Display
+    /// never reaches a user surface).
+    #[must_use]
+    pub fn as_error(&self) -> &Error {
+        match self {
+            Self::Live(source) | Self::Archive(source) => source,
+        }
+    }
+}
 
 /// Where a store lookup landed.
 #[derive(Debug)]
@@ -405,6 +436,64 @@ impl StoreFiles {
         self.rewrite_archive(domain, &merged)
     }
 
+    /// Moves records live→archive in one transaction (mulch-4cde):
+    /// rewrites the live domain file with `keep`, then merges
+    /// `archived` into the soft archive under the stamp law
+    /// (`now`/`reason`, existing-first, `??` spare). The projection
+    /// to the record sets stays at the call site — it differs per
+    /// command; this seam owns the ORDER and the failure window.
+    /// Callers hold the store writer lock across the whole cycle.
+    ///
+    /// # Errors
+    ///
+    /// [`TransactionError::Live`] when the live rewrite fails (the
+    /// archive is untouched); [`TransactionError::Archive`] when the
+    /// archive write fails AFTER the live rewrite — the documented
+    /// window: the live file is already rewritten, so the moved
+    /// records are neither live nor archived (the reference's
+    /// append-after-write has the same window; a rollback seam would
+    /// change failure behaviour the parity laws pin).
+    pub fn move_to_archive(
+        &self,
+        domain: &str,
+        keep: &[Value],
+        archived: &[Value],
+        now: &str,
+        reason: &str,
+    ) -> std::result::Result<(), TransactionError> {
+        self.rewrite_domain(domain, keep)
+            .map_err(TransactionError::Live)?;
+        self.archive_records(domain, archived, now, reason)
+            .map_err(TransactionError::Archive)
+    }
+
+    /// Revives records archive→live in one transaction (mulch-4cde):
+    /// rewrites the soft archive with `remaining` FIRST, then the
+    /// live domain file with `restored` — the reverse order of
+    /// [`StoreFiles::move_to_archive`], pinning the reference's
+    /// restore sequence under one owner. The caller strips the
+    /// archive lifecycle fields and computes both sets; the seam owns
+    /// the order and the failure window (an archive-side success
+    /// followed by a live failure leaves the record spliced out of
+    /// the archive but not live — same window the reference has).
+    ///
+    /// # Errors
+    ///
+    /// [`TransactionError::Archive`] when the archive splice fails
+    /// (the live file is untouched); [`TransactionError::Live`] when
+    /// the live rewrite fails after the splice.
+    pub fn revive(
+        &self,
+        domain: &str,
+        remaining: &[Value],
+        restored: &[Value],
+    ) -> std::result::Result<(), TransactionError> {
+        self.rewrite_archive(domain, remaining)
+            .map_err(TransactionError::Archive)?;
+        self.rewrite_domain(domain, restored)
+            .map_err(TransactionError::Live)
+    }
+
     /// Rewrites a domain compactly (canonical; 0 bytes when empty).
     ///
     /// # Errors
@@ -599,6 +688,95 @@ mod tests {
             .expect("noop");
         // no read, no write — not even the archive directory appears
         assert!(!root.join(".mulch/archive/dev.jsonl").exists());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The transaction seam names the failed half (mulch-4cde): one
+    /// failure test per direction covers what per-command byte
+    /// fixtures cannot — which write gave up.
+    #[test]
+    fn move_to_archive_names_the_failed_half() {
+        // Live half: the domain file path occupied by a directory —
+        // the rename fails, the archive is untouched.
+        let (root, store) = scratch("tx-live");
+        std::fs::create_dir_all(root.join(".mulch/expertise")).expect("expertise dir");
+        std::fs::create_dir_all(root.join(".mulch/expertise/dev.jsonl")).expect("block");
+        let error = store
+            .move_to_archive(
+                "dev",
+                &[],
+                &[json!({"id": "a"})],
+                "2026-01-01T00:00:00.000Z",
+                "stale",
+            )
+            .expect_err("live write fails");
+        assert!(matches!(error, TransactionError::Live(_)));
+        assert!(!root.join(".mulch/archive/dev.jsonl").exists());
+        std::fs::remove_dir_all(&root).ok();
+
+        // Archive half: `archive` exists as a regular file — the
+        // archive half fails AFTER the live rewrite succeeded: the
+        // documented window (live already rewritten, records moved
+        // nowhere).
+        let (root, store) = scratch("tx-archive");
+        std::fs::create_dir_all(root.join(".mulch/expertise")).expect("expertise dir");
+        std::fs::write(root.join(".mulch/archive"), b"not a dir").expect("block");
+        let error = store
+            .move_to_archive(
+                "dev",
+                &[],
+                &[json!({"id": "a"})],
+                "2026-01-01T00:00:00.000Z",
+                "stale",
+            )
+            .expect_err("archive write fails");
+        assert!(matches!(error, TransactionError::Archive(_)));
+        assert_eq!(
+            std::fs::metadata(root.join(".mulch/expertise/dev.jsonl"))
+                .expect("live already rewritten")
+                .len(),
+            0
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn revive_names_the_failed_half() {
+        // Archive half first: blocked archive — the live file is
+        // never touched.
+        let (root, store) = scratch("tx-revive-archive");
+        std::fs::create_dir_all(root.join(".mulch/expertise")).expect("expertise dir");
+        std::fs::write(root.join(".mulch/archive"), b"not a dir").expect("block");
+        let error = store
+            .revive("dev", &[], &[json!({"id": "a"})])
+            .expect_err("archive splice fails");
+        assert!(matches!(error, TransactionError::Archive(_)));
+        assert!(!root.join(".mulch/expertise/dev.jsonl").exists());
+        std::fs::remove_dir_all(&root).ok();
+
+        // Live half: the domain file blocked — the archive splice
+        // already landed (remaining set = banner only).
+        let (root, store) = scratch("tx-revive-live");
+        std::fs::create_dir_all(root.join(".mulch/expertise")).expect("expertise dir");
+        std::fs::create_dir_all(root.join(".mulch/archive")).expect("archive dir");
+        std::fs::write(
+            root.join(".mulch/archive/dev.jsonl"),
+            concat!(
+                "# ARCHIVED — not for active use. Run `mulch restore <id>` to revive.\n",
+                "{\"id\":\"a\"}\n",
+            ),
+        )
+        .expect("archive seed");
+        std::fs::create_dir_all(root.join(".mulch/expertise/dev.jsonl")).expect("block");
+        let error = store
+            .revive("dev", &[], &[json!({"id": "a"})])
+            .expect_err("live write fails");
+        assert!(matches!(error, TransactionError::Live(_)));
+        assert_eq!(
+            std::fs::read_to_string(root.join(".mulch/archive/dev.jsonl"))
+                .expect("archive spliced"),
+            "# ARCHIVED — not for active use. Run `mulch restore <id>` to revive.\n"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }

@@ -60,7 +60,7 @@ pub use records::{
 pub use repair::{LineAction, parsed_records, raw_line_pass, value_line_pass};
 pub use schema::CLASSIFICATIONS;
 pub use scoring::{apply_confirmation_boost, confirmation_score};
-pub use store_files::{StoreFiles, StoreLocation};
+pub use store_files::{StoreFiles, StoreLocation, TransactionError};
 pub use time::{date_ms, js_date_ms, now_ms, parse_js_date, time_ago, time_ago_ts, timestamp_ms};
 pub use upsert::{
     OutcomeEntry, UpsertPlan, assign_missing_id, find_duplicate, merge_outcomes, upsert_plan,
