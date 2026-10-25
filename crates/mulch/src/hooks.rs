@@ -132,13 +132,19 @@ pub struct HookResult {
 /// would leave a detached descendant (`sleep 30 & wait`) holding the
 /// output pipes open (the reference's own R-02 stress finding).
 // The narrow override of the workspace-wide deny: this function only.
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "the sanctioned ADR-0002 exception: no safe API kills a process group"
+)]
 fn kill_process_group(pgid: u32) {
+    let Ok(pgid) = i32::try_from(pgid) else {
+        return;
+    };
     // SAFETY: `libc::kill` only reads its integer arguments; the pid
     // is the child's own process group id (assigned at spawn via
     // `process_group(0)`), and ESRCH for an already-dead group is
     // ignored — no invariant beyond the valid SIGKILL constant.
-    let _ = unsafe { libc::kill(-(pgid as i32), libc::SIGKILL) };
+    let _ = unsafe { libc::kill(-pgid, libc::SIGKILL) };
 }
 
 /// The reference's `getHookList`: the event's scripts in declaration
@@ -150,14 +156,13 @@ fn hook_scripts(config: &Config, event: HookEvent) -> Vec<String> {
         .extra("hooks")
         .and_then(|hooks| hooks.get(event.key()))
         .and_then(serde_yaml::Value::as_sequence)
-        .map(|scripts| {
+        .map_or_else(Vec::new, |scripts| {
             scripts
                 .iter()
                 .filter(|script| script.as_str().is_some_and(|raw| !raw.trim().is_empty()))
                 .filter_map(|script| script.as_str().map(str::to_string))
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// The reference's `resolveSettings`: `hook_settings.timeout_ms`
@@ -168,7 +173,15 @@ fn hook_timeout(config: &Config) -> u64 {
         .and_then(|settings| settings.get("timeout_ms"))
         .and_then(serde_yaml::Value::as_f64)
         .filter(|ms| *ms > 0.0)
-        .map_or(DEFAULT_HOOK_TIMEOUT_MS, |ms| ms as u64)
+        // Fractional milliseconds are legal in the reference's
+        // setTimeout; the caller works in whole milliseconds, and an
+        // out-of-range value falls back to the default.
+        .map_or(DEFAULT_HOOK_TIMEOUT_MS, |ms| {
+            Duration::try_from_secs_f64(ms / 1_000.0)
+                .ok()
+                .and_then(|timeout| u64::try_from(timeout.as_millis()).ok())
+                .unwrap_or(DEFAULT_HOOK_TIMEOUT_MS)
+        })
 }
 
 /// One `sh -c` run: payload JSON on stdin (closed after), stdout and
@@ -186,20 +199,17 @@ fn run_one(command: &str, stdin_json: &str, cwd: &Path, timeout_ms: u64) -> Hook
         .process_group(0)
         .spawn();
 
-    let mut child = match child {
-        Ok(child) => child,
-        // The reference's `error` event resolves to exit code 1 with
-        // no output — a missing `sh` behaves like a failed script.
-        Err(_) => {
-            return HookExecution {
-                command:     command.to_string(),
-                exit_code:   1,
-                stdout:      String::new(),
-                stderr:      String::new(),
-                duration_ms: started.elapsed().as_millis() as u64,
-                timed_out:   false,
-            };
-        }
+    // The reference's `error` event resolves to exit code 1 with no
+    // output — a missing `sh` behaves like a failed script.
+    let Ok(mut child) = child else {
+        return HookExecution {
+            command:     command.to_string(),
+            exit_code:   1,
+            stdout:      String::new(),
+            stderr:      String::new(),
+            duration_ms: elapsed_ms(started),
+            timed_out:   false,
+        };
     };
 
     let stdin = child.stdin.take();
@@ -228,9 +238,15 @@ fn run_one(command: &str, stdin_json: &str, cwd: &Path, timeout_ms: u64) -> Hook
         exit_code,
         stdout,
         stderr,
-        duration_ms: started.elapsed().as_millis() as u64,
+        duration_ms: elapsed_ms(started),
         timed_out,
     }
+}
+
+/// Whole milliseconds since `started` (saturating — a run cannot
+/// exceed `u64::MAX` ms).
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Drains a child pipe on its own thread (a full pipe would
@@ -495,7 +511,7 @@ mod tests {
         );
         let result = run_hooks(HookEvent::PreRecord, json!({"a": 1}), &store, &root);
         assert_eq!(result.payload, json!({"a": 1}));
-        assert!(result.warnings.is_empty());
+        assert_eq!(result.warnings, Vec::<String>::new());
         std::fs::remove_dir_all(&root).ok();
     }
 

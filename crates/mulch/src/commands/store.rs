@@ -209,3 +209,147 @@ pub(crate) fn persist(
         .rewrite_domain(domain, records)
         .map_err(|source| Failure::handled(command, chain_message_from(&source)))
 }
+
+#[cfg(test)]
+mod updated_record_verdict_tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// A throwaway store with one live domain `d` and the given raw
+    /// domain body (byte laws, not parsed records).
+    fn temp_store(tag: &str, body: &str) -> (std::path::PathBuf, mulch::StoreFiles) {
+        let dir = std::env::temp_dir().join(format!("mulch-store-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join(".mulch").join("expertise")).expect("temp store");
+        std::fs::write(
+            dir.join(".mulch").join("mulch.config.yaml"),
+            "version: '1'\ndomains:\n  d: {}\n",
+        )
+        .expect("config");
+        std::fs::write(dir.join(".mulch").join("expertise").join("d.jsonl"), body)
+            .expect("domain body");
+        let store = match mulch::StoreFiles::locate(&dir).expect("store opens") {
+            mulch::StoreLocation::Open(store) => store,
+            other => panic!("store must open, got {other:?}"),
+        };
+        (dir, store)
+    }
+
+    fn valid_updated() -> serde_json::Value {
+        json!({
+            "type": "pattern",
+            "classification": "tactical",
+            "recorded_at": "2026-10-20T10:00:00.000Z",
+            "name": "Kept",
+            "description": "kept body",
+            "id": "mx-123456",
+        })
+    }
+
+    /// Without a singular `outcome` key on the target line the verdict
+    /// is the plain full-record verdict.
+    #[test]
+    fn no_singular_outcome_key_takes_the_plain_verdict() {
+        let body = format!("{}\n", valid_updated());
+        let (dir, store) = temp_store("plain", &body);
+        assert!(matches!(
+            updated_record_verdict(&store, "d", 1, &valid_updated()),
+            mulch::schema::FullVerdict::Valid
+        ));
+        // An invalid update stays invalid for its own reason (the
+        // augmentation adds nothing).
+        let mut missing = valid_updated();
+        missing
+            .as_object_mut()
+            .expect("object")
+            .remove("description");
+        let mulch::schema::FullVerdict::Invalid { subs, .. } =
+            updated_record_verdict(&store, "d", 1, &missing)
+        else {
+            panic!("a record without description must be invalid");
+        };
+        let rendered = mulch::schema::render_subs(&subs).join(mulch::schema::SUB_SEP);
+        assert!(
+            rendered.contains("description"),
+            "the missing field is reported: {rendered}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A raw `outcome` key on the target line makes the in-memory copy
+    /// carry it (the reference's undefined property), so the verdict
+    /// reports an additional property even though the strict reader
+    /// normalized it away.
+    #[test]
+    fn singular_outcome_key_augments_the_verdict() {
+        let body = format!(
+            "{}\n",
+            json!({
+                "type": "pattern",
+                "classification": "tactical",
+                "recorded_at": "2026-10-20T10:00:00.000Z",
+                "name": "Kept",
+                "description": "kept body",
+                "id": "mx-123456",
+                "outcome": {"status": "success"},
+            })
+        );
+        let (dir, store) = temp_store("outcome", &body);
+        let mulch::schema::FullVerdict::Invalid { subs, .. } =
+            updated_record_verdict(&store, "d", 1, &valid_updated())
+        else {
+            panic!("the singular outcome key must fail the record");
+        };
+        let rendered = mulch::schema::render_subs(&subs).join(mulch::schema::SUB_SEP);
+        assert!(
+            rendered.contains("must NOT have additional properties"),
+            "additional-property finding, got {rendered}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Key presence alone decides (the reference's `undefined` value is
+    /// unrepresentable in JSON): a null value augments identically.
+    #[test]
+    fn null_singular_outcome_augments_like_a_value() {
+        let mut raw = valid_updated();
+        raw.as_object_mut()
+            .expect("object")
+            .insert("outcome".into(), serde_json::Value::Null);
+        let body = format!("{raw}\n");
+        let (dir, store) = temp_store("outcome-null", &body);
+        assert!(matches!(
+            updated_record_verdict(&store, "d", 1, &valid_updated()),
+            mulch::schema::FullVerdict::Invalid { .. }
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The augmentation is line-exact: an `outcome` key on ANOTHER
+    /// physical line never leaks onto the target.
+    #[test]
+    fn another_lines_outcome_key_does_not_leak() {
+        let other = json!({
+            "type": "pattern",
+            "classification": "tactical",
+            "recorded_at": "2026-10-19T10:00:00.000Z",
+            "name": "Other",
+            "description": "other body",
+            "id": "mx-654321",
+            "outcome": {"status": "success"},
+        });
+        let body = format!("{}\n{other}\n", valid_updated());
+        let (dir, store) = temp_store("line-exact", &body);
+        assert!(matches!(
+            updated_record_verdict(&store, "d", 1, &valid_updated()),
+            mulch::schema::FullVerdict::Valid
+        ));
+        // The line carrying the key is the one that fails.
+        assert!(matches!(
+            updated_record_verdict(&store, "d", 2, &valid_updated()),
+            mulch::schema::FullVerdict::Invalid { .. }
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
