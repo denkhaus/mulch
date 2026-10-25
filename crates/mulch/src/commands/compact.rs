@@ -42,7 +42,7 @@ use serde_json::{Map, Value};
 
 use crate::cli::{CompactArgs, GlobalOpts};
 use crate::commands::failure::now_iso;
-use crate::commands::hooks_surface::{forward_hook_stderr, hook_cwd, print_hook_warnings};
+use crate::commands::hooks_surface::{HookPhase, print_hook_warnings};
 use crate::commands::store::{open_store, open_store_mut, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -350,7 +350,6 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
     let mut total_compacted = 0;
     let mut results: Vec<(String, String, usize)> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
-    let cwd = hook_cwd("compact")?;
     let mut index = 0;
     while index < selected.len() {
         let domain = selected[index].0.clone();
@@ -385,22 +384,17 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
             // `payload.replacement` overrides the mechanical merge; a
             // block or an invalid replacement SKIPS this group with a
             // warning so unrelated groups still compact.
-            let hook = mulch::hooks::run_hooks(
+            let phase = HookPhase::run(
                 mulch::hooks::HookEvent::PreCompact,
                 pre_compact_payload(&domain, &candidate.r#type, &matched),
                 &store,
-                &cwd,
-            );
-            forward_hook_stderr(&hook.executions);
-            let replacement = if hook.blocked {
-                warnings.push(group_warning(
-                    &domain,
-                    &candidate.r#type,
-                    hook.block_reason.as_deref().unwrap_or(PRE_COMPACT_BLOCKED),
-                ));
+                "compact",
+            )?;
+            let replacement = if let Some(reason) = phase.blocked_reason(PRE_COMPACT_BLOCKED) {
+                warnings.push(group_warning(&domain, &candidate.r#type, reason));
                 continue;
             } else {
-                match adopt_replacement(&hook.payload, &truthy_ids(&matched), store.registry()) {
+                match adopt_replacement(phase.payload(), &truthy_ids(&matched), store.registry()) {
                     Err(reason) => {
                         warnings.push(group_warning(&domain, &candidate.r#type, &reason));
                         continue;
@@ -544,24 +538,19 @@ fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Fail
     // the replacement is built — a block aborts before any write; the
     // engine's own warnings print plain-mode only (not quiet-gated);
     // a truthy `payload.replacement` then overrides the user flags.
-    let cwd = hook_cwd("compact")?;
-    let hook = mulch::hooks::run_hooks(
+    let phase = HookPhase::run(
         mulch::hooks::HookEvent::PreCompact,
         pre_compact_payload(domain, &record_type, &source),
         &store,
-        &cwd,
-    );
-    forward_hook_stderr(&hook.executions);
-    if hook.blocked {
-        return Err(compact_failure(
-            opts.json,
-            hook.block_reason.as_deref().unwrap_or(PRE_COMPACT_BLOCKED),
-        ));
+        "compact",
+    )?;
+    if let Some(reason) = phase.blocked_reason(PRE_COMPACT_BLOCKED) {
+        return Err(compact_failure(opts.json, reason));
     }
     if !opts.json {
-        print_hook_warnings(&hook.warnings);
+        print_hook_warnings(phase.warnings());
     }
-    let replacement = match adopt_replacement(&hook.payload, &compacted_from, store.registry()) {
+    let replacement = match adopt_replacement(phase.payload(), &compacted_from, store.registry()) {
         Err(reason) => return Err(compact_failure(opts.json, reason)),
         Ok(Some(record)) => record,
         Ok(None) => {

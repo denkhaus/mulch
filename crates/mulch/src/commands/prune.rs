@@ -21,7 +21,7 @@ use serde_json::{Map, Value};
 use serde_yaml::Value as Yaml;
 
 use crate::cli::{GlobalOpts, PruneArgs};
-use crate::commands::hooks_surface::{forward_hook_stderr, hook_cwd, print_hook_warnings};
+use crate::commands::hooks_surface::{HookPhase, print_hook_warnings};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Reference default for `decay.anchor_validity.threshold`
@@ -125,21 +125,13 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
     if !args.dry_run {
         let candidate_rows = hook_candidate_rows(&live, &walk);
         if !candidate_rows.is_empty() {
-            let cwd = hook_cwd(command)?;
-            let hooks = mulch::hooks::run_hooks(
+            let phase = HookPhase::run(
                 mulch::hooks::HookEvent::PrePrune,
                 serde_json::json!({"candidates": candidate_rows}),
                 &store,
-                &cwd,
-            );
-            // Ordering law: stderr forwarding comes right after the
-            // run, before the block error and warnings.
-            forward_hook_stderr(&hooks.executions);
-            if hooks.blocked {
-                let reason = hooks
-                    .block_reason
-                    .as_deref()
-                    .unwrap_or("pre-prune hook blocked");
+                command,
+            )?;
+            if let Some(reason) = phase.blocked_reason("pre-prune hook blocked") {
                 return Err(Failure::handled_on_stderr(
                     command,
                     format!("Error: {reason}"),
@@ -149,7 +141,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
             // pre-prune today — blocking and non-mutable — but the
             // law is wired like the reference's loop).
             if !opts.json {
-                print_hook_warnings(&hooks.warnings);
+                print_hook_warnings(phase.warnings());
             }
             // Block-or-allow: the hook's stdout is ignored (probe
             // PR-F — a hook printing candidate-reshaping JSON changes

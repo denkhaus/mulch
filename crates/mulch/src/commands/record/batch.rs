@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::cli::{GlobalOpts, RecordArgs};
 use crate::commands::failure::now_iso;
+use crate::commands::hooks_surface::{Adopt, HookPhase};
 use crate::output::{Failure, failure_envelope, print_json, print_line};
 
 /// Reads the batch file before any store side effect (the
@@ -169,46 +170,25 @@ pub(super) fn stdin_batch(
     if args.dry_run {
         records_to_write = valid;
     } else {
-        let cwd = crate::commands::hooks_surface::hook_cwd("record")?;
         for (index, line) in valid.into_iter().enumerate() {
             let payload = json!({"domain": args.domain, "record": line.clone()});
-            let result =
-                mulch::hooks::run_hooks(mulch::hooks::HookEvent::PreRecord, payload, store, &cwd);
-            crate::commands::hooks_surface::forward_hook_stderr(&result.executions);
+            let phase =
+                HookPhase::run(mulch::hooks::HookEvent::PreRecord, payload, store, "record")?;
             // Warnings count even for a blocked record (the reference
             // pushes them before the blocked check).
-            warnings.extend(result.warnings.iter().cloned());
-            if result.blocked {
-                errors.push(Value::String(format!(
-                    "Record {index}: {}",
-                    result
-                        .block_reason
-                        .clone()
-                        .unwrap_or_else(|| super::BLOCK_DEFAULT.into()),
-                )));
+            warnings.extend(phase.warnings().iter().cloned());
+            if let Some(reason) = phase.blocked_reason(super::BLOCK_DEFAULT) {
+                errors.push(Value::String(format!("Record {index}: {reason}")));
                 continue;
             }
             let mut final_line = line;
-            // The reference's guard is object identity (`mutated !==
-            // record`), always true for a parsed answer: an echo is
-            // adopted too (key order and all).
-            if result.ran_any
-                && let Some(mutated) = super::truthy_payload_record(&result.payload)
-            {
-                if let schema::FullVerdict::Invalid { subs, .. } =
-                    schema::full_verdict(store.registry(), mutated)
-                {
-                    errors.push(Value::String(format!(
-                        "Record {index}: {}",
-                        super::invalid_mutation_text(&subs),
-                    )));
+            // No id stamping here: batch ids stay write-time.
+            match phase.adopt_record(store.registry()) {
+                Adopt::Keep => {}
+                Adopt::Replace(adopted) => final_line = adopted,
+                Adopt::Invalid(reason) => {
+                    errors.push(Value::String(format!("Record {index}: {reason}")));
                     continue;
-                }
-                // A Valid verdict implies an object (the non-object
-                // arm is Invalid); the fallback only guards the type
-                // refinement.
-                if let Some(adopted) = mutated.as_object().cloned() {
-                    final_line = adopted;
                 }
             }
             records_to_write.push(final_line);
@@ -326,13 +306,14 @@ pub(super) fn stdin_batch(
     // `{domain, record, action}` with the written record; failures
     // only warn, into the shared warnings surface.
     if !written.is_empty() {
-        let cwd = crate::commands::hooks_surface::hook_cwd("record")?;
         for (record, action) in &written {
             let payload = json!({"domain": args.domain, "record": record, "action": action});
-            let result =
-                mulch::hooks::run_hooks(mulch::hooks::HookEvent::PostRecord, payload, store, &cwd);
-            crate::commands::hooks_surface::forward_hook_stderr(&result.executions);
-            warnings.extend(result.warnings);
+            warnings.extend(HookPhase::run_warn_only(
+                mulch::hooks::HookEvent::PostRecord,
+                payload,
+                store,
+                "record",
+            ));
         }
     }
 

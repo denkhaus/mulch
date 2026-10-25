@@ -7,13 +7,13 @@
 //! pre-record fires BEFORE the writer lock (skipped in dry-run),
 //! post-record AFTER the actual write, outside the lock.
 
-use mulch::hooks::{HookEvent, run_hooks};
+use mulch::hooks::HookEvent;
 use mulch::truthy_str;
 use serde_json::{Map, Value, json};
 
 use crate::cli::{GlobalOpts, RecordArgs};
 use crate::commands::failure::now_iso;
-use crate::commands::hooks_surface::{forward_hook_stderr, hook_cwd};
+use crate::commands::hooks_surface::{Adopt, HookPhase};
 use crate::commands::record::batch::{read_batch_file, stdin_batch};
 use crate::commands::record::flag::{build_record, evidence_map};
 use crate::commands::record::report::{RecordAction, report_record_action, skip_advisory};
@@ -296,28 +296,6 @@ fn action_verb(action: RecordAction) -> &'static str {
 /// reference's `?? "pre-record hook blocked the write"`).
 const BLOCK_DEFAULT: &str = "pre-record hook blocked the write";
 
-/// The mutation gate's `payload.record` read (`payload?.record`):
-/// JSON truthiness — absent, null, false, zero, and the empty string
-/// never adopt; any other value (objects, arrays, `true`, non-empty
-/// scalars) is adopted after validation.
-fn truthy_payload_record(payload: &Value) -> Option<&Value> {
-    let record = payload.get("record")?;
-    let truthy = !matches!(record, Value::Null | Value::Bool(false))
-        && !record.as_f64().is_some_and(|number| number == 0.0)
-        && record.as_str() != Some("");
-    truthy.then_some(record)
-}
-
-/// The invalid-mutation error text: the reference joins ajv's
-/// `instancePath message` sub-errors with `"; "` — no type hint on
-/// this surface (probe-pinned, ml 0.10.7).
-fn invalid_mutation_text(subs: &[mulch::schema::SubError]) -> String {
-    format!(
-        "pre-record hook produced an invalid record: {}",
-        mulch::schema::render_subs(subs).join(mulch::schema::SUB_SEP),
-    )
-}
-
 /// A hook failure with the reference's two-channel shape: plain mode
 /// says `Error: {reason}` on stderr, the json envelope carries the
 /// bare reason (probe-pinned).
@@ -366,35 +344,17 @@ fn pre_record_phase(
     let mut sent = record.clone();
     sent.remove("id");
     let payload = json!({"domain": domain, "record": sent});
-    let cwd = hook_cwd("record")?;
-    let result = run_hooks(HookEvent::PreRecord, payload, store, &cwd);
-    forward_hook_stderr(&result.executions);
-    if result.blocked {
-        return Err(hook_failure(
-            result.block_reason.unwrap_or_else(|| BLOCK_DEFAULT.into()),
-        ));
+    let phase = HookPhase::run(HookEvent::PreRecord, payload, store, "record")?;
+    if let Some(reason) = phase.blocked_reason(BLOCK_DEFAULT) {
+        return Err(hook_failure(reason.to_string()));
     }
     let mut record = record;
-    // The reference's adoption guard is object IDENTITY
-    // (`mutated !== record` in record.ts) — always true for a parsed
-    // hook answer, so an echo is adopted too (key order and all). A
-    // deep-equality shortcut here would silently keep the builder's
-    // bytes where the reference writes the hook's.
-    if result.ran_any
-        && let Some(mutated) = truthy_payload_record(&result.payload)
-    {
-        if let mulch::schema::FullVerdict::Invalid { subs, .. } =
-            mulch::schema::full_verdict(store.registry(), mutated)
-        {
-            return Err(hook_failure(invalid_mutation_text(&subs)));
-        }
-        // A Valid verdict implies an object (the non-object arm is
-        // Invalid); the fallback only guards the type refinement.
-        if let Some(adopted) = mutated.as_object().cloned() {
-            record = ensure_write_id(store.registry(), adopted);
-        }
+    match phase.adopt_record(store.registry()) {
+        Adopt::Keep => {}
+        Adopt::Replace(adopted) => record = ensure_write_id(store.registry(), adopted),
+        Adopt::Invalid(reason) => return Err(hook_failure(reason)),
     }
-    Ok((record, result.warnings))
+    Ok((record, phase.warnings().to_vec()))
 }
 
 /// The flag path's post-record phase: fires for actual writes only
@@ -411,10 +371,5 @@ fn post_record_phase(
     // A post-* event never fails the parent command: an unresolvable
     // cwd skips the observation hook with a warning instead of an
     // error (the write already happened).
-    let Ok(cwd) = hook_cwd("record") else {
-        return vec!["post-record hook skipped: the working directory is unavailable".into()];
-    };
-    let result = run_hooks(HookEvent::PostRecord, payload, store, &cwd);
-    forward_hook_stderr(&result.executions);
-    result.warnings
+    HookPhase::run_warn_only(HookEvent::PostRecord, payload, store, "record")
 }

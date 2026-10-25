@@ -37,7 +37,7 @@ use serde_json::{Map, Value};
 use crate::cli::{GlobalOpts, PrimeArgs};
 use crate::commands::active_work::resolve_active_work;
 use crate::commands::git_context::GitContext;
-use crate::commands::hooks_surface::{forward_hook_stderr, hook_cwd, print_hook_warnings};
+use crate::commands::hooks_surface::{HookPhase, print_hook_warnings};
 use crate::commands::prime::format::{
     ManifestDomain, contract_block, manifest_output, manifest_payload, prime_output_compact,
     prime_output_markdown, prime_output_plain, prime_output_xml, session_close,
@@ -489,7 +489,6 @@ fn full_mode_output(
     // this function. The payload carries the context-filtered,
     // trust-sorted, PRE-budget records (probe P10: a budget that
     // drops every record still hands all of them to the hook).
-    let cwd = hook_cwd("prime")?;
     let hook_payload = {
         let domains: Vec<Value> = loaded
             .iter()
@@ -497,23 +496,20 @@ fn full_mode_output(
             .collect();
         serde_json::json!({"domains": domains})
     };
-    let hooks =
-        mulch::hooks::run_hooks(mulch::hooks::HookEvent::PrePrime, hook_payload, store, &cwd);
-    // Ordering law: stderr forwarding comes right after the run,
-    // before the block error and warnings.
-    forward_hook_stderr(&hooks.executions);
-    if hooks.blocked {
-        let reason = hooks
-            .block_reason
-            .as_deref()
-            .unwrap_or("pre-prime hook blocked output");
+    let phase = HookPhase::run(
+        mulch::hooks::HookEvent::PrePrime,
+        hook_payload,
+        store,
+        "prime",
+    )?;
+    if let Some(reason) = phase.blocked_reason("pre-prime hook blocked output") {
         return Err(Failure::handled_on_stderr(
             "prime",
             format!("Error: {reason}"),
         ));
     }
     if !opts.json {
-        print_hook_warnings(&hooks.warnings);
+        print_hook_warnings(phase.warnings());
     }
 
     // Mutation (prime.ts:526): a per-domain map over the hook's
@@ -523,8 +519,8 @@ fn full_mode_output(
     // the user did not ask for). Every loaded domain then re-sorts
     // by trust so hook-mutated records keep the ranking.
     let mut mutated: HashMap<String, Vec<Value>> = HashMap::new();
-    if hooks.ran_any
-        && let Some(domains) = hooks.payload.get("domains").and_then(Value::as_array)
+    if phase.ran_any()
+        && let Some(domains) = phase.payload().get("domains").and_then(Value::as_array)
     {
         for entry in domains {
             if let (Some(domain), Some(records)) = (
