@@ -16,12 +16,21 @@
 //! undefined`), so id-less originals ARE compacted and removed (the
 //! id Set contains `undefined`).
 //!
-//! DEVIATION (README): the reference runs `pre-compact` hooks and lets
-//! a hook's `{ replacement }` override the mechanical merge; this port
-//! has no hook engine (mulch-7f49), so every group takes the
-//! mechanical strategy. A `manual`-strategy group makes the reference
-//! CRASH (uncaught throw); this port renders the thrown message as a
-//! clean `Error:` line and aborts before any write.
+//! Pre-compact hooks (mulch-7f49, probe-pinned 2026-10-25): every
+//! compacting group fires the store's `pre-compact` hooks with
+//! `{domain, type, records}` (the raw source records) — a hook's
+//! truthy `payload.replacement` overrides the mechanical merge
+//! (copied verbatim, `supersedes` backfilled from the truthy source
+//! ids only when the hook left it absent/empty, any incoming id
+//! dropped, validated, the deterministic id stamped). A block or an
+//! invalid replacement SKIPS the group with a warning (`--auto`:
+//! `{domain}/{type}: {reason}`, plain `Warning:` stderr lines or the
+//! json envelope's `warnings`) or aborts with exit 1 before any
+//! write (`--apply`); engine warnings print plain-only there.
+//! `--dry-run` and `--analyze` never fire hooks. A `manual`-strategy
+//! group makes the reference CRASH (uncaught throw); this port
+//! renders the thrown message as a clean `Error:` line and aborts
+//! before any write.
 
 use std::collections::HashSet;
 use std::io::Write as _;
@@ -339,6 +348,8 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
     // every group, unlike analyze's per-domain blank).
     let mut total_compacted = 0;
     let mut results: Vec<(String, String, usize)> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let mut index = 0;
     while index < selected.len() {
         let domain = selected[index].0.clone();
@@ -354,9 +365,6 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
         let mut changed = false;
 
         for candidate in groups {
-            let Some(row) = store.registry().row(&candidate.r#type) else {
-                continue;
-            };
             // Strict-equality id matching: None matches None.
             let matched: Vec<Value> = updated
                 .iter()
@@ -372,8 +380,40 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
             if matched.len() < 2 {
                 continue;
             }
-            let replacement = merge_records(&matched, row, &now_iso(), store.registry())
-                .map_err(|message| compact_failure(opts.json, message))?;
+            // Pre-compact hook (resolveReplacement's law): a truthy
+            // `payload.replacement` overrides the mechanical merge; a
+            // block or an invalid replacement SKIPS this group with a
+            // warning so unrelated groups still compact.
+            let hook = mulch::hooks::run_hooks(
+                mulch::hooks::HookEvent::PreCompact,
+                pre_compact_payload(&domain, &candidate.r#type, &matched),
+                &store,
+                &cwd,
+            );
+            forward_hook_stderr(&hook.executions);
+            let replacement = if hook.blocked {
+                warnings.push(group_warning(
+                    &domain,
+                    &candidate.r#type,
+                    hook.block_reason.as_deref().unwrap_or(PRE_COMPACT_BLOCKED),
+                ));
+                continue;
+            } else {
+                match adopt_replacement(&hook.payload, &truthy_ids(&matched), store.registry()) {
+                    Err(reason) => {
+                        warnings.push(group_warning(&domain, &candidate.r#type, &reason));
+                        continue;
+                    }
+                    Ok(Some(record)) => record,
+                    Ok(None) => {
+                        let Some(row) = store.registry().row(&candidate.r#type) else {
+                            continue;
+                        };
+                        merge_records(&matched, row, &now_iso(), store.registry())
+                            .map_err(|message| compact_failure(opts.json, message))?
+                    }
+                }
+            };
             let remove: HashSet<Option<String>> = matched.iter().map(id_of).collect();
             updated.retain(|record| !remove.contains(&id_of(record)));
             updated.push(replacement);
@@ -409,6 +449,19 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
         fields.insert("action".into(), Value::String("auto".into()));
         fields.insert("compacted".into(), Value::from(total_compacted));
         fields.insert("results".into(), Value::Array(list));
+        // The skip warnings ride the envelope only when collected
+        // (JSON.stringify drops undefined).
+        if !warnings.is_empty() {
+            fields.insert(
+                "warnings".into(),
+                Value::Array(
+                    warnings
+                        .iter()
+                        .map(|warning| Value::String(warning.clone()))
+                        .collect(),
+                ),
+            );
+        }
         print_json(&success_envelope("compact", fields), false);
         return Ok(());
     }
@@ -420,11 +473,27 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
             results.len()
         ),
     );
-    let details: Vec<String> = results
-        .iter()
-        .map(|(domain, kind, count)| format!("  {domain}/{kind}: {count} records → 1"))
-        .collect();
-    print_line(opts.quiet, &details.join("\n"));
+    // The per-group detail lines print only when a group compacted —
+    // a fully-skipped run ends at the ✓ line (hook blocks can empty
+    // the results while candidates existed).
+    if !results.is_empty() {
+        let details: Vec<String> = results
+            .iter()
+            .map(|(domain, kind, count)| format!("  {domain}/{kind}: {count} records → 1"))
+            .collect();
+        print_line(opts.quiet, &details.join("\n"));
+    }
+    if !opts.quiet {
+        for warning in &warnings {
+            #[allow(
+                clippy::print_stderr,
+                reason = "the reference's skip warnings ride stderr"
+            )]
+            {
+                eprintln!("Warning: {warning}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -474,88 +543,130 @@ fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Fail
         .iter()
         .map(|index| records[*index].record.clone())
         .collect();
-    let compacted_from: Vec<String> = source.iter().filter_map(id_of).collect();
+    // The reference's truthy-id filter (`filter(Boolean)`): empty
+    // strings drop alongside absent ids.
+    let compacted_from: Vec<String> = truthy_ids(&source);
 
-    let mut replacement = match record_type.as_str() {
-        "convention" => {
-            let content = args.content.clone().or_else(|| args.description.clone());
-            match content {
-                Some(content) => replacement_body("convention", &[("content", content)]),
-                None => {
-                    return Err(compact_failure(
-                        opts.json,
-                        "Replacement convention requires --content or --description.",
-                    ));
-                }
-            }
-        }
-        "pattern" | "reference" | "guide" => match (args.name.clone(), args.description.clone()) {
-            (Some(name), Some(description)) => replacement_body(&record_type, &[
-                ("name", name),
-                ("description", description),
-            ]),
-            _ => {
-                return Err(compact_failure(
-                    opts.json,
-                    format!("Replacement {record_type} requires --name and --description."),
-                ));
-            }
-        },
-        "failure" => match (args.description.clone(), args.resolution.clone()) {
-            (Some(description), Some(resolution)) => replacement_body("failure", &[
-                ("description", description),
-                ("resolution", resolution),
-            ]),
-            _ => {
-                return Err(compact_failure(
-                    opts.json,
-                    "Replacement failure requires --description and --resolution.",
-                ));
-            }
-        },
-        "decision" => match (args.title.clone(), args.rationale.clone()) {
-            (Some(title), Some(rationale)) => {
-                replacement_body("decision", &[("title", title), ("rationale", rationale)])
-            }
-            _ => {
-                return Err(compact_failure(
-                    opts.json,
-                    "Replacement decision requires --title and --rationale.",
-                ));
-            }
-        },
-        other => {
-            return Err(compact_failure(
-                opts.json,
-                format!("Unknown record type \"{other}\"."),
-            ));
-        }
-    };
-
-    if !compacted_from.is_empty()
-        && let Some(object) = replacement.as_object_mut()
-    {
-        object.insert(
-            "supersedes".to_string(),
-            Value::Array(
-                compacted_from
-                    .iter()
-                    .map(|id| Value::String(id.clone()))
-                    .collect(),
-            ),
-        );
-    }
-    stamp_id(&mut replacement, store.registry());
-
-    if let Verdict::OneOf(subs) = verdict(store.registry(), &replacement) {
+    // Pre-compact hook: when the store schedules one it runs BEFORE
+    // the replacement is built — a block aborts before any write; the
+    // engine's own warnings print plain-mode only (not quiet-gated);
+    // a truthy `payload.replacement` then overrides the user flags.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let hook = mulch::hooks::run_hooks(
+        mulch::hooks::HookEvent::PreCompact,
+        pre_compact_payload(domain, &record_type, &source),
+        &store,
+        &cwd,
+    );
+    forward_hook_stderr(&hook.executions);
+    if hook.blocked {
         return Err(compact_failure(
             opts.json,
-            format!(
-                "Replacement record failed validation: {}",
-                render_subs(&subs).join("; ")
-            ),
+            hook.block_reason.as_deref().unwrap_or(PRE_COMPACT_BLOCKED),
         ));
     }
+    if !opts.json {
+        for warning in &hook.warnings {
+            #[allow(
+                clippy::print_stderr,
+                reason = "the reference's plain-mode hook warnings ride stderr"
+            )]
+            {
+                eprintln!("Warning: {warning}");
+            }
+        }
+    }
+    let replacement = match adopt_replacement(&hook.payload, &compacted_from, store.registry()) {
+        Err(reason) => return Err(compact_failure(opts.json, reason)),
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            let mut replacement = match record_type.as_str() {
+                "convention" => {
+                    let content = args.content.clone().or_else(|| args.description.clone());
+                    match content {
+                        Some(content) => replacement_body("convention", &[("content", content)]),
+                        None => {
+                            return Err(compact_failure(
+                                opts.json,
+                                "Replacement convention requires --content or --description.",
+                            ));
+                        }
+                    }
+                }
+                "pattern" | "reference" | "guide" => {
+                    match (args.name.clone(), args.description.clone()) {
+                        (Some(name), Some(description)) => replacement_body(&record_type, &[
+                            ("name", name),
+                            ("description", description),
+                        ]),
+                        _ => {
+                            return Err(compact_failure(
+                                opts.json,
+                                format!(
+                                    "Replacement {record_type} requires --name and --description."
+                                ),
+                            ));
+                        }
+                    }
+                }
+                "failure" => match (args.description.clone(), args.resolution.clone()) {
+                    (Some(description), Some(resolution)) => replacement_body("failure", &[
+                        ("description", description),
+                        ("resolution", resolution),
+                    ]),
+                    _ => {
+                        return Err(compact_failure(
+                            opts.json,
+                            "Replacement failure requires --description and --resolution.",
+                        ));
+                    }
+                },
+                "decision" => match (args.title.clone(), args.rationale.clone()) {
+                    (Some(title), Some(rationale)) => {
+                        replacement_body("decision", &[("title", title), ("rationale", rationale)])
+                    }
+                    _ => {
+                        return Err(compact_failure(
+                            opts.json,
+                            "Replacement decision requires --title and --rationale.",
+                        ));
+                    }
+                },
+                other => {
+                    return Err(compact_failure(
+                        opts.json,
+                        format!("Unknown record type \"{other}\"."),
+                    ));
+                }
+            };
+
+            if !compacted_from.is_empty()
+                && let Some(object) = replacement.as_object_mut()
+            {
+                object.insert(
+                    "supersedes".to_string(),
+                    Value::Array(
+                        compacted_from
+                            .iter()
+                            .map(|id| Value::String(id.clone()))
+                            .collect(),
+                    ),
+                );
+            }
+            stamp_id(&mut replacement, store.registry());
+
+            if let Verdict::OneOf(subs) = verdict(store.registry(), &replacement) {
+                return Err(compact_failure(
+                    opts.json,
+                    format!(
+                        "Replacement record failed validation: {}",
+                        render_subs(&subs).join("; ")
+                    ),
+                ));
+            }
+            replacement
+        }
+    };
 
     let remove: HashSet<usize> = indices.iter().copied().collect();
     let mut remaining: Vec<Value> = records
@@ -627,6 +738,140 @@ fn strict_flag(json: bool, flag: &str, raw: Option<&str>) -> Result<usize, Failu
 /// The store's staleness rule.
 fn stale_rule(store: &mulch::StoreFiles) -> StaleRule {
     StaleRule::from_shelf_life(&store.config().effective_shelf_life())
+}
+
+// ---- pre-compact hooks (mulch-7f49; reference resolveReplacement) ----
+
+/// The blocked fallback reason (the reference's
+/// `blockReason ?? "pre-compact hook blocked the compaction"`).
+const PRE_COMPACT_BLOCKED: &str = "pre-compact hook blocked the compaction";
+
+/// Forwards captured hook stderr (the engine never prints) — the
+/// ordering law: right after each run_hooks call, invocation order.
+fn forward_hook_stderr(executions: &[mulch::hooks::HookExecution]) {
+    use std::io::Write as _;
+    let mut stderr = std::io::stderr();
+    for execution in executions {
+        if execution.stderr.is_empty() {
+            continue;
+        }
+        let _ = stderr.write_all(execution.stderr.as_bytes());
+        if !execution.stderr.ends_with('\n') {
+            let _ = stderr.write_all(b"\n");
+        }
+    }
+}
+
+/// The `{domain, type, records}` pre-compact payload both compact
+/// paths send (`records` = the group's raw source records).
+fn pre_compact_payload(domain: &str, record_type: &str, records: &[Value]) -> Value {
+    serde_json::json!({
+        "domain": domain,
+        "type": record_type,
+        "records": records,
+    })
+}
+
+/// The per-group skip warning (`{domain}/{type}: {reason}`).
+fn group_warning(domain: &str, record_type: &str, reason: &str) -> String {
+    format!("{domain}/{record_type}: {reason}")
+}
+
+/// The truthy source ids — the reference's `r.id` `filter(Boolean)`
+/// (an empty string is falsy and drops alongside an absent id).
+fn truthy_ids(records: &[Value]) -> Vec<String> {
+    records
+        .iter()
+        .filter_map(id_of)
+        .filter(|id| !id.is_empty())
+        .collect()
+}
+
+/// JS truthiness of `payload.replacement` (the reference's
+/// `hookRes.payload?.replacement` guard): absent, null, false, 0 and
+/// `""` fall back to the mechanical merge; any object or array —
+/// even an empty one — is adopted.
+fn truthy_replacement(payload: &Value) -> bool {
+    match payload.get("replacement") {
+        None | Some(Value::Null | Value::Bool(false)) => false,
+        Some(Value::Number(number)) => number.as_f64().is_some_and(|n| n != 0.0),
+        Some(Value::String(text)) => !text.is_empty(),
+        Some(Value::Bool(true) | Value::Array(_) | Value::Object(_)) => true,
+    }
+}
+
+/// The reference's `{ ...payload.replacement }` spread: objects copy
+/// shallow; arrays and strings spread to index keys; every other
+/// scalar spreads to an empty object.
+fn spread_record(value: &Value) -> Value {
+    let mut out = Map::new();
+    match value {
+        Value::Object(map) => return Value::Object(map.clone()),
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                out.insert(index.to_string(), item.clone());
+            }
+        }
+        // JS spreads UTF-16 code units; chars are equivalent for the
+        // BMP and astral input is already undefined behavior territory.
+        Value::String(text) => {
+            for (index, unit) in text.chars().enumerate() {
+                out.insert(index.to_string(), Value::String(unit.to_string()));
+            }
+        }
+        _ => {}
+    }
+    Value::Object(out)
+}
+
+/// The hook-replacement adoption half shared by both compact paths
+/// (reference `resolveReplacement` / `handleApply`): when the payload
+/// carries a truthy `replacement`, take a copy, backfill `supersedes`
+/// from the source records' truthy ids only when the hook left it
+/// absent or an empty array, DELETE any incoming id, validate against
+/// the unified schema, and stamp the deterministic id. `Err` carries
+/// the invalid-record reason; `Ok(None)` means no replacement (the
+/// caller takes its mechanical/user-flag path).
+fn adopt_replacement(
+    payload: &Value,
+    source_ids: &[String],
+    registry: &mulch::Registry,
+) -> Result<Option<Value>, String> {
+    if !truthy_replacement(payload) {
+        return Ok(None);
+    }
+    let mut record = spread_record(payload.get("replacement").unwrap_or(&Value::Null));
+    if let Some(object) = record.as_object_mut() {
+        // Backfill only when absent or empty — an explicit non-empty
+        // array is kept verbatim (bad ids then fail validation).
+        let backfill = object
+            .get("supersedes")
+            .and_then(Value::as_array)
+            .is_none_or(std::vec::Vec::is_empty);
+        if backfill {
+            object.insert(
+                "supersedes".into(),
+                Value::Array(
+                    source_ids
+                        .iter()
+                        .map(|id| Value::String(id.clone()))
+                        .collect(),
+                ),
+            );
+        }
+        // The id is recomputed deterministically from the body.
+        object.shift_remove("id");
+    }
+    if let mulch::schema::FullVerdict::Invalid { subs, .. } =
+        mulch::schema::full_verdict(registry, &record)
+    {
+        return Err(format!(
+            "pre-compact hook produced an invalid record: {}",
+            render_subs(&subs).join("; ")
+        ));
+    }
+    stamp_id(&mut record, registry);
+    Ok(Some(record))
 }
 
 /// Groups records per compact key and keeps stale-or-large groups.

@@ -5,7 +5,11 @@
 //! (replacement flags per type, resolve/validation errors), and the
 //! registry compact strategies (concat, keep_latest, merge_outcomes,
 //! manual abort — the reference crashes on manual, so that case pins
-//! OUR deviation bytes).
+//! OUR deviation bytes) — plus the pre-compact hook battery
+//! (mulch-7f49): block-skip warnings, replacement adoption
+//! (supersedes backfill + id regeneration), invalid replacements,
+//! the apply-path block/abort, stderr forwarding, and the
+//! `hook_settings.timeout_ms` kill.
 
 use std::path::Path;
 
@@ -426,4 +430,511 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
         "Error: Type \"hypo\" has compact strategy \"manual\" — use `mulch compact --apply` to compact manually.\n"
     );
     assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), before);
+}
+
+// ---- pre-compact hooks (mulch-7f49) ----
+
+/// A config whose `hooks:`/`hook_settings:` blocks carry `hook_config`
+/// (single-quoted YAML entries, plain sh, stdin always drained first
+/// so the reference's async EPIPE-on-stdin-write bug cannot fire
+/// mid-run and pollute the compared bytes).
+fn hooks_config(hook_config: &str) -> String {
+    format!("version: '1'\ndomains:\n  dev: {{}}\n{hook_config}{CONFIG_TAIL}")
+}
+
+/// The `{"payload":{"replacement":…}}` stdout body for an adoption
+/// hook, backslash-escaped for the inner double-quoted printf string
+/// (`replacement_json` is plain JSON with only double quotes).
+fn hook_replacement_stdout(replacement_json: &str) -> String {
+    format!(
+        "{{\\\"payload\\\":{{\\\"replacement\\\":{escaped}}}}}",
+        escaped = replacement_json.replace('"', "\\\"")
+    )
+}
+
+/// A pre-compact hook command that drains stdin, then runs `command`.
+fn draining_hook(command: &str) -> String {
+    format!("cat > /dev/null; {command}")
+}
+
+/// Drops the reference's pino warn lines (volatile time/pid/hostname)
+/// from a stderr stream — the landed engine never prints diagnostics
+/// (README DEVIATIONS: hook-run logging), so both sides fold to the
+/// product bytes.
+fn strip_hook_logs(text: &str) -> String {
+    let filtered = text
+        .lines()
+        .filter(|line| !line.starts_with("{\"level\":"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.ends_with('\n') && !filtered.is_empty() {
+        filtered + "\n"
+    } else {
+        filtered
+    }
+}
+
+/// [`assert_compact_parity`] with the reference's pino warn lines
+/// folded out of both stderr streams (hook-configured stores).
+fn assert_compact_hook_parity(
+    ours: &TempDir,
+    our: &Run,
+    theirs: &TempDir,
+    their: &Run,
+    label: &str,
+) {
+    assert_eq!(our.code, their.code, "{label} exit");
+    assert_eq!(
+        normalize(&our.stdout),
+        promote_theirs(&normalize(&their.stdout)),
+        "{label} stdout"
+    );
+    assert_eq!(
+        normalize(&strip_hook_logs(&our.stderr)),
+        promote_theirs(&normalize(&strip_hook_logs(&their.stderr))),
+        "{label} stderr"
+    );
+    assert_eq!(
+        normalize(&read_store_text_or_empty(&ours.0, "expertise/dev.jsonl")),
+        promote_theirs(&normalize(&read_store_text_or_empty(
+            &theirs.0,
+            "expertise/dev.jsonl"
+        ))),
+        "{label} live bytes"
+    );
+    assert_eq!(
+        normalize(&read_store_text_or_empty(&ours.0, "archive/dev.jsonl")),
+        promote_theirs(&normalize(&read_store_text_or_empty(
+            &theirs.0,
+            "archive/dev.jsonl"
+        ))),
+        "{label} archive bytes"
+    );
+}
+
+/// Twin hook-configured stores, one run each (compact mutates).
+fn hooked_pair(tag: &str, body: &str, config: &str, args: &[&str]) {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = twin_seeded(tag, Some(config), &[("dev", body)], &[]);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+    let their = run_in(&theirs.0, &ml, args);
+    assert_compact_hook_parity(&ours, &our, &theirs, &their, tag);
+}
+
+/// One valid pattern replacement body (fixed stamp; the id is
+/// regenerated deterministically from `pattern:Hooked one`).
+const HOOKED_PATTERN: &str = "{\"type\":\"pattern\",\"name\":\"Hooked one\",\
+\"description\":\"hook summary\",\"classification\":\"foundational\",\
+\"recorded_at\":\"2026-10-01T00:00:00.000Z\"}";
+
+#[test]
+fn compact_auto_hook_block_skips_group_with_warning() {
+    // The hook blocks ONLY the guide group (grep drains stdin); the
+    // unrelated pattern group still compacts. Plain: per-group
+    // `Warning:` lines on stderr; json: the envelope's `warnings`
+    // array; quiet: the warning lines suppress.
+    let body = seeded_body();
+    let config = hooks_config(
+        "hooks:\n  pre-compact:\n    - 'grep -q guide && exit 3 || \
+              exit 0'\n",
+    );
+    hooked_pair("cph-block", &body, &config, &["compact", "--auto", "--yes"]);
+    hooked_pair("cph-block-json", &body, &config, &[
+        "--json", "compact", "--auto", "--yes",
+    ]);
+    hooked_pair("cph-block-quiet", &body, &config, &[
+        "--quiet", "compact", "--auto", "--yes",
+    ]);
+}
+
+#[test]
+fn compact_auto_hook_replacement_is_adopted() {
+    // A truthy `payload.replacement` overrides the mechanical merge:
+    // copied verbatim, `supersedes` backfilled from the group's ids,
+    // the id regenerated from the body. The guide group (the hook
+    // stays silent for it) merges mechanically. The second config
+    // pins the explicit-supersedes-kept + incoming-id-dropped law.
+    let body = seeded_body();
+    let config = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - 'grep -q pattern && printf %s \"{}\" || true'\n",
+        hook_replacement_stdout(HOOKED_PATTERN)
+    ));
+    hooked_pair("cph-adopt", &body, &config, &["compact", "--auto", "--yes"]);
+    hooked_pair("cph-adopt-json", &body, &config, &[
+        "--json", "compact", "--auto", "--yes",
+    ]);
+
+    let explicit = "{\"type\":\"pattern\",\"name\":\"Keep sup\",\
+\"description\":\"d\",\"classification\":\"foundational\",\
+\"recorded_at\":\"2026-10-01T00:00:00.000Z\",\
+\"supersedes\":[\"mx-9ea5ff\",\"mx-9ea5fe\"],\"id\":\"bogus\"}";
+    let kept = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - 'cat > /dev/null; printf %s \"{}\"'\n",
+        hook_replacement_stdout(explicit)
+    ));
+    hooked_pair("cph-adopt-explicit", &body, &kept, &[
+        "compact", "--auto", "--yes",
+    ]);
+}
+
+#[test]
+fn compact_auto_hook_invalid_replacement_skips_group() {
+    // An invalid replacement skips the group with the AJV cascade
+    // warning (leading space per `${instancePath} ${message}`, joined
+    // `; `); the second config spreads `{}` — supersedes backfills,
+    // then every branch misses `type`.
+    let body = seeded_body();
+    let missing = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - 'cat > /dev/null; printf %s \"{}\"'\n",
+        hook_replacement_stdout(
+            "{\"type\":\"pattern\",\"name\":\"NoDesc\",\"classification\":\"foundational\",\
+\"recorded_at\":\"2026-10-01T00:00:00.000Z\"}"
+        )
+    ));
+    hooked_pair("cph-invalid", &body, &missing, &[
+        "compact", "--auto", "--yes",
+    ]);
+    hooked_pair("cph-invalid-json", &body, &missing, &[
+        "--json", "compact", "--auto", "--yes",
+    ]);
+
+    let empty = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - 'cat > /dev/null; printf %s \"{}\"'\n",
+        hook_replacement_stdout("{}")
+    ));
+    hooked_pair("cph-empty-repl", &body, &empty, &[
+        "compact", "--auto", "--yes",
+    ]);
+}
+
+#[test]
+fn compact_apply_hook_block_aborts_before_write() {
+    // A blocked hook aborts --apply with exit 1 before any write:
+    // plain `Error: {reason}` / the json error envelope, store bytes
+    // identical to the seed on both sides.
+    let body = seeded_body();
+    let config = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - '{}'\n",
+        draining_hook("exit 3")
+    ));
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    for args in [
+        &[
+            "compact",
+            "dev",
+            "--apply",
+            "--records",
+            "mx-aaa001,mx-aaa002",
+            "--type",
+            "pattern",
+            "--name",
+            "N",
+            "--description",
+            "D",
+        ][..],
+        &[
+            "--json",
+            "compact",
+            "dev",
+            "--apply",
+            "--records",
+            "mx-aaa001,mx-aaa002",
+            "--type",
+            "pattern",
+            "--name",
+            "N",
+            "--description",
+            "D",
+        ][..],
+    ] {
+        let (ours, theirs) = twin_seeded(
+            "cph-apply-block",
+            Some(config.as_str()),
+            &[("dev", body.as_str())],
+            &[],
+        );
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        let their = run_in(&theirs.0, &ml, args);
+        assert_compact_hook_parity(&ours, &our, &theirs, &their, "apply-block");
+        assert_eq!(our.code, 1);
+        assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
+        assert_eq!(read_store_file(&theirs.0, "expertise/dev.jsonl"), body);
+    }
+}
+
+#[test]
+fn compact_apply_hook_replacement_overrides_flags() {
+    // The hook's guide-typed replacement wins over the pattern flags;
+    // the success line still names the RESOLVED type ("pattern"). The
+    // invalid variant aborts with exit 1 before any write.
+    let body = seeded_body();
+    let apply = &[
+        "compact",
+        "dev",
+        "--apply",
+        "--records",
+        "mx-aaa001,mx-aaa002",
+        "--type",
+        "pattern",
+        "--name",
+        "N",
+        "--description",
+        "D",
+    ][..];
+    let config = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - '{}'\n",
+        draining_hook(&format!(
+            "printf %s \"{}\"",
+            hook_replacement_stdout(
+                "{\"type\":\"guide\",\"name\":\"Applied hook\",\"description\":\"via hook\",\
+\"classification\":\"foundational\",\"recorded_at\":\"2026-10-01T00:00:00.000Z\"}"
+            )
+        ))
+    ));
+    hooked_pair("cph-apply-adopt", &body, &config, apply);
+    hooked_pair("cph-apply-adopt-json", &body, &config, &[
+        "--json",
+        "compact",
+        "dev",
+        "--apply",
+        "--records",
+        "mx-aaa001,mx-aaa002",
+        "--type",
+        "pattern",
+        "--name",
+        "N",
+        "--description",
+        "D",
+    ]);
+
+    let invalid = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - '{}'\n",
+        draining_hook(&format!(
+            "printf %s \"{}\"",
+            hook_replacement_stdout("{\"type\":\"pattern\",\"name\":\"X\"}")
+        ))
+    ));
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = twin_seeded(
+        "cph-apply-invalid",
+        Some(invalid.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let our = run_in(&ours.0, Path::new(mulch_bin()), apply);
+    let their = run_in(&theirs.0, &ml, apply);
+    assert_compact_hook_parity(&ours, &our, &theirs, &their, "apply-invalid");
+    assert_eq!(our.code, 1);
+    assert!(
+        strip_hook_logs(&our.stderr).starts_with(
+            "Error: pre-compact hook produced an invalid record:  must have required property \
+             'content'"
+        ),
+        "stderr was: {}",
+        our.stderr
+    );
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
+}
+
+#[test]
+fn compact_hook_stderr_is_forwarded() {
+    // Captured hook stderr forwards right after each run, before any
+    // product bytes — success and block paths, plain and json alike.
+    let body = seeded_body();
+    let apply = &[
+        "compact",
+        "dev",
+        "--apply",
+        "--records",
+        "mx-aaa001,mx-aaa002",
+        "--type",
+        "pattern",
+        "--name",
+        "N",
+        "--description",
+        "D",
+    ][..];
+    let noisy = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - '{}'\n",
+        draining_hook(&format!(
+            "printf hook-boom >&2; printf %s \"{}\"",
+            hook_replacement_stdout(HOOKED_PATTERN)
+        ))
+    ));
+    hooked_pair("cph-stderr", &body, &noisy, apply);
+    hooked_pair("cph-stderr-json", &body, &noisy, &[
+        "--json",
+        "compact",
+        "dev",
+        "--apply",
+        "--records",
+        "mx-aaa001,mx-aaa002",
+        "--type",
+        "pattern",
+        "--name",
+        "N",
+        "--description",
+        "D",
+    ]);
+
+    // Block path: the forwarded bytes precede the Warning lines.
+    let blocking = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - '{}'\n",
+        draining_hook("printf hook-boom >&2; exit 3")
+    ));
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = twin_seeded(
+        "cph-stderr-block",
+        Some(blocking.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact", "--auto", "--yes",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["compact", "--auto", "--yes"]);
+    assert_compact_hook_parity(&ours, &our, &theirs, &their, "stderr-block");
+    assert!(
+        strip_hook_logs(&our.stderr).starts_with("hook-boom\nhook-boom\nWarning: "),
+        "stderr was: {}",
+        our.stderr
+    );
+}
+
+#[test]
+fn compact_hook_timeout_blocks_the_group() {
+    // A 150 ms `hook_settings.timeout_ms` SIGKILLs the whole process
+    // group (exit 124): --auto skips each group with the timed-out
+    // warning, --apply aborts with the Error line.
+    let body = seeded_body();
+    let config = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - '{}'\nhook_settings:\n  timeout_ms: 150\n",
+        draining_hook("sleep 30 & wait")
+    ));
+    hooked_pair("cph-timeout", &body, &config, &[
+        "compact", "--auto", "--yes",
+    ]);
+    hooked_pair("cph-timeout-json", &body, &config, &[
+        "--json", "compact", "--auto", "--yes",
+    ]);
+    hooked_pair("cph-timeout-apply", &body, &config, &[
+        "compact",
+        "dev",
+        "--apply",
+        "--records",
+        "mx-aaa001,mx-aaa002",
+        "--type",
+        "pattern",
+        "--name",
+        "N",
+        "--description",
+        "D",
+    ]);
+}
+
+#[test]
+fn compact_auto_dry_run_fires_no_hooks() {
+    // The reference returns from --dry-run before the apply loop, so
+    // pre-compact never fires (marker file absent on both sides even
+    // though the hook would block).
+    let body = seeded_body();
+    let config = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - '{}'\n",
+        draining_hook("printf ran > hook-ran.txt; exit 3")
+    ));
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = twin_seeded(
+        "cph-dryrun",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact",
+        "--auto",
+        "--dry-run",
+    ]);
+    let their = run_in(&theirs.0, &ml, &["compact", "--auto", "--dry-run"]);
+    assert_compact_hook_parity(&ours, &our, &theirs, &their, "dry-run");
+    assert!(!ours.0.join("hook-ran.txt").exists());
+    assert!(!theirs.0.join("hook-ran.txt").exists());
+}
+
+#[test]
+fn compact_hook_engine_warnings_surface() {
+    // The engine's own warnings (non-JSON stdout, mutation ignored):
+    // --apply plain prints `Warning: …` on stderr (not quiet-gated)
+    // and the compaction proceeds via the user flags; --json and
+    // --auto drop them entirely (resolveReplacement ignores them).
+    // The reason's wording past the prefix is serde-vs-V8 and NOT
+    // pinned (README DEVIATIONS), so the plain case pins OUR bytes.
+    let body = seeded_body();
+    let config = hooks_config(&format!(
+        "hooks:\n  pre-compact:\n    - '{}'\n",
+        draining_hook("printf %s not-json")
+    ));
+    let (ours, _theirs) = twin_seeded(
+        "cph-engine-warn",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact",
+        "dev",
+        "--apply",
+        "--records",
+        "mx-aaa001,mx-aaa002",
+        "--type",
+        "pattern",
+        "--name",
+        "N",
+        "--description",
+        "D",
+    ]);
+    assert_eq!(run.code, 0);
+    assert_eq!(run.stdout, "✓ Compacted 2 pattern records into 1 in dev\n");
+    assert!(
+        strip_hook_logs(&run.stderr).starts_with(
+            "Warning: hook `cat > /dev/null; printf %s not-json` printed non-JSON on stdout \
+             (mutation ignored): "
+        ),
+        "engine warning was: {}",
+        run.stderr
+    );
+
+    // --auto and --json stay byte-identical to the reference (both
+    // drop the engine warnings; the mechanical merge runs).
+    hooked_pair("cph-engine-warn-auto", &body, &config, &[
+        "compact", "--auto", "--yes",
+    ]);
+    hooked_pair("cph-engine-warn-json", &body, &config, &[
+        "--json",
+        "compact",
+        "dev",
+        "--apply",
+        "--records",
+        "mx-aaa001,mx-aaa002",
+        "--type",
+        "pattern",
+        "--name",
+        "N",
+        "--description",
+        "D",
+    ]);
 }
