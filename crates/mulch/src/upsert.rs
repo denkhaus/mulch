@@ -208,9 +208,10 @@ pub fn write_records(
     atomic_write(path, body.as_bytes())
 }
 
-/// Stamps the write-time id onto an adopted record (reference record
-/// hooks: `if (!record.id)`): appended LAST when the hook left none,
-/// kept verbatim — value AND position — when it carried one.
+/// Assigns the deterministic id at file-write time (reference
+/// `writeExpertiseFile`): a missing id is generated, and a carried id
+/// that is NOT a string is replaced too; a surviving string id keeps
+/// its value and position.
 ///
 /// One of the THREE write-time id laws, each pinned by a different
 /// reference path (mulch-9e28 keeps them side by side here):
@@ -258,10 +259,69 @@ pub fn ensure_write_id(
             .unwrap_or_default();
         record.insert(
             "id".into(),
-            Value::String(crate::ids::record_id(&record_type, id_value)),
+            Value::String(record_id(&record_type, id_value)),
         );
     }
     record
+}
+
+#[cfg(test)]
+mod ensure_write_id_tests {
+    use serde_json::json;
+
+    use super::ensure_write_id;
+
+    fn registry() -> crate::ids::Registry {
+        crate::ids::Registry::builtins()
+    }
+
+    /// The hook-adoption policy as a decision table. Catches: (a)
+    /// stamping when a hook id EXISTS (the reference's `if (!record.id)`
+    /// law keeps value AND position), (b) dropping the id into the
+    /// MIDDLE instead of appending it LAST, (c) the row that splits
+    /// this law from the file-write law: a non-string id is KEPT here
+    /// where [`super::assign_missing_id`] would replace it.
+    #[test]
+    fn stamps_only_when_absent_and_appends_last() {
+        let absent = json!({
+            "type": "pattern", "classification": "tactical",
+            "recorded_at": "2026-10-25T10:00:00.000Z",
+            "name": "n", "description": "d",
+        });
+        let map = ensure_write_id(&registry(), absent.as_object().expect("object").clone());
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        assert_eq!(keys.last(), Some(&"id"), "appended LAST: {keys:?}");
+        assert_eq!(
+            map["id"],
+            json!(crate::ids::record_id("pattern", "n")),
+            "the id hashes the row's id-key field"
+        );
+
+        let kept = json!({
+            "id": "mx-hook", "type": "pattern", "classification": "tactical",
+            "recorded_at": "2026-10-25T10:00:00.000Z",
+            "name": "n", "description": "d",
+        });
+        let map = ensure_write_id(&registry(), kept.as_object().expect("object").clone());
+        assert_eq!(map["id"], json!("mx-hook"));
+        assert_eq!(
+            map.keys().next(),
+            Some(&"id".to_string()),
+            "a hook id keeps its position too"
+        );
+
+        let non_string = json!({
+            "id": 7, "type": "pattern", "classification": "tactical",
+            "recorded_at": "2026-10-25T10:00:00.000Z",
+            "name": "n", "description": "d",
+        });
+        let map = ensure_write_id(&registry(), non_string.as_object().expect("object").clone());
+        assert_eq!(
+            map["id"],
+            json!(7),
+            "non-string ids stay (unlike the file-write law)"
+        );
+    }
 }
 
 #[cfg(test)]

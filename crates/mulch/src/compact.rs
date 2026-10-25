@@ -230,8 +230,9 @@ fn string_array(values: &[String]) -> Value {
 /// Public beyond `merge` because the two single-record paths stamp the
 /// same way: `--apply`'s flag-built replacement and the pre-compact
 /// hook's adopted record (ADR-0003 keeps those paths in the command,
-/// not the stamp). mulch-9e28 folds the remaining write-time id laws
-/// onto this one.
+/// not the stamp). The compaction arm of the write-time id trio — the
+/// other two (`assign_missing_id`, `ensure_write_id`, one shared doc)
+/// are re-exported from the private `upsert` module at the crate root.
 pub fn stamp_id(record: &mut Value, registry: &Registry) {
     let record_type = record
         .get("type")

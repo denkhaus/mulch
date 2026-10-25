@@ -554,7 +554,8 @@ mod tests {
     }
 
     /// The defaults the parity batteries see (100/150/200): the same
-    /// ladder at reference scale.
+    /// ladder at reference scale. Catches a defaults triple with
+    /// warn/hard swapped — 150 would answer Hard here.
     #[test]
     fn tier_at_reference_defaults() {
         let governance = Governance::reference_default();

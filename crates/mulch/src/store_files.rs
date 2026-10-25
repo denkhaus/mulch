@@ -771,7 +771,9 @@ mod tests {
         );
 
         // Key presence alone decides (the reference's `undefined` is
-        // unrepresentable in JSON): null augments identically.
+        // unrepresentable in JSON): null augments identically. Catches
+        // a value-sensitive augmentation — a probe reading the VALUE
+        // would pass this record as valid.
         let mut raw = valid_updated();
         raw.as_object_mut()
             .expect("object")

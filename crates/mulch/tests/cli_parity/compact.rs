@@ -404,12 +404,64 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
 fn compact_auto_unknown_type_group_is_a_clean_error() {
     // mulch-2809: with --allow-unknown-types the read KEEPS records of
     // unregistered types, they form a candidate group, and the
-    // reference's mergeRecords throws `Unknown record type: <type>`
-    // uncaught — a Bun stack-dump crash, the same class as the manual
-    // group below. This port renders the thrown message as a clean
-    // Error line and leaves the store untouched (README DEVIATIONS).
-    // Ungated on purpose: the reference's own bytes ARE a stack trace,
-    // so there is nothing byte-comparable to run against.
+    // reference dies during candidate COLLECTION — getRecordSummary
+    // (format.ts) throws `Unknown record type: <type>` uncaught, a Bun
+    // stack-dump crash with EMPTY stdout, in every mode. This port
+    // renders the thrown message as a clean Error line at the same
+    // point, so nothing prints and nothing writes (README DEVIATIONS).
+    // Ungated on purpose: the reference's own bytes ARE a stack trace.
+    // The alpha domain carries a CLEAN compactable group: the error
+    // must fire before any write, so alpha stays two records and no
+    // archive appears (no partially compacted store).
+    let config = "version: '1'\n\
+domains:\n  dev: {}\n  alpha: {}\n\
+governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\n\
+classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30\n";
+    let stale = days_ago(40);
+    let body = format!(
+        "{{\"type\":\"weird\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"content\":\"w1\"}}\n\
+{{\"type\":\"weird\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"content\":\"w2\"}}\n"
+    );
+    let alpha = format!(
+        "{{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":\"a1\",\"description\":\"d1\"}}\n\
+{{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":\"a2\",\"description\":\"d2\"}}\n"
+    );
+    let (ours, _theirs) = twin_seeded(
+        "cp-unknown",
+        Some(config),
+        &[("dev", body.as_str()), ("alpha", alpha.as_str())],
+        &[],
+    );
+    let dev_before = read_store_file(&ours.0, "expertise/dev.jsonl");
+    let alpha_before = read_store_file(&ours.0, "expertise/alpha.jsonl");
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact",
+        "--auto",
+        "--yes",
+        "--allow-unknown-types",
+    ]);
+    assert_eq!(run.code, 1);
+    // The reference dies before ANY output; so does the port.
+    assert_eq!(run.stdout, "");
+    assert_eq!(run.stderr, "Error: Unknown record type: weird\n");
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), dev_before);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/alpha.jsonl"),
+        alpha_before,
+        "no partially compacted store"
+    );
+    assert!(
+        !ours.0.join(".mulch/archive/alpha.jsonl").exists(),
+        "the clean domain was never archived"
+    );
+}
+
+#[test]
+fn compact_analyze_unknown_type_group_is_a_clean_error() {
+    // The revisor's mode probe: the reference's collection crash hits
+    // --analyze (and --auto --dry-run) exactly like --auto — same
+    // empty stdout, same stack dump. Pin the analyze mode so a later
+    // fix cannot re-open the divergence for the read-only modes.
     let config = "version: '1'\n\
 domains:\n  dev: {}\n\
 governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\n\
@@ -419,20 +471,16 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
         "{{\"type\":\"weird\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"content\":\"w1\"}}\n\
 {{\"type\":\"weird\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"content\":\"w2\"}}\n"
     );
-    let (ours, _theirs) = twin_seeded("cp-unknown", Some(config), &[("dev", body.as_str())], &[]);
-    let before = read_store_file(&ours.0, "expertise/dev.jsonl");
+    let (ours, _theirs) = twin_seeded("cp-unknown-an", Some(config), &[("dev", body.as_str())], &[
+    ]);
     let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact",
-        "--auto",
-        "--yes",
+        "--analyze",
         "--allow-unknown-types",
     ]);
     assert_eq!(run.code, 1);
-    // The summary block prints before the apply phase reaches the
-    // merge (same flow as the manual abort).
-    assert!(run.stdout.starts_with("\nCompaction summary:\n"));
+    assert_eq!(run.stdout, "");
     assert_eq!(run.stderr, "Error: Unknown record type: weird\n");
-    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), before);
 }
 
 #[test]

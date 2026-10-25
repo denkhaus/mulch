@@ -181,16 +181,20 @@ expectation (the parity rule: never silently):
   a hook that shells back into a mutating command on the same store
   fails fast here and succeeds there. Blocking, timeout, mutation,
   stdout-ignored and stderr-byte semantics match the reference.
-- **`compact --auto` aborts cleanly on a `manual`-strategy group.**
-  The reference crashes with an uncaught-throw stack dump when a
-  `manual` custom type reaches the mechanical merge; this port prints
-  the thrown message as a plain `Error:` line (exit 1) and leaves the
-  store untouched. The same crash class (mulch-2809): a group of
-  records whose type is not registered — reachable under
-  `--allow-unknown-types` — makes the reference's `mergeRecords`
-  throw `Unknown record type: <type>` uncaught; this port prints the
-  thrown message as a plain `Error:` line (exit 1) and leaves the
-  store untouched.
+- **`compact` errors cleanly where the reference crash-dumps on
+  collection- and merge-time throws.** Two classes, both rendered as
+  plain `Error:` lines (exit 1): a `manual`-strategy group reaching
+  the mechanical merge (the reference throws uncaught AFTER printing
+  the summary block; this port prints the summary, then the error,
+  and leaves the store untouched), and — mulch-2809 — a candidate
+  group whose type is not registered, reachable under
+  `--allow-unknown-types`: the reference dies during candidate
+  collection in `getRecordSummary` (`Unknown record type: <type>`,
+  uncaught, no output at all, in every mode — analyze, dry-run, auto,
+  apply; the later `mergeRecords` throw is unreachable from the CLI).
+  This port raises the error at collection, so nothing prints, and
+  nothing writes — even when earlier domains carried clean,
+  compactable groups.
 - **Three doctor checks evaluate as unconditional pass** on clean
   stores only: `domain-violations`, `domain-rules-compatibility`,
   `decay-config`. Their warn/fail semantics land with the later

@@ -144,14 +144,10 @@ fn analyze(opts: &GlobalOpts, domain: Option<&str>) -> Result<(), Failure> {
         if records.len() < 2 {
             continue;
         }
-        candidates.extend(find_candidates(
-            &domain,
-            &records,
-            &rule,
-            now,
-            3,
-            store.registry(),
-        ));
+        candidates.extend(
+            find_candidates(&domain, &records, &rule, now, 3, store.registry())
+                .map_err(|message| compact_failure(opts.json, message))?,
+        );
     }
 
     if opts.json {
@@ -236,6 +232,7 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
             continue;
         }
         for candidate in find_candidates(&domain, &records, &rule, now, min_group, store.registry())
+            .map_err(|message| compact_failure(opts.json, message))?
         {
             all.push((domain.clone(), candidate));
         }
@@ -405,17 +402,11 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
                 }
                 Ok(Some(record)) => record,
                 Ok(None) => {
-                    // The reference's mergeRecords throws
-                    // `Unknown record type: <type>` here — an uncaught
-                    // throw dumps a Bun stack trace (the same crash
-                    // class as the manual-strategy group); we render
-                    // the thrown message as a clean error (mulch-2809,
-                    // README DEVIATIONS).
+                    // Unreachable after the collection-time check in
+                    // find_candidates (mulch-2809); the skip only
+                    // guards direct callers of this loop.
                     let Some(row) = store.registry().row(&candidate.r#type) else {
-                        return Err(compact_failure(
-                            opts.json,
-                            format!("Unknown record type: {}", candidate.r#type),
-                        ));
+                        continue;
                     };
                     // The mechanical merge is a lib law (ADR-0005);
                     // the channel renders the two refusals here.
@@ -870,7 +861,7 @@ fn find_candidates(
     now: jiff::Timestamp,
     min_group_size: usize,
     registry: &mulch::Registry,
-) -> Vec<Candidate> {
+) -> Result<Vec<Candidate>, String> {
     // Insertion-ordered groups keyed by type (merge_outcomes: type +
     // id-key value).
     let mut groups: Vec<(String, String, Vec<&LineRecord>)> = Vec::new();
@@ -899,6 +890,18 @@ fn find_candidates(
         if !has_stale && members.len() < min_group_size {
             continue;
         }
+        // The reference's candidate collection dies HERE for a group
+        // whose type is not registered: getRecordSummary (format.ts)
+        // throws `Unknown record type: <type>` during collection —
+        // before any output and before any write, in EVERY mode
+        // (analyze, dry-run, auto, apply; the later mergeRecords
+        // throw is unreachable from the CLI). We render the thrown
+        // message as a clean error at the same point (mulch-2809,
+        // README DEVIATIONS), so no partial output and no partially
+        // compacted store.
+        if registry.row(&record_type).is_none() {
+            return Err(format!("Unknown record type: {record_type}"));
+        }
         candidates.push(Candidate {
             domain:  domain.to_string(),
             r#type:  record_type,
@@ -912,7 +915,7 @@ fn find_candidates(
                 .collect(),
         });
     }
-    candidates
+    Ok(candidates)
 }
 
 /// The summary/dry-run block: a blank after EVERY group (the
