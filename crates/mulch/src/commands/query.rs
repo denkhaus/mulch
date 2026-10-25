@@ -23,11 +23,12 @@ use mulch::{DomainSpec, RecordFilter};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, QueryArgs};
+use crate::commands::failure::{DomainFailure, unknown_domain_failure};
 use crate::commands::render::{
     format_domain_expertise, format_domain_expertise_compact, format_domain_expertise_plain,
     format_domain_expertise_xml,
 };
-use crate::commands::{DomainFailure, open_store, unknown_domain_failure};
+use crate::commands::store::open_store;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `query` against the store at the current directory.
@@ -126,8 +127,12 @@ fn filtered_records(
     opts: &GlobalOpts,
     sort_by_score: bool,
 ) -> Result<Vec<Value>, Failure> {
-    let records =
-        crate::commands::read_domain_records("query", store, domain, opts.allow_unknown_types)?;
+    let records = crate::commands::store::read_domain_records(
+        "query",
+        store,
+        domain,
+        opts.allow_unknown_types,
+    )?;
     let mut records = filter.apply(records.into_iter().map(|row| row.record).collect());
     if sort_by_score {
         mulch::scoring::sort_by_confirmation(&mut records);

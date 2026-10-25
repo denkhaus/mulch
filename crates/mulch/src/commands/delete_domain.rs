@@ -7,7 +7,7 @@
 //! EOF cancels instead of blocking (README DEVIATIONS).
 
 use crate::cli::GlobalOpts;
-use crate::commands::read_confirmation;
+use crate::commands::input::read_confirmation;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `delete-domain`.
@@ -20,9 +20,9 @@ pub(super) fn run(
     // Real runs hold the writer lock across the cycle; --dry-run
     // reads lock-free like the reference (mulch-228d).
     let mut store = if dry_run {
-        crate::commands::open_store("delete-domain", true)?
+        crate::commands::store::open_store("delete-domain", true)?
     } else {
-        crate::commands::open_store_mut("delete-domain", true)?
+        crate::commands::store::open_store_mut("delete-domain", true)?
     };
 
     let domains = store.domains();
@@ -34,7 +34,10 @@ pub(super) fn run(
     let file = store.domain_path(domain);
     let records = mulch::read_strict(store.registry(), &file, opts.allow_unknown_types).map_err(
         |source| {
-            Failure::handled_on_stderr("delete-domain", crate::commands::render_core_error(&source))
+            Failure::handled_on_stderr(
+                "delete-domain",
+                crate::commands::failure::render_core_error(&source),
+            )
         },
     )?;
     let record_count = records.len();
@@ -110,12 +113,12 @@ fn print_prompt(text: &str) {
 /// The unknown-domain failure: plain mode carries the add-hint, json
 /// mode the available-domains list (reference divergence).
 fn not_in_config(opts: &GlobalOpts, domain: &str, available: &[String]) -> Failure {
-    crate::commands::unknown_domain_failure(
+    crate::commands::failure::unknown_domain_failure(
         "delete-domain",
         domain,
         available,
         opts.json,
-        crate::commands::DomainFailure::WithHint,
+        crate::commands::failure::DomainFailure::WithHint,
     )
 }
 

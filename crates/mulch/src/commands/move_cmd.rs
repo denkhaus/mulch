@@ -28,9 +28,9 @@ pub(super) fn run(
     // the reference nests target+source file locks); --dry-run reads
     // lock-free (mulch-228d).
     let store = if dry_run {
-        crate::commands::open_store("move", true)?
+        crate::commands::store::open_store("move", true)?
     } else {
-        crate::commands::open_store_mut("move", true)?
+        crate::commands::store::open_store_mut("move", true)?
     };
 
     // Same-domain check comes FIRST (reference order).
@@ -43,20 +43,25 @@ pub(super) fn run(
     let domains = store.domains();
     for domain in [source, target] {
         if !domains.iter().any(|d| d == domain) {
-            return Err(crate::commands::unknown_domain_failure(
+            return Err(crate::commands::failure::unknown_domain_failure(
                 "move",
                 domain,
                 &domains,
                 opts.json,
-                crate::commands::DomainFailure::Move,
+                crate::commands::failure::DomainFailure::Move,
             ));
         }
     }
 
     let source_file = store.domain_path(source);
     let target_file = store.domain_path(target);
-    let (lines, index) =
-        crate::commands::read_and_resolve("move", &store, source, id, opts.allow_unknown_types)?;
+    let (lines, index) = crate::commands::store::read_and_resolve(
+        "move",
+        &store,
+        source,
+        id,
+        opts.allow_unknown_types,
+    )?;
     let record = lines[index].record.clone();
     let kind = lines[index].record_type();
     let record_id = lines[index].id().map(str::to_string);
@@ -74,7 +79,7 @@ pub(super) fn run(
     // move validates what delete does not — against the reference's
     // in-memory shape (the legacy `outcome` key included, mulch-7896).
     if let schema::FullVerdict::Invalid { subs, .. } =
-        crate::commands::updated_record_verdict(&store, source, lines[index].line, &record)
+        crate::commands::store::updated_record_verdict(&store, source, lines[index].line, &record)
     {
         return Err(Failure::handled_on_stderr(
             "move",
@@ -146,7 +151,7 @@ pub(super) fn run(
             .filter(|(position, _)| *position != index)
             .map(|(_, line)| line.record.clone())
             .collect();
-        crate::commands::persist("move", &store, source, &survivors)?;
+        crate::commands::store::persist("move", &store, source, &survivors)?;
 
         // Target: the seam's append-verbatim policy (existing bytes
         // preserved, newline guard included).

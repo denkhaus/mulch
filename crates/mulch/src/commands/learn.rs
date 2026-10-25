@@ -11,9 +11,10 @@ use mulch::git_context::{DomainFileMatches, match_files_to_domains};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
+use crate::commands::failure::render_core_error;
 use crate::commands::git_context::GitContext;
 use crate::commands::render::promote_mulch;
-use crate::commands::{NO_STORE_CONFIG_MESSAGE, locate, render_core_error};
+use crate::commands::store::{NO_STORE_CONFIG_MESSAGE, locate};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `learn` (plain and `--json`).

@@ -27,11 +27,12 @@ use mulch::{DomainSpec, RecordFilter, apply_confirmation_boost};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, SearchArgs};
+use crate::commands::failure::{DomainFailure, unknown_domain_failure};
 use crate::commands::render::{
     format_domain_expertise, format_domain_expertise_compact, format_domain_expertise_plain,
     format_domain_expertise_xml,
 };
-use crate::commands::{DomainFailure, open_store, unknown_domain_failure};
+use crate::commands::store::open_store;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// `DEFAULT_SEARCH_BOOST_FACTOR` (schemas/config.ts:19).
@@ -256,8 +257,8 @@ fn record_type(record: &Value) -> &str {
 /// the bullet renders `String(value)` — `undefined` for an absent
 /// summary field, non-strings coerced.
 fn archived_summary(record: &Value, registry: &mulch::Registry) -> Result<String, Failure> {
-    crate::commands::summary_raw("search", registry, record)
-        .map(|raw| crate::commands::summary_text(raw.as_ref()))
+    crate::commands::failure::summary_raw("search", registry, record)
+        .map(|raw| crate::commands::failure::summary_text(raw.as_ref()))
 }
 
 /// Reads one domain's live records strictly (the global
@@ -267,7 +268,7 @@ fn read_domain(
     domain: &str,
     opts: &GlobalOpts,
 ) -> Result<Vec<Value>, Failure> {
-    crate::commands::read_domain_records("search", store, domain, opts.allow_unknown_types)
+    crate::commands::store::read_domain_records("search", store, domain, opts.allow_unknown_types)
         .map(|records| records.into_iter().map(|row| row.record).collect())
 }
 
@@ -278,7 +279,10 @@ fn read_archived(store: &mulch::StoreFiles, domain: &str) -> Result<Vec<Value>, 
         .read_archive(domain)
         .map(|records| records.into_iter().map(|row| row.record).collect())
         .map_err(|source| {
-            Failure::handled_on_stderr("search", crate::commands::render_core_error(&source))
+            Failure::handled_on_stderr(
+                "search",
+                crate::commands::failure::render_core_error(&source),
+            )
         })
 }
 

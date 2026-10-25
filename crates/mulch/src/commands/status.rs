@@ -17,7 +17,7 @@ const TYPES: [&str; 6] = mulch::PAYLOAD_TYPES;
 
 /// Runs `status` against the store at the current directory.
 pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
-    let store = crate::commands::open_store("status", false)?;
+    let store = crate::commands::store::open_store("status", false)?;
 
     let governance = store.config().effective_governance();
     let shelf_life = store.config().effective_shelf_life();
@@ -261,11 +261,15 @@ fn read_domain(
     store: &mulch::StoreFiles,
     domain: &str,
 ) -> Result<(Vec<Value>, Option<Timestamp>), Failure> {
-    let records =
-        crate::commands::read_domain_records("status", store, domain, opts.allow_unknown_types)?
-            .into_iter()
-            .map(|line| line.record)
-            .collect();
+    let records = crate::commands::store::read_domain_records(
+        "status",
+        store,
+        domain,
+        opts.allow_unknown_types,
+    )?
+    .into_iter()
+    .map(|line| line.record)
+    .collect();
     let mtime = store
         .domain_modified(domain)
         .map_err(|source| Failure::handled("status", crate::output::chain_message(&source)))?

@@ -1045,7 +1045,7 @@ fn anchors_pass(
     if removed == 0 {
         return Ok(None);
     }
-    crate::commands::persist("doctor", store, domain, &records)?;
+    crate::commands::store::persist("doctor", store, domain, &records)?;
     Ok(Some(removed))
 }
 

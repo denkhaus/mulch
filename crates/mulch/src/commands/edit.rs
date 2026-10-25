@@ -3,7 +3,9 @@
 use serde_json::{Map, Value};
 
 use crate::cli::{EditArgs, GlobalOpts};
-use crate::commands::{DomainFailure, PayloadFlags, locate_record};
+use crate::commands::failure::DomainFailure;
+use crate::commands::input::PayloadFlags;
+use crate::commands::store::locate_record;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `edit`: updates fields in place (key positions preserved),
@@ -86,7 +88,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     // schema or nothing is written (reference edit.ts).
     let updated = Value::Object(record.clone());
     if let mulch::schema::FullVerdict::Invalid { subs, .. } =
-        crate::commands::updated_record_verdict(
+        crate::commands::store::updated_record_verdict(
             &store,
             &args.domain,
             records[position].line,
@@ -98,7 +100,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
 
     records[position].record = updated;
     let payload: Vec<Value> = records.iter().map(|line| line.record.clone()).collect();
-    crate::commands::persist("edit", &store, &args.domain, &payload)?;
+    crate::commands::store::persist("edit", &store, &args.domain, &payload)?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();

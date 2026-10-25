@@ -100,19 +100,19 @@ pub(super) fn run(
     // Real runs hold the writer lock across the cycle; --dry-run
     // reads lock-free like the reference (mulch-228d).
     let store = if dry_run {
-        crate::commands::open_store("delete", true)?
+        crate::commands::store::open_store("delete", true)?
     } else {
-        crate::commands::open_store_mut("delete", true)?
+        crate::commands::store::open_store_mut("delete", true)?
     };
 
     let domains = store.domains();
     if !domains.iter().any(|d| d == domain) {
-        return Err(crate::commands::unknown_domain_failure(
+        return Err(crate::commands::failure::unknown_domain_failure(
             "delete",
             domain,
             &domains,
             opts.json,
-            crate::commands::DomainFailure::Standard,
+            crate::commands::failure::DomainFailure::Standard,
         ));
     }
 
@@ -122,7 +122,7 @@ pub(super) fn run(
     // write); the single-id mode rides the locator seam's read half.
     let (lines, mut removal_indices): (Vec<_>, Vec<usize>) = match &mode {
         Mode::Single(id) => {
-            let (lines, position) = crate::commands::read_and_resolve(
+            let (lines, position) = crate::commands::store::read_and_resolve(
                 "delete",
                 &store,
                 domain,
@@ -166,7 +166,8 @@ pub(super) fn run(
         .iter()
         .map(|index| {
             let line = &lines[*index];
-            let summary = crate::commands::summary_raw("delete", store.registry(), &line.record);
+            let summary =
+                crate::commands::failure::summary_raw("delete", store.registry(), &line.record);
             (
                 line.id().unwrap_or_default().to_string(),
                 line.record_type(),
@@ -183,7 +184,7 @@ pub(super) fn run(
             .filter(|(index, _)| !removal_indices.contains(index))
             .map(|(_, line)| line.record.clone())
             .collect();
-        crate::commands::persist("delete", &store, domain, &survivors)?;
+        crate::commands::store::persist("delete", &store, domain, &survivors)?;
     }
 
     // The reference prints each deleted record's summary through the
@@ -240,7 +241,7 @@ pub(super) fn run(
     } else {
         let mut text = String::new();
         for (id, kind, summary) in &deleted {
-            let summary = crate::commands::summary_text(summary.as_ref());
+            let summary = crate::commands::failure::summary_text(summary.as_ref());
             let verb = if dry_run {
                 "[DRY RUN] Would delete"
             } else if bulk {
@@ -273,7 +274,8 @@ pub(super) fn run(
 
 /// Resolves one identifier against the domain's records.
 fn resolve(lines: &[mulch::LineRecord], id: &str) -> Result<usize, Failure> {
-    resolve_record_id(lines, id).map_err(|error| crate::commands::resolve_failure("delete", error))
+    resolve_record_id(lines, id)
+        .map_err(|error| crate::commands::failure::resolve_failure("delete", error))
 }
 
 /// The strict read of the bulk modes (the seam's read half resolves a
@@ -283,7 +285,7 @@ fn read_lines(
     domain: &str,
     allow_unknown: bool,
 ) -> Result<Vec<mulch::LineRecord>, Failure> {
-    crate::commands::read_domain_records("delete", store, domain, allow_unknown)
+    crate::commands::store::read_domain_records("delete", store, domain, allow_unknown)
 }
 
 /// A `serde_json::Value::Object` from a `json!` macro result.

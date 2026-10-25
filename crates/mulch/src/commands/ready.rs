@@ -14,9 +14,10 @@ use mulch::{DomainSpec, date_ms, now_ms, time_ago};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{
-    DomainFailure, flag_value_failure, open_store, render_core_error, unknown_domain_failure,
+use crate::commands::failure::{
+    DomainFailure, flag_value_failure, render_core_error, unknown_domain_failure,
 };
+use crate::commands::store::open_store;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One collected row: the domain (for display) and the normalized
@@ -80,7 +81,7 @@ pub(crate) fn run(
         if !valid_domain(&domain) {
             return Err(invalid_domain(&domain));
         }
-        let records = crate::commands::read_domain_records(
+        let records = crate::commands::store::read_domain_records(
             "ready",
             &store,
             &domain,

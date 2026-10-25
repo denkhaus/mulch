@@ -15,9 +15,9 @@ use std::fmt::Write as _;
 use mulch::{LineRecord, resolve_record_id};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{
-    DomainFailure, now_iso, open_store, open_store_mut, persist, read_and_resolve,
-    read_domain_records, resolve_failure, unknown_domain_failure,
+use crate::commands::failure::{DomainFailure, now_iso, resolve_failure, unknown_domain_failure};
+use crate::commands::store::{
+    open_store, open_store_mut, persist, read_and_resolve, read_domain_records,
 };
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -197,7 +197,7 @@ pub(super) fn run(
                 text,
                 "{verb} {}{rid} from {domain} ({stamped_reason}): {}",
                 line.record_type(),
-                crate::commands::summary_text(
+                crate::commands::failure::summary_text(
                     mulch::record_summary_value(store.registry(), &line.record)
                         .ok()
                         .flatten()

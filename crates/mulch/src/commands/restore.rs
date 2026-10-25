@@ -18,7 +18,8 @@
 use mulch::{LineRecord, resolve_record_id, value_text};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{open_store_mut, persist, read_domain_records, render_core_error};
+use crate::commands::failure::render_core_error;
+use crate::commands::store::{open_store_mut, persist, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `restore` (mutating: the store writer lock spans the whole
@@ -178,7 +179,7 @@ pub(super) fn run(opts: &GlobalOpts, id: &str) -> Result<(), Failure> {
             "✓ Restored {}{rid} to {domain} (archived: {}): {}",
             removed.record_type(),
             value_text(&original_reason),
-            crate::commands::summary_text(
+            crate::commands::failure::summary_text(
                 mulch::record_summary_value(store.registry(), &live)
                     .ok()
                     .flatten()

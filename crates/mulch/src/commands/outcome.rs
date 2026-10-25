@@ -5,7 +5,8 @@ use mulch::{js_length, truthy, value_text};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, OutcomeFlags};
-use crate::commands::{DomainFailure, locate_record, now_iso};
+use crate::commands::failure::{DomainFailure, now_iso};
+use crate::commands::store::locate_record;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// Runs `outcome`: with `--status` it appends
@@ -195,7 +196,7 @@ fn append(
     };
     records[position].record = Value::Object(record);
     let payload: Vec<Value> = records.iter().map(|line| line.record.clone()).collect();
-    crate::commands::persist("outcome", store, domain, &payload)?;
+    crate::commands::store::persist("outcome", store, domain, &payload)?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();

@@ -8,7 +8,7 @@ use mulch::{js_string, record_id, schema, truthy_str};
 use serde_json::{Map, Value};
 
 use crate::cli::RecordArgs;
-use crate::commands::PayloadFlags;
+use crate::commands::input::PayloadFlags;
 use crate::output::Failure;
 
 /// Builds the canonical JSONL object for the flag path (field order

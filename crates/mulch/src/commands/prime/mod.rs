@@ -54,7 +54,7 @@ struct Loaded {
 
 /// Runs `prime` against the store at the current directory.
 pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
-    let store = crate::commands::open_store("prime", true)?;
+    let store = crate::commands::store::open_store("prime", true)?;
     let config = store.config();
     let registry = store.registry();
     let json_mode = opts.json;
@@ -106,23 +106,23 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     let available = store.domains();
     for domain in &requested {
         if !available.contains(domain) {
-            return Err(crate::commands::unknown_domain_failure(
+            return Err(crate::commands::failure::unknown_domain_failure(
                 "prime",
                 domain,
                 &available,
                 json_mode,
-                crate::commands::DomainFailure::Prime { excluded: false },
+                crate::commands::failure::DomainFailure::Prime { excluded: false },
             ));
         }
     }
     for domain in &excluded {
         if !available.contains(domain) {
-            return Err(crate::commands::unknown_domain_failure(
+            return Err(crate::commands::failure::unknown_domain_failure(
                 "prime",
                 domain,
                 &available,
                 json_mode,
-                crate::commands::DomainFailure::Prime { excluded: true },
+                crate::commands::failure::DomainFailure::Prime { excluded: true },
             ));
         }
     }
@@ -170,7 +170,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     let budget_enabled = !json_mode && !args.no_limit;
     let budget = match args.budget.as_deref() {
         Some(raw) => mulch::parse_strict_positive_int(raw).ok_or_else(|| {
-            crate::commands::flag_value_failure("prime", "budget", "positive integer", raw)
+            crate::commands::failure::flag_value_failure("prime", "budget", "positive integer", raw)
         })?,
         None => mulch::budget::DEFAULT_BUDGET,
     };
@@ -179,7 +179,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     // format pipeline share the dataset.
     let mut loaded: Vec<Loaded> = Vec::new();
     for domain in &target_domains {
-        let records = crate::commands::read_domain_records(
+        let records = crate::commands::store::read_domain_records(
             "prime",
             &store,
             domain,

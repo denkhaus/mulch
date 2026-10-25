@@ -8,7 +8,7 @@ use mulch::truthy_str;
 use serde_json::Value;
 
 use crate::cli::{GlobalOpts, RecordArgs};
-use crate::commands::now_iso;
+use crate::commands::failure::now_iso;
 use crate::commands::record::batch::{read_batch_file, stdin_batch};
 use crate::commands::record::flag::{build_record, evidence_map};
 use crate::commands::record::report::{
@@ -25,9 +25,9 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     // runs; `--dry-run` reads lock-free like the reference's dry-run
     // branch (mulch-228d).
     let mut store = if args.dry_run {
-        crate::commands::open_store("record", false)?
+        crate::commands::store::open_store("record", false)?
     } else {
-        crate::commands::open_store_mut("record", false)?
+        crate::commands::store::open_store_mut("record", false)?
     };
 
     // JS truthiness on the --batch flag: `--batch ""` is NO batch (the
@@ -138,7 +138,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     // unregistered types abort before the write, and the dedup key is
     // the type's dedup FIELD (registry dedupKey), never the id — a
     // renamed record still dedupes after `edit --name` (mulch-ccf6).
-    let existing = crate::commands::read_domain_records(
+    let existing = crate::commands::store::read_domain_records(
         "record",
         &store,
         &args.domain,

@@ -9,7 +9,8 @@ use mulch::DomainSpec;
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::{DomainFailure, flag_value_failure, open_store, unknown_domain_failure};
+use crate::commands::failure::{DomainFailure, flag_value_failure, unknown_domain_failure};
+use crate::commands::store::open_store;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One ranked row: the domain (for display), the normalized record,
@@ -55,7 +56,7 @@ pub(crate) fn run(
 
     let mut ranked: Vec<RankedRecord> = Vec::new();
     for domain in domains_to_rank {
-        let records = crate::commands::read_domain_records(
+        let records = crate::commands::store::read_domain_records(
             "rank",
             &store,
             &domain,
@@ -157,7 +158,7 @@ fn plain_row(store: &mulch::StoreFiles, entry: &RankedRecord) -> Result<String, 
             .unwrap_or_default()
     );
     let summary = summary(store, &entry.record)?;
-    let summary = crate::commands::summary_text(summary.as_ref());
+    let summary = crate::commands::failure::summary_text(summary.as_ref());
     Ok(format!(
         "  {id}{score:<6}{:<14}{record_type:<14}{summary}",
         entry.domain,
@@ -214,7 +215,7 @@ fn ranked_json(store: &mulch::StoreFiles, entry: &RankedRecord) -> Result<Value,
 /// is absent and passes non-strings through verbatim; the plain table
 /// renders `String(value)` (`undefined` for absent).
 fn summary(store: &mulch::StoreFiles, record: &Value) -> Result<Option<Value>, Failure> {
-    crate::commands::summary_raw("rank", store.registry(), record)
+    crate::commands::failure::summary_raw("rank", store.registry(), record)
 }
 
 #[cfg(test)]

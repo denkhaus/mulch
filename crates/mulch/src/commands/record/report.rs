@@ -180,7 +180,7 @@ pub(super) fn upsert_update(
     }
     let mut lines: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
     lines[index] = Value::Object(upserted.clone());
-    crate::commands::persist("record", store, &args.domain, &lines)?;
+    crate::commands::store::persist("record", store, &args.domain, &lines)?;
 
     report_record_action(opts, args, RecordAction::Update { index }, Some(upserted));
     Ok(())

@@ -13,7 +13,7 @@ use mulch::{record_id, schema};
 use serde_json::Value;
 
 use crate::cli::{GlobalOpts, RecordArgs};
-use crate::commands::now_iso;
+use crate::commands::failure::now_iso;
 use crate::output::{Failure, failure_envelope, print_json, print_line};
 
 /// Reads the batch file before any store side effect (the
@@ -112,7 +112,7 @@ pub(super) fn stdin_batch(
         single => vec![single],
     };
 
-    let existing = crate::commands::read_domain_records(
+    let existing = crate::commands::store::read_domain_records(
         "record",
         store,
         &args.domain,
@@ -225,7 +225,7 @@ pub(super) fn stdin_batch(
     // drop, id-less survivors get ids — a skip-only or empty batch
     // leaves the file byte-identical; mulch-ca49).
     if !args.dry_run && (created > 0 || updated > 0) {
-        crate::commands::persist("record", store, &args.domain, &working)?;
+        crate::commands::store::persist("record", store, &args.domain, &working)?;
     }
 
     let failed = !errors.is_empty();

@@ -1077,7 +1077,7 @@ fn markdown_custom(
 /// divergence).
 fn summary_coerced(registry: &mulch::Registry, record: &Value) -> String {
     match mulch::record_summary_value(registry, record) {
-        Ok(raw) => crate::commands::summary_text(raw.as_ref()),
+        Ok(raw) => crate::commands::failure::summary_text(raw.as_ref()),
         Err(_) => mulch::record_summary(registry, record),
     }
 }

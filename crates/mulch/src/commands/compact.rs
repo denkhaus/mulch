@@ -32,7 +32,8 @@ use mulch::{CompactStrategy, LineRecord, record_id, record_summary_value};
 use serde_json::{Map, Value};
 
 use crate::cli::{CompactArgs, GlobalOpts};
-use crate::commands::{now_iso, open_store, open_store_mut, persist, read_domain_records};
+use crate::commands::failure::now_iso;
+use crate::commands::store::{open_store, open_store_mut, persist, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One candidate member line (the reference's display triple). The
@@ -324,7 +325,7 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
             print!("Proceed with compaction? (y/N): ");
             let _ = std::io::stdout().flush();
         }
-        let answer = crate::commands::read_confirmation().map_or_else(
+        let answer = crate::commands::input::read_confirmation().map_or_else(
             |_error| String::new(),
             |line| line.trim_end_matches(['\n', '\r']).to_lowercase(),
         );
@@ -448,7 +449,7 @@ fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Fail
     let mut indices: Vec<usize> = Vec::new();
     for identifier in &identifiers {
         let index = mulch::resolve_record_id(&records, identifier)
-            .map_err(|error| crate::commands::resolve_failure("compact", error))?;
+            .map_err(|error| crate::commands::failure::resolve_failure("compact", error))?;
         indices.push(index);
     }
     if indices.len() < 2 {
@@ -722,7 +723,7 @@ fn print_block(text: &str) {
 fn preview_lines(records: &[CandLine], indent: &str) -> Vec<String> {
     let mut lines = Vec::new();
     for line in records.iter().take(3) {
-        let summary = crate::commands::summary_text(line.summary.as_ref());
+        let summary = crate::commands::failure::summary_text(line.summary.as_ref());
         match &line.id {
             Some(id) => lines.push(format!("{indent}{id}: {summary}")),
             None => lines.push(format!("{indent}(no id): {summary}")),

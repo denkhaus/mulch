@@ -21,7 +21,7 @@ struct Finding {
 /// Runs `validate`: summary on stdout, details on stderr, JSON envelope
 /// on stdout (reference channel quirk), exit 1 on any error.
 pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
-    let store = crate::commands::open_store("validate", false)?;
+    let store = crate::commands::store::open_store("validate", false)?;
 
     // Findings in encounter order: the reference prints each line's
     // error or warning inline, interleaved by line number.

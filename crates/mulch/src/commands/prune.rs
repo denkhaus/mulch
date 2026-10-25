@@ -42,7 +42,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
     // re-reads each candidate domain under its file lock for the
     // write phase; our seam holds the store writer lock for the whole
     // cycle, so the preview read IS the locked re-read.
-    let store = crate::commands::open_store_mut(command, true)?;
+    let store = crate::commands::store::open_store_mut(command, true)?;
 
     // The anchor-knob validation fires before any read (prune.ts:247):
     // a misconfigured block fails the command even without
@@ -68,7 +68,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
     let shelf_life = store.config().effective_shelf_life();
     let rule = StaleRule::from_shelf_life(&shelf_life);
     let now = Timestamp::now();
-    let now_iso = crate::commands::now_iso();
+    let now_iso = crate::commands::failure::now_iso();
     let project_root = std::env::current_dir()
         .map_err(|source| Failure::handled(command, format!("resolving cwd: {source}")))?;
 
@@ -76,7 +76,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
     // lock makes this read the reference's locked phase-3 re-read).
     let mut live: Vec<(String, Vec<Value>)> = Vec::new();
     for domain in store.domains() {
-        let records = crate::commands::read_domain_records(
+        let records = crate::commands::store::read_domain_records(
             command,
             &store,
             &domain,
@@ -120,7 +120,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
     let mut totals = Totals::default();
     for outcome in &outcomes {
         if !args.dry_run {
-            crate::commands::persist(command, &store, &outcome.domain, &outcome.kept)?;
+            crate::commands::store::persist(command, &store, &outcome.domain, &outcome.kept)?;
         }
         // The default shelf reason covers the staleness path;
         // bottom-out records pre-stamp their own reason and the
