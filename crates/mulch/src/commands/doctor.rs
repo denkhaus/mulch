@@ -31,9 +31,8 @@ impl Check {
     /// the details otherwise. The two-branch template ~ten builders
     /// hand-rolled; `fixable` applies to BOTH arms (the report
     /// renders it either way — the gate ignores it on Pass).
-    /// Genuinely different
-    /// laws (governance's worst-status, duplicates' two-class
-    /// message) stay hand-built.
+    /// Genuinely different laws (governance's worst-status,
+    /// duplicates' two-class message) stay hand-built.
     fn findings(
         name: &'static str,
         details: Vec<String>,
