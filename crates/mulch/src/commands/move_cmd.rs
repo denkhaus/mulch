@@ -14,7 +14,7 @@ use mulch::{record_summary, schema};
 use serde_json::{Map, Value, json};
 
 use crate::cli::GlobalOpts;
-use crate::commands::hooks_surface::{Adopt, HookPhase, print_hook_warnings};
+use crate::commands::hooks_surface::{Adopt, HookPhase};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// The pre-record block fallback (move.ts:234) — the move-specific
@@ -33,11 +33,12 @@ pub(super) fn run(
     // Real runs hold the writer lock across the cycle (store-wide —
     // the reference nests target+source file locks); --dry-run reads
     // lock-free (mulch-228d).
-    let store = if dry_run {
-        crate::commands::store::open_store("move", true)?
-    } else {
-        crate::commands::store::open_store_mut("move", true)?
-    };
+    // Read-only for the validations AND the hooks (record's two-open
+    // law, mulch-7f49: pre-record fires BEFORE the writer lock,
+    // post-record AFTER it — a hook script running a mutating command
+    // on this store must not poll the lock we hold). The write phase
+    // opens its own locked store below.
+    let store = crate::commands::store::open_store("move", true)?;
 
     // Same-domain check comes FIRST (reference order).
     if source == target {
@@ -169,28 +170,44 @@ pub(super) fn run(
     }
     let summary = record_summary(store.registry(), &record_to_write);
 
+    let mut moved_opt: Option<Value> = None;
     if !dry_run {
+        // The locked write phase: re-read + re-resolve UNDER the lock
+        // (the reference reads the source inside its lock too,
+        // move.ts:262-266). The pre-lock read was advisory — gates and
+        // verdicts judged it; the OUTPUT mirrors record_to_write, not
+        // the re-read line.
+        let locked = crate::commands::store::open_store_mut("move", true)?;
+        let (lines, index) = crate::commands::store::read_and_resolve(
+            "move",
+            &locked,
+            source,
+            id,
+            opts.allow_unknown_types,
+        )?;
         let survivors: Vec<Value> = lines
             .iter()
             .enumerate()
             .filter(|(position, _)| *position != index)
             .map(|(_, line)| line.record.clone())
             .collect();
-        crate::commands::store::persist("move", &store, source, &survivors)?;
+        crate::commands::store::persist("move", &locked, source, &survivors)?;
 
         // Target: the seam's append-verbatim policy (existing bytes
         // preserved, newline guard included).
         let mut moved = record_to_write.clone();
-        mulch::assign_missing_id(store.registry(), &mut moved);
+        mulch::assign_missing_id(locked.registry(), &mut moved);
         let line = serde_json::to_string(&moved).unwrap_or_default();
-        store
+        locked
             .append_domain_line(target, &line)
             .map_err(|source_err| {
                 Failure::handled("move", crate::output::chain_message(&source_err))
             })?;
-
-        // post-record with the WRITTEN record (move.ts:273-277):
-        // warn-only, fired after both writes.
+        moved_opt = Some(moved);
+    }
+    // post-record with the WRITTEN record (move.ts:273-277): warn-only,
+    // AFTER the locked scope dropped — outside every lock, like pre.
+    if let Some(moved) = moved_opt {
         hook_warnings.extend(HookPhase::run_warn_only(
             HookEvent::PostRecord,
             json!({"domain": target, "record": moved, "action": "created"}),
@@ -280,8 +297,14 @@ pub(super) fn run(
                 }
             }
         }
+        // move's OWN warning rendering (move.ts:308): stdout lines,
+        // two-space indent, lowercase `warning:` — the ONE command
+        // that differs from the shared stderr `Warning:` family
+        // (record/prime/prune/compact).
+        for warning in &hook_warnings {
+            let _ = std::fmt::Write::write_fmt(&mut text, format_args!("\n  warning: {warning}"));
+        }
         print_line(false, &text);
-        print_hook_warnings(&hook_warnings);
     }
     Ok(())
 }

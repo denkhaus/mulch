@@ -421,3 +421,158 @@ fn move_aborts_on_legacy_outcome_records_like_reference() {
     // d2 untouched on both sides.
     assert_eq!(read_store_file(&ours.0, "expertise/d2.jsonl"), "");
 }
+
+// ---- pre/post-record hooks (mulch-0e87) ----
+
+/// Runs the reference with its pino diagnostics silenced (the twin of
+/// record.rs's helper — failing/warning hooks log structured lines on
+/// stderr that are not product output).
+fn run_ref_quiet(dir: &Path, ml: &Path, args: &[&str]) -> Run {
+    let output = std::process::Command::new(ml)
+        .args(args)
+        .env("MULCH_LOG_LEVEL", "silent")
+        .current_dir(dir)
+        .output()
+        .expect("spawn reference");
+    Run {
+        code:   output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
+/// The seeded source/target pair the hook batteries move across
+/// (config carries the hook block under test).
+fn hook_twins(tag: &str, hook_yaml: &str) -> (TempDir, TempDir) {
+    let config = format!("version: '1'\ndomains:\n  alpha: {{}}\n  beta: {{}}\n{hook_yaml}");
+    let alpha = format!("{ALPHA_ONE}\n{ALPHA_TWO}\n");
+    let beta = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T20:47:58.427Z\",\"name\":\"Beta One\",\"description\":\"first beta pattern\",\"id\":\"mx-3242b5\"}\n";
+    let ours = TempDir::new(format!("{tag}-o").as_str());
+    let theirs = TempDir::new(format!("{tag}-t").as_str());
+    for dir in [&ours.0, &theirs.0] {
+        write_seed_with_config(dir, &config, &[("alpha", alpha.as_str()), ("beta", beta)]);
+    }
+    (ours, theirs)
+}
+
+/// A blocking pre-record hook (exit 3) aborts the move on both
+/// channels with nothing written — and, unlike the record path's
+/// payload, the hook's stdin carries the record WITH its id (the
+/// documented divergence; the stdin file pins it).
+#[test]
+fn move_pre_hook_block_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = hook_twins(
+        "mvhook-block",
+        "hooks:\n  pre-record:\n    - 'cat > hook-stdin.txt; printf from-hook-stderr >&2; exit 3'\n",
+    );
+    for mode in [&[] as &[&str], &["--json"]] {
+        let mut args: Vec<&str> = vec!["move", "alpha", "mx-1bb21d", "beta"];
+        args.extend_from_slice(mode);
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_ref_quiet(&theirs.0, &ml, &args);
+        assert_eq!(our.code, their.code, "exit {mode:?}");
+        assert_eq!(our.code, 1);
+        assert_eq!(our.stdout, their.stdout, "stdout {mode:?}");
+        assert_eq!(
+            normalize(&our.stderr),
+            normalize(&their.stderr),
+            "stderr {mode:?}"
+        );
+        assert_same_file(&ours, &theirs, "expertise/alpha.jsonl");
+        assert_same_file(&ours, &theirs, "expertise/beta.jsonl");
+    }
+    // The payload kept the id: the captured stdin's record carries
+    // mx-1bb21d (the record path sends its payload id-less).
+    let stdin = hook_stdin(&ours.0).expect("hook stdin captured");
+    assert!(stdin.contains("mx-1bb21d"), "id retained: {stdin}");
+}
+
+/// A mutating pre-record hook: the ADOPTED record is what moves (and
+/// what post-record reports), validated through the shared gate.
+#[test]
+fn move_pre_hook_adoption_matches_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    // Inner double quotes are backslash-escaped for the printf string
+    // (compact's hook_replacement_stdout law — an unescaped body
+    // prints garbage and takes the non-JSON warning path instead).
+    let body = r#"{"payload":{"record":{"type":"pattern","classification":"tactical","recorded_at":"2026-10-03T20:47:58.427Z","name":"Alpha Hooked","description":"mutated by hook","id":"mx-1bb21d"}}}"#;
+    let stdout_body = body.replace('"', "\\\"");
+    let (ours, theirs) = hook_twins(
+        "mvhook-adopt",
+        &format!("hooks:\n  pre-record:\n    - 'cat > /dev/null; printf %s \"{stdout_body}\"'\n"),
+    );
+    let args = ["move", "alpha", "mx-1bb21d", "beta"];
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    let their = run_ref_quiet(&theirs.0, &ml, &args);
+    assert_eq!(our.code, their.code, "exit");
+    assert_eq!(our.stdout, their.stdout, "stdout");
+    assert_eq!(normalize(&our.stderr), normalize(&their.stderr), "stderr");
+    assert_same_file(&ours, &theirs, "expertise/alpha.jsonl");
+    assert_same_file(&ours, &theirs, "expertise/beta.jsonl");
+    assert!(
+        read_store_file(&ours.0, "expertise/beta.jsonl").contains("mutated by hook"),
+        "the adopted record moved"
+    );
+}
+
+/// Hook warnings render MOVE's way: plain prints `  warning: <w>`
+/// on STDOUT (move.ts:308 — the one command that differs from the
+/// shared stderr `Warning:` family); json carries the warnings array.
+#[test]
+fn move_hook_warnings_render_like_reference() {
+    let Some(ml) = reference_ml() else {
+        eprintln!("skipped: no ml on PATH");
+        return;
+    };
+    let (ours, theirs) = hook_twins(
+        "mvhook-warn",
+        "hooks:\n  pre-record:\n    - 'cat > /dev/null; printf from-hook-stderr >&2'\n  post-record:\n    - 'cat > /dev/null; printf post-hook-note >&2'\n",
+    );
+    for mode in [&[] as &[&str], &["--json"]] {
+        let mut args: Vec<&str> = vec!["move", "alpha", "mx-1bb21d", "beta"];
+        args.extend_from_slice(mode);
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        let their = run_ref_quiet(&theirs.0, &ml, &args);
+        assert_eq!(our.code, their.code, "exit {mode:?}");
+        assert_eq!(our.stdout, their.stdout, "stdout {mode:?}");
+        assert_eq!(
+            normalize(&our.stderr),
+            normalize(&their.stderr),
+            "stderr {mode:?}"
+        );
+    }
+    assert!(
+        read_store_file(&ours.0, "expertise/beta.jsonl").contains("mx-1bb21d"),
+        "the move happened"
+    );
+}
+
+/// Dry runs fire NO hooks at all (the reference's dry-run branch
+/// returns before the hook block). Ungated: the marker file is ours.
+#[test]
+fn move_hook_dry_run_fires_no_hooks() {
+    let (ours, _theirs) = hook_twins(
+        "mvhook-dry",
+        "hooks:\n  pre-record:\n    - 'cat > /dev/null; printf ran > hook-ran.txt'\n",
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "move",
+        "alpha",
+        "mx-1bb21d",
+        "beta",
+        "--dry-run",
+    ]);
+    assert_eq!(run.code, 0);
+    assert!(
+        !ours.0.join("hook-ran.txt").exists(),
+        "dry runs fire no pre-record"
+    );
+    assert!(hook_stdin(&ours.0).is_none(), "no stdin capture either");
+}

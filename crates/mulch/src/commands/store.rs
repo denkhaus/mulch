@@ -107,7 +107,9 @@ fn chain_message_from(error: &mulch::Error) -> String {
 /// open stays with [`open_store`]/[`open_store_mut`] (callers differ
 /// on lock and timing); order-pinned commands interleave their own
 /// checks around this. Folds the `!domains.iter().any(...) +
-/// unknown_domain_failure(...)` couple that lived in eight commands.
+/// unknown_domain_failure(...)` couple that lived in six commands
+/// across five files (move, archive, delete, prime, and edit/outcome
+/// through locate_record).
 pub(crate) fn ensure_domain(
     command: &'static str,
     store: &mulch::StoreFiles,
