@@ -17,6 +17,7 @@
 pub mod anchors;
 pub mod bm25;
 pub mod budget;
+pub mod compact;
 mod config;
 mod custom_types;
 mod error;

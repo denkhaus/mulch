@@ -37,7 +37,7 @@ use std::io::Write as _;
 
 use mulch::schema::{Verdict, render_subs, verdict};
 use mulch::stale::{StaleRule, StaleVerdict};
-use mulch::{CompactStrategy, LineRecord, record_id, record_summary_value};
+use mulch::{CompactStrategy, LineRecord, record_summary_value};
 use serde_json::{Map, Value};
 
 use crate::cli::{CompactArgs, GlobalOpts};
@@ -394,21 +394,42 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
                 warnings.push(group_warning(&domain, &candidate.r#type, reason));
                 continue;
             }
-            let replacement =
-                match adopt_replacement(phase.payload(), &truthy_ids(&matched), store.registry()) {
-                    Err(reason) => {
-                        warnings.push(group_warning(&domain, &candidate.r#type, &reason));
+            let replacement = match adopt_replacement(
+                phase.payload(),
+                &truthy_ids(&matched),
+                store.registry(),
+            ) {
+                Err(reason) => {
+                    warnings.push(group_warning(&domain, &candidate.r#type, &reason));
+                    continue;
+                }
+                Ok(Some(record)) => record,
+                Ok(None) => {
+                    let Some(row) = store.registry().row(&candidate.r#type) else {
                         continue;
+                    };
+                    // The mechanical merge is a lib law (ADR-0005);
+                    // the channel renders the two refusals here.
+                    match mulch::compact::merge(&matched, row, &now_iso(), store.registry()) {
+                        mulch::compact::Outcome::Merged(record) => record,
+                        mulch::compact::Outcome::Manual => {
+                            return Err(compact_failure(
+                                opts.json,
+                                format!(
+                                    "Type \"{}\" has compact strategy \"manual\" — use `mulch compact --apply` to compact manually.",
+                                    row.name
+                                ),
+                            ));
+                        }
+                        mulch::compact::Outcome::Empty => {
+                            return Err(compact_failure(
+                                opts.json,
+                                "Cannot compact empty record list",
+                            ));
+                        }
                     }
-                    Ok(Some(record)) => record,
-                    Ok(None) => {
-                        let Some(row) = store.registry().row(&candidate.r#type) else {
-                            continue;
-                        };
-                        merge_records(&matched, row, &now_iso(), store.registry())
-                            .map_err(|message| compact_failure(opts.json, message))?
-                    }
-                };
+                }
+            };
             let remove: HashSet<Option<String>> = matched.iter().map(id_of).collect();
             updated.retain(|record| !remove.contains(&id_of(record)));
             updated.push(replacement);
@@ -627,7 +648,7 @@ fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Fail
                     ),
                 );
             }
-            stamp_id(&mut replacement, store.registry());
+            mulch::compact::stamp_id(&mut replacement, store.registry());
 
             if let Verdict::OneOf(subs) = verdict(store.registry(), &replacement) {
                 return Err(compact_failure(
@@ -828,7 +849,7 @@ fn adopt_replacement(
             render_subs(&subs).join("; ")
         ));
     }
-    stamp_id(&mut record, registry);
+    mulch::compact::stamp_id(&mut record, registry);
     Ok(Some(record))
 }
 
@@ -940,154 +961,6 @@ fn preview_lines(records: &[CandLine], indent: &str) -> Vec<String> {
     lines
 }
 
-/// The mechanical merge (reference `mergeRecords`): strategy dispatch
-/// plus the deterministic id.
-fn merge_records(
-    records: &[Value],
-    row: &mulch::Row,
-    now: &str,
-    registry: &mulch::Registry,
-) -> Result<Value, String> {
-    let supersedes: Vec<String> = records.iter().filter_map(id_of).collect();
-    let tags = string_union(records, "tags");
-    let files = row
-        .files_array
-        .as_deref()
-        .and_then(|field| string_union(records, field));
-
-    let mut merged = match row.compact {
-        CompactStrategy::Manual => {
-            return Err(format!(
-                "Type \"{}\" has compact strategy \"manual\" — use `mulch compact --apply` to compact manually.",
-                row.name
-            ));
-        }
-        CompactStrategy::Concat => {
-            let mut out = Map::new();
-            out.insert("type".into(), Value::String(row.name.clone()));
-            out.insert(
-                "classification".into(),
-                Value::String("foundational".into()),
-            );
-            out.insert("recorded_at".into(), Value::String(now.to_string()));
-            out.insert("supersedes".into(), string_array(&supersedes));
-            if let Some(tags) = tags {
-                out.insert("tags".into(), tags);
-            }
-            if let Some(files) = files {
-                out.insert(row.files_array.clone().unwrap_or_default(), files);
-            }
-            for field in &row.payload {
-                let values: Vec<&str> = records
-                    .iter()
-                    .filter_map(|record| record.get(field).and_then(Value::as_str))
-                    .collect();
-                // `name`/`title` keep the longest value (ties keep the
-                // first); everything else joins with a blank line.
-                let value = if field == "name" || field == "title" {
-                    values.iter().fold(String::new(), |longest, next| {
-                        if next.len() > longest.len() {
-                            (*next).to_string()
-                        } else {
-                            longest
-                        }
-                    })
-                } else {
-                    values.join("\n\n")
-                };
-                out.insert(field.clone(), Value::String(value));
-            }
-            Value::Object(out)
-        }
-        CompactStrategy::KeepLatest | CompactStrategy::MergeOutcomes => {
-            let Some(latest) = newest_first(records).first().map(|value| (*value).clone()) else {
-                return Err("Cannot compact empty record list".into());
-            };
-            let mut merged = latest;
-            let Some(object) = merged.as_object_mut() else {
-                return Err("Cannot compact empty record list".into());
-            };
-            object.insert(
-                "classification".into(),
-                Value::String("foundational".into()),
-            );
-            object.insert("recorded_at".into(), Value::String(now.to_string()));
-            object.insert("supersedes".into(), string_array(&supersedes));
-            match tags {
-                Some(tags) => {
-                    object.insert("tags".into(), tags);
-                }
-                None => {
-                    object.shift_remove("tags");
-                }
-            }
-            if let Some(files) = files {
-                object.insert(row.files_array.clone().unwrap_or_default(), files);
-            }
-            if row.compact == CompactStrategy::MergeOutcomes {
-                let outcomes: Vec<Value> = records
-                    .iter()
-                    .filter_map(|record| record.get("outcomes"))
-                    .filter_map(Value::as_array)
-                    .flatten()
-                    .cloned()
-                    .collect();
-                if !outcomes.is_empty() {
-                    object.insert("outcomes".into(), Value::Array(outcomes));
-                }
-            }
-            object.shift_remove("id");
-            merged
-        }
-    };
-    stamp_id(&mut merged, registry);
-    Ok(merged)
-}
-
-/// Records sorted newest-first by JS-Date comparison; an unparsable
-/// stamp compares as equal (NaN comparator — order kept).
-fn newest_first(records: &[Value]) -> Vec<&Value> {
-    let mut sorted: Vec<&Value> = records.iter().collect();
-    sorted.sort_by(|a, b| {
-        match (
-            mulch::parse_js_date(&raw_text(a, "recorded_at")),
-            mulch::parse_js_date(&raw_text(b, "recorded_at")),
-        ) {
-            (Some(left), Some(right)) => right
-                .partial_cmp(&left)
-                .unwrap_or(std::cmp::Ordering::Equal),
-            _ => std::cmp::Ordering::Equal,
-        }
-    });
-    sorted
-}
-
-/// The union of a string-array field (deduped, insertion order);
-/// `None` when no record carries entries.
-fn string_union(records: &[Value], field: &str) -> Option<Value> {
-    let mut seen: Vec<String> = Vec::new();
-    for record in records {
-        for entry in record
-            .get(field)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if let Some(text) = entry.as_str()
-                && !seen.iter().any(|existing| existing == text)
-            {
-                seen.push(text.to_string());
-            }
-        }
-    }
-    (!seen.is_empty()).then(|| string_array(&seen))
-}
-
-/// A JSON string array from the id list.
-fn string_array(values: &[String]) -> Value {
-    Value::Array(values.iter().map(|v| Value::String(v.clone())).collect())
-}
-
 /// The replacement skeleton: `type`, the branch fields,
 /// `classification`, `recorded_at` (the apply-path key order).
 fn replacement_body(record_type: &str, fields: &[(&str, String)]) -> Value {
@@ -1102,20 +975,6 @@ fn replacement_body(record_type: &str, fields: &[(&str, String)]) -> Value {
     );
     out.insert("recorded_at".into(), Value::String(now_iso()));
     Value::Object(out)
-}
-
-/// The deterministic id over the merged body (generateRecordId):
-/// replace an existing id in place or append.
-fn stamp_id(record: &mut Value, registry: &mulch::Registry) {
-    let record_type = type_of(record).to_string();
-    let id_key = registry
-        .row(&record_type)
-        .map_or("content", |row| row.id_key.as_str());
-    let id = record_id(&record_type, &raw_text(record, id_key));
-    if let Some(object) = record.as_object_mut() {
-        object.shift_remove("id");
-        object.insert("id".into(), Value::String(id));
-    }
 }
 
 /// `record.id` as an optional string.
