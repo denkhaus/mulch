@@ -285,12 +285,17 @@ impl StoreFiles {
 
     /// Rewrites the config through the canonical serializer.
     ///
+    /// Atomic (temp + rename): `record`'s pre-hook
+    /// phase reads the config LOCK-FREE (mulch-7f49, the reference's
+    /// order), so a concurrent domain auto-create must never expose a
+    /// truncated file to a reader (mulch-228d parallel writers).
+    ///
     /// # Errors
     ///
     /// [`Error::Write`] on I/O.
     pub fn write_config(&self) -> Result<()> {
         let path = self.root.join("mulch.config.yaml");
-        std::fs::write(&path, self.config.to_yaml()).map_err(|source| Error::Write { path, source })
+        atomic_write(&path, self.config.to_yaml().as_bytes())
     }
 
     /// A domain's records, STRICT (the reference `readExpertiseFile`):
@@ -520,8 +525,35 @@ impl StoreFiles {
         }
         bytes.extend_from_slice(line.as_bytes());
         bytes.push(b'\n');
-        std::fs::write(&path, bytes).map_err(|source| Error::Write { path, source })
+        atomic_write(&path, &bytes)
     }
+}
+
+/// Writes `body` through a unique scratch file and an atomic rename, so
+/// a concurrent lock-free reader never observes a truncated half-file
+/// (the pattern the record writer already uses in `upsert.rs`). The
+/// scratch name carries the pid and a nanosecond stamp — two writers
+/// never share one — and a failed rename cleans it up best-effort.
+fn atomic_write(path: &Path, body: &[u8]) -> Result<()> {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let temp = PathBuf::from(format!(
+        "{}.tmp.{}.{unique:x}",
+        path.display(),
+        std::process::id()
+    ));
+    std::fs::write(&temp, body).map_err(|source| Error::Write {
+        path: temp.clone(),
+        source,
+    })?;
+    std::fs::rename(&temp, path).map_err(|source| {
+        std::fs::remove_file(&temp).ok();
+        Error::Write {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
 }
 
 /// Stamps one record with the soft-archive lifecycle fields
