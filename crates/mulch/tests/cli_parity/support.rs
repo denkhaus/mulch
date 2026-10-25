@@ -635,16 +635,29 @@ pub(crate) fn governance_fixture(dir: &Path, governance: &str, counts: &[(&str, 
     }
 }
 
+/// Whether a line belongs to the reference's ENVIRONMENT channels
+/// rather than its product output.
+///
+/// Two families: the upgrade check (the reference warns "Update
+/// available" where this port passes "Native binary"), and the
+/// registry probe — `ml doctor`/`status` print `✓ Version 0.10.7
+/// (unable to check registry)` when its network lookup times out and
+/// the bare `✓ Version 0.10.7` line when it answers, so the suffix
+/// races between runs (mulch-4683: the status battery flaked on
+/// exactly that line).
+pub(crate) fn is_reference_env_line(line: &str) -> bool {
+    line.contains("Update available")
+        || line.contains("Run `mulch upgrade`")
+        || line.contains("Native binary")
+        || line.contains("unable to check registry")
+}
+
 /// Plain doctor output modulo the documented upgrade-check deviation
 /// (its lines drop; the summary counts neutralize — the reference
 /// warns "Update available", we pass "Native binary").
 pub(crate) fn strip_upgrade_and_summary(text: &str) -> String {
     text.lines()
-        .filter(|line| {
-            !line.contains("Update available")
-                && !line.contains("Run `mulch upgrade`")
-                && !line.contains("Native binary")
-        })
+        .filter(|line| !is_reference_env_line(line))
         .map(|line| {
             if line.contains("passed") {
                 "<SUMMARY>"

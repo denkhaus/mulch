@@ -268,9 +268,7 @@ fn status_partial_config_blocks_backfill_per_field_like_reference() {
         let strip = |text: &str| -> String {
             text.lines()
                 .filter(|line| {
-                    !line.contains("Update available")
-                        && !line.contains("Run `mulch upgrade`")
-                        && !line.contains("Native binary")
+                    !is_reference_env_line(line)
                         && !line.contains("passed,")
                         && !line.contains("lastUpdated")
                         && !line.contains("oldest_recorded")

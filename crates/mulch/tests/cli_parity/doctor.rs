@@ -34,11 +34,7 @@ fn doctor_clean_store_matches_modulo_upgrade() {
 
     let strip_upgrade = |text: &str| -> String {
         text.lines()
-            .filter(|line| {
-                !line.contains("Update available")
-                    && !line.contains("Run `mulch upgrade`")
-                    && !line.contains("Native binary")
-            })
+            .filter(|line| !is_reference_env_line(line))
             .map(|line| {
                 // summary counts differ by the upgrade warn; neutralize
                 if line.contains("passed") {
@@ -169,12 +165,7 @@ fn doctor_duplicates_warn_matches_reference() {
     assert_eq!(ours_run.code, theirs_run.code);
     let strip = |text: &str| -> String {
         text.lines()
-            .filter(|line| {
-                !line.contains("Update available")
-                    && !line.contains("Run `mulch upgrade`")
-                    && !line.contains("Native binary")
-                    && !line.contains("passed,")
-            })
+            .filter(|line| !is_reference_env_line(line) && !line.contains("passed,"))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -364,12 +355,7 @@ fn doctor_stale_policy_matches_reference() {
 
     let strip = |text: &str| -> String {
         text.lines()
-            .filter(|line| {
-                !line.contains("Update available")
-                    && !line.contains("Run `mulch upgrade`")
-                    && !line.contains("Native binary")
-                    && !line.contains("passed,")
-            })
+            .filter(|line| !is_reference_env_line(line) && !line.contains("passed,"))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -507,12 +493,7 @@ fn doctor_fix_repair_order_matches_reference() {
     assert_eq!(ours_run.code, theirs_run.code);
     let strip = |text: &str| -> String {
         text.lines()
-            .filter(|line| {
-                !line.contains("Update available")
-                    && !line.contains("Run `mulch upgrade`")
-                    && !line.contains("Native binary")
-                    && !line.contains("passed,")
-            })
+            .filter(|line| !is_reference_env_line(line) && !line.contains("passed,"))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -736,12 +717,7 @@ fn doctor_fix_on_odd_legacy_outcomes_matches_reference() {
     assert_eq!(ours_run.code, theirs_run.code);
     let strip = |text: &str| -> String {
         text.lines()
-            .filter(|line| {
-                !line.contains("Update available")
-                    && !line.contains("Run `mulch upgrade`")
-                    && !line.contains("Native binary")
-                    && !line.contains("passed,")
-            })
+            .filter(|line| !is_reference_env_line(line) && !line.contains("passed,"))
             .collect::<Vec<_>>()
             .join("\n")
     };

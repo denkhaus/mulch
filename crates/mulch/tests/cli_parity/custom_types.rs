@@ -49,11 +49,7 @@ fn custom_twins(tag: &str) -> (TempDir, TempDir) {
 /// and the upgrade-check lines doctor/status sprinkle.
 fn strip_time_and_upgrade(text: &str) -> String {
     text.lines()
-        .filter(|line| {
-            !line.contains("Update available")
-                && !line.contains("Run `mulch upgrade`")
-                && !line.contains("Native binary")
-        })
+        .filter(|line| !is_reference_env_line(line))
         .map(|line| {
             let mut line = line.to_string();
             for prefix in ["updated ", "recorded "] {
