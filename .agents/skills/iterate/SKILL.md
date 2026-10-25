@@ -253,6 +253,14 @@ the test fail (sprint 44: ADR-0004 claimed one atomicity owner while
 `rewrite_archive` still held its own temp+rename, and the round-trip test
 would have passed against a plain `fs::write`; the hard-link inode witness
 was verified red, and the archive copy was folded).
+**A reference-behaviour claim is probed, not remembered**: read the
+reference file:line in the same session before writing "the reference
+does X" — port code is evidence of what the PORT does, never of the
+reference, no matter how old and authoritative the port copy looks
+(sprint 45: `stamp_id`'s `content` fallback had lived in the command so
+long it read as parity, but the reference `generateRecordId` throws for
+unregistered types; the spec review caught the ADR calling it an exact
+port — docs corrected, divergence seeded as mulch-2809).
 Clean up reviewer children.
 A sprint is NOT closed until its SHORT reflection (step 6) ran and
 `sprints_reflected` caught up.
