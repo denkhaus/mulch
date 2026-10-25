@@ -44,6 +44,11 @@ rotate-notes:
 rotate-notes-dry:
     nu scripts/rotate-sprint-notes.nu --dry-run
 
+# The workspace test count (ledger: compare against .iterate-state.json's
+# last_test_count at every closeout).
+test-count:
+    nu scripts/test-count.nu
+
 # Run a workflow end to end: create+start+attach, wait, integrate
 # (thin wrapper — logic lives in scripts/run_workflow.nu; GitButler-
 # adapted: integration via `but branch update main`).

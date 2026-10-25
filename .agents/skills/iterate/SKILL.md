@@ -216,7 +216,11 @@ own two-axis standards+spec subagents, NOTHING additional). Fixed
 point = the previous sprint's last commit; spec sources = the sprint's
 seeds (`seeds show <id>`); standards sources = the rust-style-guide,
 AGENTS.md, and the ADRs. Fold both axes' findings, commit, close the
-tickets with commit refs. Where the diff claims REFERENCE behaviour,
+tickets with commit refs. The SPEC axis' standing brief carries the
+verity clause: verify the commit messages' claims against the TREE —
+every named surface exists (grep), and the test-count delta matches
+`just test-count` (sprint 49: both axes caught a commit describing
+work a mid-sprint checkout had silently reverted). Where the diff claims REFERENCE behaviour,
 hand the spec axis the reference source path so it can verify the site
 and ordering of claimed behaviour (the sprint-46 lesson: an error
 placed at a different site than the reference's crash point changed
@@ -278,6 +282,11 @@ claimed file untouched, zero new tests). After ANY restore: grep the
 sprint's claimed surfaces, run the sprint's new tests, and check the
 TEST-COUNT delta against the message; a commit message is the loop's
 record and must never outrun the tree.
+**Single replacements go through the edit tool; python heredocs are
+for counted, multi-file batches (retro 2026-10-25)**: fmt re-wraps
+text between edits, and heredoc anchors assert on the OLD shape —
+eight dead batches in sprint 49 alone. After any `cargo fmt --all`,
+re-read the anchor before the next heredoc.
 **A reference-behaviour claim is probed, not remembered**: read the
 reference file:line in the same session before writing "the reference
 does X" — port code is evidence of what the PORT does, never of the
@@ -289,6 +298,14 @@ port — docs corrected, divergence seeded as mulch-2809).
 Clean up reviewer children.
 A sprint is NOT closed until its SHORT reflection (step 6) ran and
 `sprints_reflected` caught up.
+**The test-count ledger closes every sprint (retro 2026-10-25)**: run
+`just test-count` and compare against `.iterate-state.json`'s
+`last_test_count`; on a match or announced growth, record the new
+count in the closeout. A DROP without an announced removal, or a
+count below what the sprint's commit messages claim, stops the
+closeout — both sprint-49 incidents (the checkout that silently
+reverted a seed, the rebase ours/theirs loss) were caught by exactly
+this comparison.
 
 ## 5. Architecture gate — every 3rd sprint
 
