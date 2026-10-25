@@ -9,8 +9,9 @@
 //!
 //! The format core lives here — store IO, the record-type registry,
 //! and the record-domain laws (schema validity in [`schema`], anchor
-//! validity in [`anchors`], staleness decay in [`stale`]); CLI parity
-//! and the self-hosting cutover are tracked in this repo's Seeds
+//! validity in [`anchors`], staleness decay in [`stale`]) plus the
+//! lifecycle hook engine ([`hooks`], ADR-0002); CLI parity and the
+//! self-hosting cutover are tracked in this repo's Seeds
 //! tracker (seed ids `mulch-…`).
 
 pub mod anchors;
@@ -20,6 +21,7 @@ mod config;
 mod custom_types;
 mod error;
 pub mod git_context;
+pub mod hooks;
 mod ids;
 pub mod json_error;
 pub mod jsval;
