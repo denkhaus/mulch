@@ -79,6 +79,19 @@ fn assemble(before: &[&str], middle: &str, after: &[&str]) -> String {
 
 // ---- the four full-mode envelopes (format.ts) ----
 
+/// The full-mode envelope TABLE (format.ts): keyed by the same
+/// [`Format`] the section table reads, parsed once at the command
+/// edge — the last string dispatch of the family dies (mulch-1c32).
+pub(crate) fn prime_output(format: crate::commands::render::Format, sections: &[String]) -> String {
+    use crate::commands::render::Format;
+    match format {
+        Format::Xml => prime_output_xml(sections),
+        Format::Plain => prime_output_plain(sections),
+        Format::Compact => prime_output_compact(sections),
+        Format::Markdown => prime_output_markdown(sections),
+    }
+}
+
 /// `formatPrimeOutputCompact`.
 pub(crate) fn prime_output_compact(sections: &[String]) -> String {
     let empty = "No expertise recorded yet. Use `ml add <domain>` to create a domain, then `ml record` to add records.";

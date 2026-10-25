@@ -39,8 +39,7 @@ use crate::commands::active_work::resolve_active_work;
 use crate::commands::git_context::GitContext;
 use crate::commands::hooks_surface::{HookPhase, print_hook_warnings};
 use crate::commands::prime::format::{
-    ManifestDomain, contract_block, manifest_output, manifest_payload, prime_output_compact,
-    prime_output_markdown, prime_output_plain, prime_output_xml, session_close,
+    ManifestDomain, contract_block, manifest_output, manifest_payload, prime_output, session_close,
 };
 use crate::commands::render::estimate_record_text;
 use crate::output::{Failure, print_line};
@@ -604,12 +603,7 @@ fn full_mode_output(
         ));
     }
 
-    let mut output = match prime_format {
-        "xml" => prime_output_xml(&sections),
-        "plain" => prime_output_plain(&sections),
-        "compact" => prime_output_compact(&sections),
-        _ => prime_output_markdown(&sections),
-    };
+    let mut output = prime_output(section_format, &sections);
     if dropped_count > 0 {
         output.push_str("\n\n");
         output.push_str(&mulch::budget::format_budget_summary(
