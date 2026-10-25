@@ -23,7 +23,8 @@ store IO (`StoreFiles`, whose `registry()` is the merged type view —
 the six builtins plus the config's validated `custom_types`, with
 `REGISTRY` as the builtin table behind it), the record-domain laws —
 schema validity (`schema::verdict`), record summaries
-(`record_summary`) and staleness decay (`stale::StaleRule`) — and the
+(`record_summary`), anchor validity (`anchors::validity`), and
+staleness decay (`stale::StaleRule`) — and the
 write-model helpers built on them (`UpsertPlan`, `OutcomeEntry`,
 `value_text`); commands render, the lib decides.
 

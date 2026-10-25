@@ -8,9 +8,10 @@
 //! are the only sanctioned extension mechanism.
 //!
 //! The format core lives here — store IO, the record-type registry,
-//! and the record-domain laws (schema validity in [`schema`], staleness
-//! decay in [`stale`]); CLI parity and the self-hosting cutover are
-//! tracked in this repo's Seeds tracker (seed ids `mulch-…`).
+//! and the record-domain laws (schema validity in [`schema`], anchor
+//! validity in [`anchors`], staleness decay in [`stale`]); CLI parity
+//! and the self-hosting cutover are tracked in this repo's Seeds
+//! tracker (seed ids `mulch-…`).
 
 pub mod anchors;
 pub mod bm25;

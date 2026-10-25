@@ -91,7 +91,8 @@ pub fn record_anchors(record: &Value) -> Vec<(&'static str, String)> {
 
 /// Resolves an anchor like the reference's `resolve(projectRoot, p)`:
 /// absolute anchors stay absolute, everything else joins the project
-/// root.
+/// root. Embedders may resolve anchors directly (the same
+/// direct-consumption posture as [`crate::stale`]).
 #[must_use]
 pub fn resolve(project_root: &Path, anchor: &str) -> PathBuf {
     let path = Path::new(anchor);
@@ -197,10 +198,29 @@ mod tests {
     }
 
     #[test]
+    fn walk_skips_a_missing_evidence_key() {
+        // files[] present, no evidence key at all: the walk yields
+        // only the file kinds (the evidence subfield is optional)
+        let record = json!({
+            "files": ["src/a.rs"],
+        });
+        let anchors = record_anchors(&record);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0], ("file", "src/a.rs".to_string()));
+    }
+
+    #[test]
     fn resolve_joins_relative_and_keeps_absolute() {
         let root = Path::new("/project");
         assert_eq!(resolve(root, "src/a.rs"), Path::new("/project/src/a.rs"));
         assert_eq!(resolve(root, "/etc/passwd"), Path::new("/etc/passwd"));
-        assert!(exists(root, "/etc/passwd"));
+        // A real absolute anchor the test itself created — an
+        // environment path like /etc/passwd would depend on the host
+        // image, and a missing one pins the negative just as well.
+        let anchor = std::env::temp_dir().join("mulch-anchors-resolve-check");
+        std::fs::write(&anchor, b"").expect("write temp anchor");
+        let anchor = anchor.to_str().expect("utf-8 temp path");
+        assert!(exists(root, anchor));
+        assert!(!exists(root, "/definitely-missing-anchor"));
     }
 }

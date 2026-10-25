@@ -789,6 +789,7 @@ fn strip_broken_anchors(record: &mut Value, project_root: &std::path::Path) -> u
     }
     if let Some(evidence) = record.get("evidence")
         && let Some(file) = evidence.get("file").and_then(Value::as_str)
+        && !file.is_empty()
         && !mulch::anchors::exists(project_root, file)
     {
         if let Some(evidence) = record.get_mut("evidence").and_then(Value::as_object_mut) {

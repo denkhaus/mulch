@@ -924,14 +924,6 @@ mod tests {
 
     use super::*;
 
-    fn id(record: &Value, key: &str) -> String {
-        record
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    }
-
     /// The demotion ladder: foundational → tactical → observational
     /// → bottom-out; anything else bottoms out immediately.
     #[test]
@@ -1061,31 +1053,42 @@ mod tests {
         assert!((params.grace_days - DEFAULT_ANCHOR_GRACE_DAYS).abs() < f64::EPSILON);
     }
 
-    /// The anchor census enumerates the three anchor kinds, skips
-    /// empty and non-string entries, and reports zero anchors as
-    /// exempt (`valid_fraction` unset — the Option folded at the hit
-    /// site).
+    /// The prune-side fold over the census (the hit site): grace gate
+    /// first, then the zero-anchor exemption, then the threshold. The
+    /// census edge table itself lives in `mulch::anchors`.
     #[test]
-    fn anchor_census_enumerates_every_kind() {
+    fn anchor_decay_folds_the_census_at_the_hit_site() {
+        let params = AnchorParams {
+            threshold:  0.9,
+            grace_days: 7.0,
+        };
         let root = std::env::temp_dir();
-        let record = json!({
-            "files": ["one.txt", "", 5],
-            "dir_anchors": ["adir"],
-            "evidence": {"file": "ev.bin"}
-        });
-        let report = mulch::anchors::validity(&record, &root);
-        assert_eq!(report.total, 3);
-        assert_eq!(report.valid, 0);
-        assert_eq!(report.broken.len(), 3);
-        let kinds: Vec<&str> = report.broken.iter().map(|(kind, _)| *kind).collect();
-        assert_eq!(kinds, ["file", "dir", "evidence_file"]);
-        let bare = json!({"type": "pattern"});
-        let report = mulch::anchors::validity(&bare, &root);
-        assert_eq!(report.total, 0);
-        assert_eq!(report.broken.len(), 0);
-        // the fraction is meaningless at 0/0: the hit site exempts it
-        assert_eq!(report.valid_fraction, 0.0);
-        let _ = id(&bare, "type");
+        let good = root.join("mulch-anchor-fold-good.txt");
+        std::fs::write(&good, b"").expect("write anchor");
+        let good = good.to_str().expect("utf-8 anchor path");
+        let walk = PruneWalk {
+            rule:           &StaleRule::default(),
+            now:            "2026-10-24T00:00:00.000Z".parse().expect("now parses"),
+            now_ms:         1_792_214_400_000.0,
+            superseded_ids: &set(&[]),
+            anchors:        Some(&params),
+            project_root:   &root,
+        };
+        let old = "2026-10-01T00:00:00.000Z";
+        // Below threshold after the grace window: the report rides out.
+        let broken = json!({"recorded_at": old, "files": ["missing-a.txt", "missing-b.txt"]});
+        let hit = walk.anchor_decayed(&broken).expect("demotion hit");
+        assert_eq!(hit.total, 2);
+        assert_eq!(hit.valid, 0);
+        // Zero anchors: exempt (a 0/0 fraction must not trip).
+        let bare = json!({"recorded_at": old});
+        assert!(walk.anchor_decayed(&bare).is_none());
+        // At/above threshold: no demotion.
+        let valid = json!({"recorded_at": old, "files": [good]});
+        assert!(walk.anchor_decayed(&valid).is_none());
+        // Inside the grace window: the census never runs.
+        let young = json!({"recorded_at": "2026-10-23T00:00:00.000Z", "files": ["missing-c.txt"]});
+        assert!(walk.anchor_decayed(&young).is_none());
     }
 
     /// The explain percent rounds half-up on the scaled double like
