@@ -118,9 +118,16 @@ architecture direction, milestone content, go/no-go):
 
 ## 3. Sprint — working mode (ALWAYS on, every sprint)
 
-- **THREE SEEDS PER SPRINT (user directive 2026-10-24)**: a sprint
+- **THREE SEEDS PER SPRINT (user directive 2026-10-24, renewed and
+  extended 2026-10-25)**: a sprint
   claims and closes at least THREE seeds — otherwise we review more
-  than we build. Plan the bundle at ORIENT (pick a main seed plus
+  than we build. At least ONE of the three must be an OLD seed that
+  fits the sprint's theme; when no fitting old seed exists, new seeds
+  only. Seed SELECTION is autonomous (user directive 2026-10-25): the
+  loop picks the bundle from the architecture ordering (ADR line,
+  gate candidate chain) — no grilling round over WHICH seeds, only for
+  genuinely open load-bearing design decisions inside the work. Plan
+  the bundle at ORIENT (pick a main seed plus
   riders: preps, folds, small bugs from the same family); a sprint
   with fewer than three closable seeds is a planning defect, not a
   small sprint. Big waves still count as one seed of the three
@@ -204,7 +211,16 @@ architecture direction, milestone content, go/no-go):
 ## 4. Review — ALWAYS after each sprint
 
 Run the **code-review** skill autonomously after every larger coding session:
-standards + spec reviewers as PARALLEL SUBAGENTS. Scope the diff to the
+standards + spec reviewers as PARALLEL SUBAGENTS, plus — user directive
+2026-10-25 — a third, the **CODE REVISOR**: an adversarial agent hunting
+WEAKNESSES the other two axes do not cover (latent bugs, edge cases, risky
+assumptions, untested paths, behavior changes the commit did not name;
+probes against the reference binary are its sharpest tool). Sprint 46
+proved the split: standards+spec both PASS-with-nits while the revisor
+found that the 2809 fix errored at the wrong site — the reference dies
+at candidate collection, so the port printed a summary the reference
+never printed and had already compacted earlier domains when a later
+one errored. Scope the diff to the
 SPRINT's own commits: fixed point = the last commit of the previous sprint
 on the `iterate` lane (sprint-close bookkeeping commits land between sprints
 and confuse reviewers otherwise). The STANDARDS reviewer treats the
@@ -271,9 +287,11 @@ After every **3 completed sprints** (sprint count from the state file), run
 the **improve-codebase-architecture** skill (global): explorer subagent, HTML report served on a localhost URL
 (never xdg-open, never a file path — user policy), work the Strong
 candidates as a chain (grill the chosen order), fold judgement calls
-opportunistically. Every non-Speculative candidate becomes a seed IMMEDIATELY
-(Strong AND Worth exploring alike); Speculative ones stay referenced by their
-existing seed/ADR. Reset nothing — sprints keep counting.
+opportunistically. Candidate filing is TIERED (user directive 2026-10-25):
+every STRONG candidate becomes a seed IMMEDIATELY; WORTH-EXPLORING findings
+are the loop's own relevance call — seed them when they connect to an
+active theme or an old seed, skip them otherwise; Speculative ones stay
+referenced by their existing seed/ADR. Reset nothing — sprints keep counting.
 
 ## 6. Reflect — self-evolution of this skill
 
