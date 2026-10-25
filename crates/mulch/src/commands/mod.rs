@@ -132,6 +132,12 @@ pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failu
 /// each documented to point at the other.
 #[cfg(test)]
 pub(crate) mod testscratch {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// One serial per store — the same uniqueness law as the lib
+    /// twin (plain `cargo test` shares one process).
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+
     /// A scratch store over the given config body; `expertise_dir`
     /// pre-creates `.mulch/expertise`.
     pub(crate) fn store_with(
@@ -139,8 +145,11 @@ pub(crate) mod testscratch {
         config: &str,
         expertise_dir: bool,
     ) -> (std::path::PathBuf, mulch::StoreFiles) {
-        let dir =
-            std::env::temp_dir().join(format!("mulch-cmd-scratch-{tag}-{}", std::process::id()));
+        let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "mulch-cmd-scratch-{tag}-{}-{serial}",
+            std::process::id()
+        ));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).expect("scratch root");
         if expertise_dir {

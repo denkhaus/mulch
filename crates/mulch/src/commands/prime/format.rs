@@ -13,7 +13,7 @@
 use jiff::Timestamp;
 use serde_json::{Map, Value};
 
-use crate::commands::render::{promote_mulch, time_ago, xml_attr_escape, xml_escape};
+use crate::commands::render::{Format, promote_mulch, time_ago, xml_attr_escape, xml_escape};
 
 /// One manifest row: a configured domain's unfiltered counts.
 #[derive(Clone, Debug)]
@@ -83,7 +83,6 @@ fn assemble(before: &[&str], middle: &str, after: &[&str]) -> String {
 /// [`Format`] the section table reads, parsed once at the command
 /// edge — the last string dispatch of the family dies (mulch-1c32).
 pub(crate) fn prime_output(format: crate::commands::render::Format, sections: &[String]) -> String {
-    use crate::commands::render::Format;
     match format {
         Format::Xml => prime_output_xml(sections),
         Format::Plain => prime_output_plain(sections),
@@ -305,7 +304,6 @@ pub(crate) fn manifest_output(
     format: crate::commands::render::Format,
     now: Timestamp,
 ) -> String {
-    use crate::commands::render::Format;
     let mut lines: Vec<String> = match format {
         Format::Xml => vec!["<manifest>".into()],
         Format::Plain => vec![
@@ -643,7 +641,6 @@ pub(crate) fn contract_block(
     registry: &mulch::Registry,
     format: crate::commands::render::Format,
 ) -> Option<String> {
-    use crate::commands::render::Format;
     let contract = build_project_contract(config, registry);
     if !contract.has_content() {
         return None;
@@ -830,13 +827,7 @@ pub(crate) fn contract_block(
 
 /// `getSessionEndReminder`: `custom` wins, then the style preset
 /// (`conditional` for absent/unknown styles).
-/// The `plain` arms inside the presets are unreachable through
-/// `prime` (the caller gates `format != "plain"`) — PARITY, not
-/// drift: the reference carries the same arm in its shared
-/// sessionClose for embedders (format.ts:533), and its prime gate
-/// skips the reminder for the same reason ours does (prime.ts:431:
-/// plain is the spawn-injection contract, embedders frame sessions
-/// themselves). Kept, not deleted.
+///
 /// The reference's sessionClose also carries an `"embedded"` arm
 /// per preset — the spawn-injection EMBEDDER dispatch (format.ts),
 /// never a CLI `--format` value. This port has no embedder path into
@@ -872,7 +863,6 @@ pub(crate) fn session_close(
 
 /// The `conditional` preset (the v0.10 default).
 fn conditional_session_close(format: crate::commands::render::Format) -> String {
-    use crate::commands::render::Format;
     match format {
         Format::Xml => [
             "<session_close>",
@@ -918,7 +908,6 @@ fn conditional_session_close(format: crate::commands::render::Format) -> String 
 
 /// The `minimal` preset.
 fn minimal_session_close(format: crate::commands::render::Format) -> String {
-    use crate::commands::render::Format;
     match format {
         Format::Xml => [
             "<session_close>",
@@ -933,7 +922,6 @@ fn minimal_session_close(format: crate::commands::render::Format) -> String {
 
 /// The `directive` preset.
 fn directive_session_close(format: crate::commands::render::Format) -> String {
-    use crate::commands::render::Format;
     match format {
         Format::Xml => [
             "<session_close>",
