@@ -166,6 +166,10 @@ pub fn upsert_plan(
 /// `{ ...record, outcomes: merged }`, existing first): replaces the
 /// `outcomes` key in place when the incoming record already has one,
 /// appends it at the end otherwise. The id stays untouched.
+///
+/// Same FIELD as `compact::outcomes_union` (private), different law:
+/// that one flattens an N-record compaction group, this one merges an
+/// existing record with one incoming upsert payload.
 pub fn merge_outcomes(existing: &Value, mut incoming: Map<String, Value>) -> Map<String, Value> {
     let mut merged: Vec<Value> = Vec::new();
     for source in [existing.get("outcomes"), incoming.get("outcomes")] {

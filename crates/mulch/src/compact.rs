@@ -29,7 +29,10 @@ pub enum Outcome {
     Merged(Value),
     /// The type's strategy is `manual`: no mechanical merge exists.
     Manual,
-    /// No records to merge.
+    /// No records to merge — or a group whose newest member is not an
+    /// object (contract-only; the CLI's groups are parsed records).
+    /// Checked BEFORE the strategy dispatch, so an empty `manual`
+    /// group also reports `Empty` (the reference's own order).
     Empty,
 }
 
@@ -59,6 +62,8 @@ pub fn merge(records: &[Value], row: &Row, now: &str, registry: &Registry) -> Ou
         CompactStrategy::Manual => return Outcome::Manual,
         CompactStrategy::Concat => concat(records, row, now, &supersedes, tags, files),
         CompactStrategy::KeepLatest | CompactStrategy::MergeOutcomes => {
+            // Unreachable after the empty check above (newest_first
+            // never drops members); the arm only guards direct callers.
             let Some(mut latest) = newest_first(records).first().map(|value| (*value).clone())
             else {
                 return Outcome::Empty;
@@ -211,11 +216,16 @@ fn string_array(values: &[String]) -> Value {
     Value::Array(values.iter().map(|v| Value::String(v.clone())).collect())
 }
 
-/// The deterministic id over a record body (reference
-/// `generateRecordId`): the id-key field of the record's OWN registry
-/// row — `content` when the type is not registered — re-hashed, an
-/// existing id removed, the fresh one appended LAST (the positional
-/// half of the id law; key order is byte-visible).
+/// The deterministic id over a record body (the hash half of the
+/// reference `generateRecordId`): the id-key field of the record's OWN
+/// registry row, re-hashed, an existing id removed, the fresh one
+/// appended LAST (the positional half of the id law; key order is
+/// byte-visible).
+///
+/// DEVIATION, pre-existing and preserved byte-neutral by the move: the
+/// reference's `generateRecordId` THROWS for an unregistered type;
+/// this port tolerates it with the `content` id-key fallback below.
+/// The divergence's live surfaces are tracked in mulch-2809.
 ///
 /// Public beyond `merge` because the two single-record paths stamp the
 /// same way: `--apply`'s flag-built replacement and the pre-compact
@@ -443,6 +453,52 @@ mod tests {
     }
 
     #[test]
+    fn files_union_and_a_present_tags_union_survive_both_paths() {
+        // Catches: (a) losing the `files` array union (a second
+        // string-array field besides tags), (b) its envelope position
+        // (after `tags` in concat), (c) keep_latest DROPPING a union
+        // some member actually carries (only the no-union drop path
+        // is pinned by the other table row).
+        let group = [
+            json!({"type": "pattern", "id": "mx-1", "name": "n", "description": "d",
+                   "tags": ["t1"], "files": ["a.rs"]}),
+            json!({"type": "pattern", "id": "mx-2", "name": "n2", "description": "d2",
+                   "tags": ["t2"], "files": ["a.rs", "b.rs"]}),
+        ];
+        let concat = merged(merge(
+            &group,
+            &row(CompactStrategy::Concat),
+            NOW,
+            &registry(),
+        ));
+        assert_eq!(concat["files"], json!(["a.rs", "b.rs"]));
+        let keys: Vec<&str> = concat
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let tags_at = keys
+            .iter()
+            .position(|k| *k == "tags")
+            .expect("tags present");
+        let files_at = keys
+            .iter()
+            .position(|k| *k == "files")
+            .expect("files present");
+        assert!(files_at > tags_at, "files lands after tags: {keys:?}");
+
+        let latest = merged(merge(
+            &group,
+            &row(CompactStrategy::KeepLatest),
+            NOW,
+            &registry(),
+        ));
+        assert_eq!(latest["tags"], json!(["t1", "t2"]));
+        assert_eq!(latest["files"], json!(["a.rs", "b.rs"]));
+    }
+
+    #[test]
     fn an_unparsable_stamp_keeps_the_group_order() {
         // Catches: a comparator that reorders on NaN (the reference's
         // JS sort treats an invalid date as "equal", so order is kept).
@@ -478,12 +534,16 @@ mod tests {
                 "the command re-grew a merge helper: {copy}"
             );
         }
+        // Substring, not full path: a `use mulch::compact::…` rewrite
+        // of the call site must not trip the pin. (Names, not semantics:
+        // a re-grown copy under a NEW name slips past the bans above —
+        // the delegate assertions are the airtight half.)
         assert!(
-            CLI.contains("mulch::compact::merge"),
+            CLI.contains("compact::merge"),
             "the command must call the lib law"
         );
         assert!(
-            CLI.contains("mulch::compact::stamp_id"),
+            CLI.contains("compact::stamp_id"),
             "the two single-record stamps must delegate too"
         );
     }

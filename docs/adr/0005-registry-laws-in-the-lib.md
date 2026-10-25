@@ -31,13 +31,17 @@ compact::stamp_id(record: &mut Value, registry: &Registry)   // reference genera
 - Refusals are VERDICTS, not errors, and carry no text. `Manual` is a
   policy answer about which `--auto` and `--apply` say different
   things (warn-and-skip vs refuse); `Empty` is unreachable through the
-  CLI (groups have ≥ 2 members). The channel renders both — the same
+  CLI (groups have ≥ 2 members, and members are parsed objects — the
+  non-object arm is contract-only). The channel renders both — the same
   law-vs-wording split as ADR-0003/0004.
 - `stamp_id` is public beyond `merge` because two single-record paths
   stamp the same way: `--apply`'s flag-built replacement and the
   pre-compact hook's adopted record (ADR-0003 keeps those PATHS in the
-  command — not the stamp). This is the first concrete step of the
-  mulch-9e28 id-law unification.
+  command — not the stamp). It implements the hash half of the
+  reference `generateRecordId`; the `content` id-key fallback for
+  unregistered types is a PORT deviation the reference lacks (see
+  Consequences). First concrete step of the mulch-9e28 id-law
+  unification.
 - The command keeps what is CLI-shaped: candidate discovery
   (`find_candidates`), the `--auto`/`--apply` rituals, flag parsing,
   `replacement_body`, the `payload.replacement` hook law (ADR-0003),
@@ -57,12 +61,14 @@ gives it a body; the channel owns only wording.** `SummaryLaw` →
   tests could only sample.
 - `--auto` and `--apply` cannot drift: both stamp through the one law,
   and a structural pin (`include_str!` over the command) fails the
-  build if a merge helper re-grows there.
+  test suite if a merge helper re-grows there or the command stops
+  delegating.
 - Smallest honest interface: the moved helpers that only the merge
-  needs (`newest_first`, `string_union`, `outcomes_union`,
-  `string_array`) stay private; the CLI keeps its own two-line
-  accessors (`raw_text`, `type_of`, `id_of`) — three-line field reads
-  are not laws, and the deletion test says "moved, not concentrated".
+  needs (`concat`, `newest_first`, `string_union`, `outcomes_union`,
+  `string_array`, `field_text`, `id_of`) stay private; the CLI keeps
+  its own two-line accessors (`raw_text`, `type_of`, `id_of`) —
+  three-line field reads are not laws, and the deletion test says
+  "moved, not concentrated".
 
 ## Alternatives considered
 
@@ -83,12 +89,18 @@ gives it a body; the channel owns only wording.** `SummaryLaw` →
 - The lib module's `outcomes_union` (N-record flatten) is deliberately
   NOT `upsert::merge_outcomes` (two-side merge) — same field, two laws;
   the names keep them apart and each doc points at the other.
-- `stamp_id` reads the record's OWN `type` field with a `content`
-  id-key fallback for unregistered types (reference
-  `generateRecordId`), so it is defined for records the merge never
-  sees; `merge` itself still requires a registry row and the command
-  still owns discovery — including its divergence for unknown-type
-  groups, which stays a command-side concern (seed mulch-2809).
+- `stamp_id` reads the record's OWN `type` field and is defined for
+  records the merge never sees — but its `content` id-key fallback for
+  unregistered types is a DEVIATION, not reference behaviour: the
+  reference `generateRecordId` throws `Unknown record type` there.
+  The fallback predates the move (the command's deleted copy carried
+  it identically), so the move is byte-neutral; both live surfaces of
+  the divergence are tracked in seed mulch-2809 (the `--auto`
+  discovery skip, and a hook-provided replacement of an unregistered
+  type, which the port stamps where the reference throws — the
+  flag-built `--apply` types are already gated by the command's
+  unknown-type arm). `merge` itself still requires a registry row and
+  the command still owns discovery.
 - The id lands LAST in every merged record (serde_json preserves key
   order and the parity batteries compare bytes) — the positional half
   of the id law now has one owner instead of prose bullets.
