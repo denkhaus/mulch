@@ -198,7 +198,7 @@ pub(crate) fn summary_raw(
         ));
     }
     mulch::record_summary_value(registry, record)
-        .map_err(|error| Failure::handled_on_stderr(command, format!("Error: {error}")))
+        .map_err(|error| Failure::error_line(command, error))
 }
 
 /// The plain rendering of a raw summary: `String(value)` — `None`

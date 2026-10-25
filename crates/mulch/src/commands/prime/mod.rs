@@ -64,6 +64,9 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
         .format
         .clone()
         .unwrap_or_else(|| if args.full { "markdown" } else { "compact" }.to_string());
+    // The ONE parse — every family (sections, envelope, manifest,
+    // contract, session close) threads the value (D1, mulch-3e3b).
+    let output_format = crate::commands::render::Format::parse(&prime_format);
 
     if args.manifest && args.full {
         return Err(prime_error(
@@ -283,7 +286,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     let contract = if json_mode || args.dry_run {
         None
     } else {
-        contract_block(config, registry, &prime_format)
+        contract_block(config, registry, output_format)
     };
 
     // The annotation context mirrors the filter step: explicit
@@ -315,11 +318,11 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
             let mut text = manifest_output(
                 &domains,
                 &effective_governance(config),
-                &prime_format,
+                output_format,
                 Timestamp::now(),
             );
-            if prime_format != "plain" {
-                let reminder = session_close(&prime_format, session_close_config.as_ref());
+            if output_format != crate::commands::render::Format::Plain {
+                let reminder = session_close(output_format, session_close_config.as_ref());
                 if !reminder.is_empty() {
                     text.push_str("\n\n");
                     text.push_str(&reminder);
@@ -333,7 +336,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
             args,
             &store,
             &loaded,
-            &prime_format,
+            output_format,
             budget_enabled,
             budget,
             annotation_context.as_ref(),
@@ -383,14 +386,13 @@ fn full_mode_output(
     args: &PrimeArgs,
     store: &StoreFiles,
     loaded: &[Loaded],
-    prime_format: &str,
+    output_format: crate::commands::render::Format,
     budget_enabled: bool,
     budget: usize,
     annotation_context: Option<&ActiveContext>,
     files_filter: bool,
     session_close_config: Option<&mulch::SessionClose>,
 ) -> Result<Value, Failure> {
-    let section_format = crate::commands::render::Format::parse(prime_format);
     let registry = store.registry();
     let prime_config = store.config().prime().ok().flatten();
     let tier_weights = resolve_tier_weights(
@@ -589,7 +591,7 @@ fn full_mode_output(
         // search/query on exactly two axes — annotations and
         // `--full || --verbose`.
         sections.push(crate::commands::render::render_section(
-            section_format,
+            output_format,
             registry,
             &group.domain,
             &group.records,
@@ -600,7 +602,7 @@ fn full_mode_output(
         ));
     }
 
-    let mut output = prime_output(section_format, &sections);
+    let mut output = prime_output(output_format, &sections);
     if dropped_count > 0 {
         output.push_str("\n\n");
         output.push_str(&mulch::budget::format_budget_summary(
@@ -608,8 +610,8 @@ fn full_mode_output(
             dropped_domain_count,
         ));
     }
-    if prime_format != "plain" {
-        let reminder = session_close(prime_format, session_close_config);
+    if output_format != crate::commands::render::Format::Plain {
+        let reminder = session_close(output_format, session_close_config);
         if !reminder.is_empty() {
             output.push_str("\n\n");
             output.push_str(&reminder);

@@ -302,19 +302,22 @@ fn manifest_status_suffix(count: usize, governance: &mulch::Governance) -> Strin
 pub(crate) fn manifest_output(
     domains: &[ManifestDomain],
     governance: &mulch::Governance,
-    format: &str,
+    format: crate::commands::render::Format,
     now: Timestamp,
 ) -> String {
+    use crate::commands::render::Format;
     let mut lines: Vec<String> = match format {
-        "xml" => vec!["<manifest>".into()],
-        "plain" => vec![
+        Format::Xml => vec!["<manifest>".into()],
+        Format::Plain => vec![
             "Project Expertise Manifest (via Mulch)".into(),
             "======================================".into(),
         ],
-        _ => vec!["# Project Expertise Manifest (via Mulch)".into()],
+        Format::Markdown | Format::Compact => {
+            vec!["# Project Expertise Manifest (via Mulch)".into()]
+        }
     };
     match format {
-        "xml" => {
+        Format::Xml => {
             lines.push("  <description>Manifest mode lists available domains. Load records on demand with `ml prime &lt;domain&gt;` or `ml prime --files &lt;path&gt;`.</description>".into());
             lines.push("  <quick_reference>".into());
             for (command, description) in MANIFEST_QUICK_REF {
@@ -355,7 +358,7 @@ pub(crate) fn manifest_output(
             lines.push("  </domains>".into());
             lines.push("</manifest>".into());
         }
-        "plain" => {
+        Format::Plain => {
             lines.push(String::new());
             lines.push(
                 "Manifest mode lists available domains. Load records on demand with `ml prime <domain>` or `ml prime --files <path>`."
@@ -383,7 +386,7 @@ pub(crate) fn manifest_output(
                 }
             }
         }
-        _ => {
+        Format::Markdown | Format::Compact => {
             lines.push(String::new());
             lines.push(
                 "> Manifest mode lists available domains. Load records on demand with `ml prime <domain>` or `ml prime --files <path>`."
@@ -638,15 +641,16 @@ impl ProjectContract {
 pub(crate) fn contract_block(
     config: &mulch::Config,
     registry: &mulch::Registry,
-    format: &str,
+    format: crate::commands::render::Format,
 ) -> Option<String> {
+    use crate::commands::render::Format;
     let contract = build_project_contract(config, registry);
     if !contract.has_content() {
         return None;
     }
     let mut lines: Vec<String> = Vec::new();
     match format {
-        "xml" => {
+        Format::Xml => {
             lines.push("<contract>".into());
             if !contract.custom_types.is_empty() {
                 lines.push("  <custom_types>".into());
@@ -715,7 +719,7 @@ pub(crate) fn contract_block(
             lines.push("</contract>".into());
             Some(promote_mulch(&lines.join("\n")))
         }
-        "plain" => {
+        Format::Plain => {
             lines.push("Project Contract (write-side gates)".into());
             lines.push("===================================".into());
             if !contract.custom_types.is_empty() {
@@ -760,7 +764,7 @@ pub(crate) fn contract_block(
             }
             Some(promote_mulch(&lines.join("\n")))
         }
-        _ => {
+        Format::Markdown | Format::Compact => {
             lines.push("## Project Contract".into());
             lines.push(String::new());
             lines.push("Write-side gates `ml record` enforces in this project.".into());
@@ -833,7 +837,23 @@ pub(crate) fn contract_block(
 /// skips the reminder for the same reason ours does (prime.ts:431:
 /// plain is the spawn-injection contract, embedders frame sessions
 /// themselves). Kept, not deleted.
-pub(crate) fn session_close(format: &str, config: Option<&mulch::SessionClose>) -> String {
+/// The reference's sessionClose also carries an `"embedded"` arm
+/// per preset — the spawn-injection EMBEDDER dispatch (format.ts),
+/// never a CLI `--format` value. This port has no embedder path into
+/// the channel layer, so the arm is DROPPED here; it re-lands with a
+/// lib embedder seam if one ever exists (D1, mulch-3e3b).
+///
+/// The `plain` arms inside the presets are unreachable through
+/// `prime` (the caller gates `format != "plain"`) — PARITY, not
+/// drift: the reference carries the same arm in its shared
+/// sessionClose for embedders (format.ts:533) and its prime gate
+/// skips the reminder for the same reason ours does (prime.ts:431:
+/// plain is the spawn-injection contract, embedders frame sessions
+/// themselves). Kept, not deleted.
+pub(crate) fn session_close(
+    format: crate::commands::render::Format,
+    config: Option<&mulch::SessionClose>,
+) -> String {
     if let Some(custom) = config.and_then(|config| config.custom.as_deref())
         && !custom.is_empty()
     {
@@ -851,9 +871,10 @@ pub(crate) fn session_close(format: &str, config: Option<&mulch::SessionClose>) 
 }
 
 /// The `conditional` preset (the v0.10 default).
-fn conditional_session_close(format: &str) -> String {
+fn conditional_session_close(format: crate::commands::render::Format) -> String {
+    use crate::commands::render::Format;
     match format {
-        "xml" => [
+        Format::Xml => [
             "<session_close>",
             "  <instruction>If you discovered insights worth preserving — a new convention, a pattern that worked, a decision made, a failure encountered — record them before closing this session.</instruction>",
             "  <commands>",
@@ -865,7 +886,7 @@ fn conditional_session_close(format: &str) -> String {
             "</session_close>",
         ]
         .join("\n"),
-        "plain" => [
+        Format::Plain => [
             "=== 🚨 SESSION CLOSE 🚨 ===",
             "",
             "If you discovered insights worth preserving — a new convention, a pattern that worked,",
@@ -878,22 +899,7 @@ fn conditional_session_close(format: &str) -> String {
             "Skip if no insight surfaced. Unrecorded learnings are lost; ritual filler records are also noise.",
         ]
         .join("\n"),
-        "embedded" => [
-            "### Before You Finish",
-            "",
-            "If you discovered conventions, patterns, decisions, or failures worth preserving during",
-            "this session, record them before closing:",
-            "",
-            "```bash",
-            "ml learn                                                                    # see what files changed",
-            "ml record <domain> --type <convention|pattern|failure|decision|reference|guide> --description \"...\"",
-            "ml sync                                                                     # validate, stage, commit",
-            "```",
-            "",
-            "Skip if no insight surfaced. Unrecorded learnings are lost; ritual filler records are also noise.",
-        ]
-        .join("\n"),
-        _ => [
+        Format::Markdown | Format::Compact => [
             "# 🚨 SESSION CLOSE 🚨",
             "",
             "**If you discovered insights worth preserving** — a new convention, a pattern that worked, a decision made, a failure encountered — record them before closing this session:",
@@ -911,24 +917,25 @@ fn conditional_session_close(format: &str) -> String {
 }
 
 /// The `minimal` preset.
-fn minimal_session_close(format: &str) -> String {
+fn minimal_session_close(format: crate::commands::render::Format) -> String {
+    use crate::commands::render::Format;
     match format {
-        "xml" => [
+        Format::Xml => [
             "<session_close>",
             "  <instruction>Before closing, record any insight worth preserving: `ml learn` → `ml record &lt;domain&gt; --type &lt;type&gt; …` → `ml sync`. Skip if no insight surfaced.</instruction>",
             "</session_close>",
         ]
         .join("\n"),
-        "plain" => "Before closing, record any insight worth preserving: ml learn → ml record <domain> --type <type> … → ml sync. Skip if no insight surfaced.".into(),
-        "embedded" => "**Before you finish**: record any insight worth preserving with `ml learn` → `ml record <domain> --type <type> …` → `ml sync`. Skip if no insight surfaced.".into(),
-        _ => "**Before closing**: record any insight worth preserving — `ml learn` → `ml record <domain> --type <type> …` → `ml sync`. Skip if no insight surfaced.".into(),
+        Format::Plain => "Before closing, record any insight worth preserving: ml learn → ml record <domain> --type <type> … → ml sync. Skip if no insight surfaced.".into(),
+        Format::Markdown | Format::Compact => "**Before closing**: record any insight worth preserving — `ml learn` → `ml record <domain> --type <type> …` → `ml sync`. Skip if no insight surfaced.".into(),
     }
 }
 
 /// The `directive` preset.
-fn directive_session_close(format: &str) -> String {
+fn directive_session_close(format: crate::commands::render::Format) -> String {
+    use crate::commands::render::Format;
     match format {
-        "xml" => [
+        Format::Xml => [
             "<session_close>",
             "  <heading>SESSION CLOSE — record insights before exiting</heading>",
             "  <steps>",
@@ -955,7 +962,7 @@ fn directive_session_close(format: &str) -> String {
             "</session_close>",
         ]
         .join("\n"),
-        "plain" => [
+        Format::Plain => [
             "=== 🚨 SESSION CLOSE 🚨 ===",
             "",
             "Record insights before exiting:",
@@ -983,31 +990,7 @@ fn directive_session_close(format: &str) -> String {
             "Skip if no insight surfaced. Unrecorded learnings are lost; ritual filler records are also noise.",
         ]
         .join("\n"),
-        "embedded" => [
-            "### Before You Finish",
-            "",
-            "Record insights worth preserving before closing this session:",
-            "",
-            "1. `ml learn` — see changed files and suggested domains",
-            "2. `ml record <domain> --type <type> …` — record each insight",
-            "3. `ml sync` — validate, stage, commit",
-            "",
-            "**Types**:",
-            "- `convention` — a norm the project follows (naming, formatting, …)",
-            "- `pattern` — how-to: a repeatable approach to a class of problem",
-            "- `failure` — anti-pattern + fix: what broke and how you resolved it",
-            "- `decision` — we picked X over Y, and why",
-            "- `reference` — pointer to an external spec / doc / codebase landmark",
-            "- `guide` — a walk-through of a multi-step workflow",
-            "",
-            "**Dedup**: `--name` upserts merge; re-recording is safe — outcomes accumulate, fields update in place.",
-            "",
-            "**Do not record**: restatements of CLAUDE.md or prior records, generic truisms (\"use TypeScript\"), single-PR-scoped facts (\"this PR adds X\"), ritual confirmations with no new information.",
-            "",
-            "Skip if no insight surfaced. Unrecorded learnings are lost; ritual filler records are also noise.",
-        ]
-        .join("\n"),
-        _ => [
+        Format::Markdown | Format::Compact => [
             "# 🚨 SESSION CLOSE 🚨",
             "",
             "**Record insights before exiting:**",
@@ -1031,5 +1014,180 @@ fn directive_session_close(format: &str) -> String {
             "Skip if no insight surfaced. Unrecorded learnings are lost; ritual filler records are also noise.",
         ]
         .join("\n"),
+    }
+}
+
+#[cfg(test)]
+mod golden_tables {
+    use jiff::Timestamp;
+
+    use super::{ManifestDomain, contract_block, manifest_output, prime_output, session_close};
+    use crate::commands::render::Format;
+
+    /// The golden tables (D2, mulch-3e3b): the pure text builders get
+    /// unit coverage that does NOT need the reference binary on PATH
+    /// — the class ADR-0005 named for the merge law, extended to the
+    /// channel's own bytes. Every test names the mix-up it catches.
+    fn domain(count: usize) -> ManifestDomain {
+        ManifestDomain {
+            domain: "dev".into(),
+            count,
+            last_updated: None,
+            type_counts: vec![("pattern".into(), count as u64)],
+        }
+    }
+
+    fn now() -> Timestamp {
+        Timestamp::now()
+    }
+
+    #[test]
+    fn manifest_head_is_the_family_and_compact_shares_markdown() {
+        // Catches: (a) a family mix-up (Xml rendering the markdown
+        // head or vice versa), (b) compact growing its OWN manifest
+        // family — the old `_`-arm law is Compact == Markdown here.
+        let empty: Vec<ManifestDomain> = Vec::new();
+        let governance = mulch::Governance::reference_default();
+
+        let markdown = manifest_output(&empty, &governance, Format::Markdown, now());
+        assert!(markdown.starts_with("# Project Expertise Manifest (via Mulch)\n"));
+        let compact = manifest_output(&empty, &governance, Format::Compact, now());
+        assert_eq!(
+            compact.lines().next(),
+            markdown.lines().next(),
+            "compact shares the markdown manifest family"
+        );
+
+        let xml = manifest_output(&empty, &governance, Format::Xml, now());
+        assert!(xml.starts_with("<manifest>\n"));
+        assert!(xml.trim_end().ends_with("</manifest>"));
+
+        let plain = manifest_output(&empty, &governance, Format::Plain, now());
+        assert!(plain.starts_with("Project Expertise Manifest (via Mulch)\n"));
+        assert!(
+            plain
+                .lines()
+                .nth(1)
+                .is_some_and(|l| l.starts_with("======="))
+        );
+    }
+
+    #[test]
+    fn manifest_governance_suffix_follows_the_tier() {
+        // Catches: the manifest status suffix drifting from the Tier
+        // ladder (mulch-0337's four wordings — this is one of them).
+        let governance = mulch::Governance {
+            max_entries:  1,
+            warn_entries: 5,
+            hard_limit:   10,
+        };
+        let over = manifest_output(&[domain(10)], &governance, Format::Markdown, now());
+        assert!(
+            over.contains(" ⚠ OVER HARD LIMIT — must decompose"),
+            "hard-tier suffix missing: {over}"
+        );
+        let ok = manifest_output(&[domain(0)], &governance, Format::Markdown, now());
+        assert!(!ok.contains("OVER HARD LIMIT"));
+    }
+
+    #[test]
+    fn contract_block_is_none_without_gates_and_families_differ() {
+        // Catches: (a) a config with nothing to surface rendering an
+        // empty block instead of None, (b) a family mix-up.
+        let plain_config =
+            mulch::Config::parse("version: '1'\ndomains:\n  dev: {}\n").expect("config");
+        let registry = mulch::Registry::from_config(&plain_config).expect("registry");
+        for format in [
+            Format::Markdown,
+            Format::Compact,
+            Format::Xml,
+            Format::Plain,
+        ] {
+            assert!(
+                contract_block(&plain_config, &registry, format).is_none(),
+                "no gates -> None, got {format:?}"
+            );
+        }
+
+        let gated = mulch::Config::parse(
+            "version: '1'\ndomains:\n  dev: {}\ncustom_types:\n  hypo:\n    required: [a]\n    dedup_key: a\n    summary: \"{a}\"\n",
+        )
+        .expect("config");
+        let registry = mulch::Registry::from_config(&gated).expect("registry");
+        let xml = contract_block(&gated, &registry, Format::Xml).expect("gated -> Some");
+        assert!(xml.starts_with("<contract>\n"));
+        assert!(xml.trim_end().ends_with("</contract>"));
+        let markdown = contract_block(&gated, &registry, Format::Markdown).expect("gated -> Some");
+        assert!(
+            !markdown.starts_with("<contract>"),
+            "markdown family must not render xml"
+        );
+    }
+
+    #[test]
+    fn session_close_styles_and_formats() {
+        // Catches: (a) the style table drifting (none/minimal/custom),
+        // (b) a format mix-up inside the presets, (c) the promote law
+        // (self-referential commands name THIS binary).
+        let none = mulch::SessionClose {
+            style:  Some("none".into()),
+            custom: None,
+        };
+        for format in [Format::Markdown, Format::Xml, Format::Plain] {
+            assert_eq!(session_close(format, Some(&none)), "");
+        }
+
+        // Default style (config None): the conditional preset.
+        let markdown = session_close(Format::Markdown, None);
+        assert!(markdown.contains("SESSION CLOSE"), "{markdown}");
+        assert!(
+            markdown.contains("mulch learn"),
+            "the promote law names this binary: {markdown}"
+        );
+
+        let plain = session_close(Format::Plain, None);
+        assert!(
+            plain.starts_with("=== 🚨 SESSION CLOSE 🚨 ==="),
+            "plain preset reachable when called directly: {plain}"
+        );
+
+        let minimal = mulch::SessionClose {
+            style:  Some("minimal".into()),
+            custom: None,
+        };
+        let xml = session_close(Format::Xml, Some(&minimal));
+        assert!(xml.starts_with("<session_close>"), "{xml}");
+
+        let custom = mulch::SessionClose {
+            style:  None,
+            custom: Some("goodbye from the config".into()),
+        };
+        assert_eq!(
+            session_close(Format::Markdown, Some(&custom)),
+            "goodbye from the config"
+        );
+    }
+
+    #[test]
+    fn prime_output_empty_states_per_family() {
+        // Catches: the empty-store message drifting (it is the FIRST
+        // byte every fresh user sees) and the plain family's
+        // no-envelope law.
+        let empty: Vec<String> = Vec::new();
+        let plain = prime_output(Format::Plain, &empty);
+        assert_eq!(
+            plain,
+            "No expertise recorded yet. Use `mulch add <domain>` and `mulch record` to get started."
+        );
+        let xml = prime_output(Format::Xml, &empty);
+        assert!(xml.starts_with("<expertise>"));
+        assert!(xml.contains("<empty>"));
+        let markdown = prime_output(Format::Markdown, &empty);
+        assert!(markdown.contains("# Project Expertise (via Mulch)"));
+
+        // Sections join per family: plain joins sections with the
+        // same separator and adds nothing around them.
+        let sections = vec!["one".to_string(), "two".to_string()];
+        assert_eq!(prime_output(Format::Plain, &sections), "one\n\ntwo");
     }
 }

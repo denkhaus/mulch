@@ -435,11 +435,12 @@ mod tests {
 
     use super::*;
 
-    /// One serial for every scratch name in this module: a pid alone
-    /// repeats across runs (and the OS recycles pids), so a
-    /// crash-leftover store under it would feed stale probe files into
-    /// a green run. The counter keeps each test's paths unique and
-    /// pre-cleaned.
+    /// One serial for every PROBE-FILE name in this module (the
+    /// stores themselves go through `store_files::testscratch`, which
+    /// carries its own serial): a pid alone repeats across runs (and
+    /// the OS recycles pids), so a crash-leftover under it would feed
+    /// stale probe files into a green run. The counter keeps each
+    /// test's paths unique and pre-cleaned.
     static SCRATCH: AtomicU32 = AtomicU32::new(0);
 
     fn scratch_path(tag: &str) -> PathBuf {

@@ -992,3 +992,70 @@ fn raw_text(record: &Value, field: &str) -> String {
         .get(field)
         .map_or_else(String::new, mulch::value_text)
 }
+
+#[cfg(test)]
+mod block_tables {
+    use super::{CandLine, Candidate, group_block, preview_lines};
+
+    /// The analyze/dry-run block builders' golden table (D2,
+    /// mulch-3e3b): pure string assembly, previously covered only by
+    /// reference-gated batteries.
+    fn candidate(records: usize) -> (String, Candidate) {
+        let lines: Vec<CandLine> = (0..records)
+            .map(|n| CandLine {
+                id:          Some(format!("mx-{n:03}")),
+                summary:     Some(serde_json::json!(format!("row {n}"))),
+                recorded_at: "2026-10-25T10:00:00.000Z".into(),
+            })
+            .collect();
+        ("dev".into(), Candidate {
+            domain:  "dev".into(),
+            r#type:  "pattern".into(),
+            records: lines,
+        })
+    }
+
+    #[test]
+    fn group_block_renders_counts_and_previews_in_order() {
+        // Catches: (a) the count lines drifting (groups/records
+        // swapped), (b) the skipped note appearing without a limit,
+        // (c) a blank line after EVERY group (the reference's
+        // console.log cadence).
+        let selected = vec![candidate(2), candidate(5)];
+        let block = group_block("Compaction summary", "would compact", &selected, 7, 0);
+        let text = block.join("\n");
+        assert!(text.contains("\nCompaction summary:\n"));
+        assert!(text.contains("  2 groups would compact"));
+        assert!(text.contains("  7 records → 2 records"));
+        assert!(text.contains("dev/pattern (2 records)"));
+        // five members: three previews + the "... and 2 more" tail
+        assert!(text.contains("  ... and 2 more"));
+        // a blank line closes EVERY group (the console.log cadence)
+        assert_eq!(*block.last().unwrap(), "");
+        // the skipped note only with a limit
+        let skipped = group_block("t", "v", &[], 0, 3);
+        assert!(
+            skipped
+                .join("\n")
+                .contains("Note: 3 additional groups skipped")
+        );
+    }
+
+    #[test]
+    fn preview_lines_cap_at_three_and_render_ids() {
+        // Catches: the cap drifting or the id-less row losing its
+        // "(no id)" marker.
+        let rows: Vec<CandLine> = (0..4)
+            .map(|n| CandLine {
+                id:          (n > 0).then(|| format!("mx-{n}")),
+                summary:     Some(serde_json::json!("s")),
+                recorded_at: String::new(),
+            })
+            .collect();
+        let lines = preview_lines(&rows, "  ");
+        assert_eq!(lines.len(), 4, "three previews + the tail");
+        assert!(lines[0].contains("(no id):"));
+        assert!(lines[1].contains("mx-1:"));
+        assert_eq!(lines[3], "  ... and 1 more");
+    }
+}
