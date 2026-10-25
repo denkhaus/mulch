@@ -210,17 +210,17 @@ architecture direction, milestone content, go/no-go):
 
 ## 4. Review — ALWAYS after each sprint
 
-Run the **code-review** skill autonomously after every larger coding session:
-standards + spec reviewers as PARALLEL SUBAGENTS, plus — user directive
-2026-10-25 — a third, the **CODE REVISOR**: an adversarial agent hunting
-WEAKNESSES the other two axes do not cover (latent bugs, edge cases, risky
-assumptions, untested paths, behavior changes the commit did not name;
-probes against the reference binary are its sharpest tool). Sprint 46
-proved the split: standards+spec both PASS-with-nits while the revisor
-found that the 2809 fix errored at the wrong site — the reference dies
-at candidate collection, so the port printed a summary the reference
-never printed and had already compacted earlier domains when a later
-one errored. Scope the diff to the
+Run the **code-review** skill once per sprint (user directive
+2026-10-25, clarified same day: the "code revisor" IS this skill — its
+own two-axis standards+spec subagents, NOTHING additional). Fixed
+point = the previous sprint's last commit; spec sources = the sprint's
+seeds (`seeds show <id>`); standards sources = the rust-style-guide,
+AGENTS.md, and the ADRs. Fold both axes' findings, commit, close the
+tickets with commit refs. Where the diff claims REFERENCE behaviour,
+hand the spec axis the reference source path so it can verify the site
+and ordering of claimed behaviour (the sprint-46 lesson: an error
+placed at a different site than the reference's crash point changed
+stdout and write ordering — collection-time vs merge-time, mulch-2809). Scope the diff to the
 SPRINT's own commits: fixed point = the last commit of the previous sprint
 on the `iterate` lane (sprint-close bookkeeping commits land between sprints
 and confuse reviewers otherwise). The STANDARDS reviewer treats the
@@ -334,7 +334,9 @@ goes to the journal) is untouched — never edit `.fabro/` assets in-pass.
 ## Delegation (user directive 2026-10-03, extended 2026-10-11)
 
 Delegate worthwhile, self-contained work to SUBAGENTS instead of doing
-everything in the host session: both code-review axes (always parallel),
+everything in the host session: the post-sprint code-review skill (its
+own two built-in subagents — one skill invocation, user directive
+2026-10-25),
 the arch-gate explorer, mechanical workspace-wide sweeps (renames, doc
 consistency greps), research (reference `ml` behaviour probes), and
 independent implementation chunks. Spawn children in parallel, collect
