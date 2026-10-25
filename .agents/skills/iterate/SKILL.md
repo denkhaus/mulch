@@ -237,6 +237,13 @@ that shows a byte divergence becomes a BATTERY TEST, not just a fix** —
 verify it red before the fix and green after, so the pin has teeth (sprint
 42: the spec probe caught an adoption key-order divergence that 22 hook
 tests missed; the negative run proved the new test fails without the fix).
+**A new seam gets its own DECISION-TABLE test, not only moved-behaviour
+batteries**: when a sprint introduces an adapter/newtype, pin every enum
+arm and every fallback law at the module level (sprint 43: the parity
+suite proved the eight call sites unchanged while `blocked_reason`'s
+three arms — engine reason, empty reason, fallback — and the falsy
+adoption rows went untested until the review asked; a `#[must_use]`
+seam plus private internals stops consumers bypassing it).
 Clean up reviewer children.
 A sprint is NOT closed until its SHORT reflection (step 6) ran and
 `sprints_reflected` caught up.
