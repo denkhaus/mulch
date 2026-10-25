@@ -269,6 +269,15 @@ the test fail (sprint 44: ADR-0004 claimed one atomicity owner while
 `rewrite_archive` still held its own temp+rename, and the round-trip test
 would have passed against a plain `fs::write`; the hard-link inode witness
 was verified red, and the archive copy was folded).
+**After any mid-sprint `git checkout --`/restore, re-verify the
+sprint's surfaces before committing**: a checkout aimed at one file's
+botched edit silently reverts every uncommitted sibling — sprint 49
+lost a whole seed's work that way and the commit message described
+work that was not in the commit (both review axes caught it: the
+claimed file untouched, zero new tests). After ANY restore: grep the
+sprint's claimed surfaces, run the sprint's new tests, and check the
+TEST-COUNT delta against the message; a commit message is the loop's
+record and must never outrun the tree.
 **A reference-behaviour claim is probed, not remembered**: read the
 reference file:line in the same session before writing "the reference
 does X" — port code is evidence of what the PORT does, never of the
