@@ -212,8 +212,45 @@ impl StoreFiles {
     }
 
     /// The live expertise file of a domain.
+    ///
+    /// A PATH accessor for lifecycle operations (unlink, rename) and
+    /// for the tests. Text IO goes through [`Self::read_domain_text`]
+    /// / [`Self::rewrite_domain_text`], record writes through
+    /// [`Self::rewrite_domain`] / [`Self::append_domain_line`] — so
+    /// every write keeps the one atomic temp+rename law instead of
+    /// handing callers a path to `fs::write` into.
     pub fn domain_path(&self, domain: &str) -> PathBuf {
         self.root.join("expertise").join(format!("{domain}.jsonl"))
+    }
+
+    /// One domain file's current text, `None` when the file is absent
+    /// (the reference's line-preserving repair passes skip silently).
+    /// Non-UTF-8 bytes are an error, not a lossy read: those passes
+    /// re-emit the text they read, so a decode that changed bytes
+    /// would silently corrupt the file.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Read`] on I/O (including invalid UTF-8).
+    pub fn read_domain_text(&self, domain: &str) -> Result<Option<String>> {
+        let path = self.domain_path(domain);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Ok(Some(text)),
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(Error::Read { path, source }),
+        }
+    }
+
+    /// Replaces one domain file's bytes with `body`, verbatim — no
+    /// trailing newline is added, the caller owns the body (the
+    /// line-preserving repair passes rebuild it line by line) — via
+    /// the same [`atomic_write`] as every other store write.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Write`] on I/O.
+    pub fn rewrite_domain_text(&self, domain: &str, body: &str) -> Result<()> {
+        atomic_write(&self.domain_path(domain), body.as_bytes())
     }
 
     /// Registers a domain: name validation, canonical config rewrite and
@@ -810,6 +847,38 @@ mod tests {
                 .expect("archive spliced"),
             "# ARCHIVED — not for active use. Run `mulch restore <id>` to revive.\n"
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn domain_text_round_trips_verbatim_and_absent_reads_none() {
+        let (root, store) = scratch("text");
+        std::fs::create_dir_all(root.join(".mulch/expertise")).expect("expertise dir");
+        // A configured domain whose file does not exist yet: the
+        // repair passes treat that as "skip", not as an error.
+        assert_eq!(store.read_domain_text("dev").expect("absent read"), None);
+
+        // The caller owns the body: no trailing newline is appended.
+        let body = "{\"a\": 1}\n{\"b\": 2}";
+        store.rewrite_domain_text("dev", body).expect("write");
+        assert_eq!(
+            std::fs::read_to_string(root.join(".mulch/expertise/dev.jsonl")).expect("file"),
+            body
+        );
+        assert_eq!(
+            store.read_domain_text("dev").expect("read").as_deref(),
+            Some(body)
+        );
+
+        // The write went through the atomic temp+rename law: no
+        // scratch file survives either outcome.
+        let leftovers: Vec<String> = std::fs::read_dir(root.join(".mulch/expertise"))
+            .expect("expertise dir")
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "scratch files left: {leftovers:?}");
         std::fs::remove_dir_all(&root).ok();
     }
 }

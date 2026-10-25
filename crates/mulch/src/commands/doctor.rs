@@ -1066,24 +1066,27 @@ fn migrate_legacy_line(record: &Value) -> Option<String> {
     serde_json::to_string(&object).ok()
 }
 
-/// The domain file's current bytes (`None` when the file is absent —
-/// the reference's repair passes skip silently).
+/// The store's domain-text read, mapped onto doctor's handled shape
+/// (`None` when the file is absent — the reference's repair passes
+/// skip silently).
 fn read_domain_text(store: &mulch::StoreFiles, domain: &str) -> Result<Option<String>, Failure> {
-    match std::fs::read_to_string(store.domain_path(domain)) {
-        Ok(text) => Ok(Some(text)),
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(Failure::handled(
-            "doctor",
-            format!("reading domain {domain}: {source}"),
-        )),
-    }
+    store
+        .read_domain_text(domain)
+        .map_err(|source| Failure::handled("doctor", store_error(&source)))
 }
 
-/// Writes raw bytes — the reference's direct file write for the two
-/// line-preserving passes (jsonl-integrity, legacy-outcome).
+/// The store's atomic domain-text rewrite for the two line-preserving
+/// passes (jsonl-integrity, legacy-outcome).
 fn write_domain_text(store: &mulch::StoreFiles, domain: &str, body: &str) -> Result<(), Failure> {
-    std::fs::write(store.domain_path(domain), body)
-        .map_err(|source| Failure::handled("doctor", format!("writing domain {domain}: {source}")))
+    store
+        .rewrite_domain_text(domain, body)
+        .map_err(|source| Failure::handled("doctor", store_error(&source)))
+}
+
+/// A store failure in doctor's handled shape (the shared chain
+/// rendering, like every other command's `persist`).
+fn store_error(source: &mulch::Error) -> String {
+    crate::commands::store::chain_message_from(source)
 }
 
 /// The `--json` shape of one check.
