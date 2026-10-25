@@ -369,11 +369,12 @@ impl StoreFiles {
     }
 
     /// Moves records into a domain's soft-archive (`archiveRecords`):
-    /// stamps each record with the archive lifecycle fields
-    /// ([`stamp_archive_fields`]), merges the archive's existing
-    /// records first, and rewrites — existing lines pass through
-    /// byte-stably. Empty input is a no-op: no read, no write. The
-    /// caller owns the source file's rewrite (and, in the reference,
+    /// stamps each record with the archive lifecycle fields (the
+    /// private `stamp_archive_fields` law), merges the archive's
+    /// existing records first, and rewrites — existing lines pass
+    /// through byte-stably. Empty input is a no-op: no read, no
+    /// write. The caller owns the source file's rewrite (and, in the
+    /// reference,
     /// its lock).
     ///
     /// # Errors

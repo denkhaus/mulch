@@ -10,7 +10,7 @@
 //! ([`parse_non_negative_number`]), and the strict-equality comparison
 //! the reference's dedup uses ([`js_dedup_eq`]). Command modules
 //! import from here; private per-command copies and inline matches
-//! delete (mulch-ec71; one quirk test surface, [`js_quirk_tests`]).
+//! delete (mulch-ec71; one quirk test surface, `js_quirk_tests`).
 
 use serde_json::Value;
 
