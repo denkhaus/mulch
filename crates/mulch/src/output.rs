@@ -67,9 +67,12 @@ impl Failure {
     /// The `Error:` prefix idiom, named once (mulch-39eb): plain
     /// stderr renders `Error: <message>`, the json envelope carries
     /// the bare message ([`Failure::handled`] strips the prefix this
-    /// adds). Sites with MULTI-LINE or hint-carrying wordings
-    /// (`commands::failure`'s domain shapes) deliberately stay on
-    /// `handled*` — the deviators are visible by not calling this.
+    /// adds). `message` takes `Display` (not `Into<String>` like the
+    /// siblings) because the ctor interpolates it — pass the value,
+    /// never a `format!` of it. Sites with MULTI-LINE or hint-carrying
+    /// wordings (`commands::failure`'s domain shapes) deliberately
+    /// stay on `handled*` — the deviators are visible by not calling
+    /// this.
     pub(crate) fn error_line(command: &str, message: impl std::fmt::Display) -> Self {
         let mut failure = Self::handled(command, format!("Error: {message}"));
         failure.envelope_to_stderr = true;
@@ -189,5 +192,27 @@ mod tests {
         ]);
         assert_eq!(body["success"], Value::Bool(false));
         assert_eq!(body["command"], Value::String("doctor".into()));
+    }
+}
+
+#[cfg(test)]
+mod error_line_tests {
+    use super::Failure;
+
+    /// The idiom's three laws in one table (mulch-39eb): plain
+    /// message carries the prefix, the json envelope strips it, and
+    /// the envelope renders on stderr. Catches a future constructor
+    /// double-prefixing or leaking the prefix into json.
+    #[test]
+    fn error_line_prefixes_plain_and_strips_json() {
+        let failure = Failure::error_line("cmd", "boom");
+        assert_eq!(failure.message, "Error: boom");
+        assert_eq!(
+            failure.envelope["error"],
+            serde_json::json!("boom"),
+            "the json error field carries no prefix"
+        );
+        assert_eq!(failure.envelope["command"], serde_json::json!("cmd"));
+        assert!(failure.envelope_to_stderr);
     }
 }

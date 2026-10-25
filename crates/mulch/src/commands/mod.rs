@@ -151,7 +151,7 @@ pub(crate) mod testscratch {
             std::process::id()
         ));
         std::fs::remove_dir_all(&dir).ok();
-        std::fs::create_dir_all(&dir).expect("scratch root");
+        std::fs::create_dir_all(dir.join(".mulch")).expect("scratch root");
         if expertise_dir {
             std::fs::create_dir_all(dir.join(".mulch").join("expertise")).expect("expertise dir");
         }

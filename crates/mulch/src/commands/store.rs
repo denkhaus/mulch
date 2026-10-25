@@ -117,7 +117,7 @@ pub(crate) fn domain_modified_ts(
             .map(Some)
             .map_err(|source| Failure::error_line(command, source)),
         Ok(None) => Ok(None),
-        Err(source) => Err(Failure::error_line(command, format!("{source}"))),
+        Err(source) => Err(Failure::error_line(command, source)),
     }
 }
 

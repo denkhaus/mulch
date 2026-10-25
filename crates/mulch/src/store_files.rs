@@ -681,20 +681,34 @@ fn valid_domain(domain: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// The shared scratch-store builders for the lib's unit tests
-/// (mulch-a115: four near-identical per-module copies folded —
-/// store_files, doctor, repair, hooks). Callers own cleanup
+/// The shared scratch-store builder for the LIB's unit tests
+/// (mulch-a115: the near-identical copies in store_files, repair and
+/// hooks folded; doctor lives in the BIN crate and uses
+/// `commands::testscratch` — a dependency's `#[cfg(test)]` items are
+/// invisible across the crate line, so the same law has two homes,
+/// each pointing at the other). Callers own cleanup
 /// (`remove_dir_all` at test end), the folded helpers' contract.
 #[cfg(test)]
 pub(crate) mod testscratch {
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::{StoreFiles, StoreLocation};
+
+    /// One serial per store: nextest runs per-process (pid differs),
+    /// but plain `cargo test` shares one process — two same-tag
+    /// stores in different modules would otherwise collide on the
+    /// same directory.
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
 
     /// A fresh scratch root with `.mulch` present (a previous run's
     /// leftovers removed) — the config write needs the directory.
     fn root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("mulch-scratch-{tag}-{}", std::process::id()));
+        let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "mulch-scratch-{tag}-{}-{serial}",
+            std::process::id()
+        ));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(dir.join(".mulch")).expect("scratch root");
         dir
