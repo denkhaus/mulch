@@ -24,10 +24,8 @@ pub(crate) fn run(opts: &GlobalOpts, since: &str) -> Result<(), Failure> {
     // custom_types block fails even before learn's git check, probed).
     let cwd = std::env::current_dir()
         .map_err(|source| Failure::handled("learn", format!("resolving cwd: {source}")))?;
-    let located = locate(&cwd).map_err(|source| match &source {
-        mulch::Error::CustomTypes { message } => Failure::config_error(message),
-        other => Failure::handled("learn", crate::output::chain_message(other)),
-    })?;
+    let located =
+        locate(&cwd).map_err(|source| crate::commands::store::locate_error("learn", &source))?;
 
     let git = GitContext::process_cwd();
     if !git.is_git_repo() {

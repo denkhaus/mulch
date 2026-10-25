@@ -78,10 +78,22 @@ fn open_located(
             };
             Err(Failure::handled_on_stderr(command, message))
         }
-        Err(source) => Err(match &source {
-            mulch::Error::CustomTypes { message } => Failure::config_error(message),
-            _ => Failure::handled(command, chain_message_from(&source)),
-        }),
+        Err(source) => Err(locate_error(command, &source)),
+    }
+}
+
+/// The locate-ERROR contract every command shares (mulch-d343's C8
+/// fold): a broken custom_types block fails globally with its own
+/// shape; every other locate error renders through the chain
+/// renderer. No-store handling deliberately stays with each caller —
+/// mutating commands error through [`open_store`], doctor renders its
+/// no-store REPORT, learn and the dynamic-flag probe continue on
+/// builtins, and init creates the store — so only this two-arm map is
+/// shared.
+pub(crate) fn locate_error(command: &'static str, source: &mulch::Error) -> Failure {
+    match source {
+        mulch::Error::CustomTypes { message } => Failure::config_error(message),
+        other => Failure::handled(command, chain_message_from(other)),
     }
 }
 

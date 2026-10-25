@@ -77,10 +77,15 @@ def touched-crates [] {
         ($p in ['Cargo.toml' 'Cargo.lock' 'rust-toolchain.toml'])
     } | is-not-empty)
     if $root_touched {
-        print "root manifest/lock changed -> workspace-wide gate (cargo check)"
-        # Sentinel: main routes this to check-workspace-compiles. Returning
-        # [] here would silently degrade to fmt-only (run-1 lesson).
-        return ["__workspace__"]
+        print "root manifest/lock changed -> workspace compile check PLUS touched-crate gates"
+        # Additive (mulch-d9b2): the sentinel triggers check-workspace-compiles
+        # IN ADDITION to the per-crate clippy/tests. It used to REPLACE them,
+        # so a diff carrying a root manifest AND new .rs files skipped clippy
+        # entirely (sprint-42 class: the hook engine landed with Cargo.toml
+        # plus eight -D warnings findings, gate reported GREEN). The timeout
+        # fear behind the replacement only ever applied to ALL crates; the
+        # crates named by the diff stay the small set.
+        return ($crates | append "__workspace__")
     }
     $crates
 }
@@ -282,14 +287,19 @@ def main [] {
         print "GATE RED"
         exit 1
     }
-    if ($crates | any {|c| $c == '__workspace__' }) {
-        let green = ((check-loop-assets) and (check-fmt) and (check-workspace-compiles))
-        if $green { print "GATE GREEN"; exit 0 }
-        print "GATE RED"
-        exit 1
+    # The workspace sentinel rides WITH the real crates (mulch-d9b2):
+    # the compile check runs when present, clippy/tests always run on
+    # every crate the diff names.
+    let workspace = ($crates | any {|c| $c == '__workspace__' })
+    let real = ($crates | where {|c| $c != '__workspace__' })
+    mut green = ((check-loop-assets) and (check-fmt))
+    if $workspace {
+        $green = ($green and (check-workspace-compiles))
     }
-    print $"touched crates: ($crates | str join ', ')"
-    let green = ((check-loop-assets) and (check-fmt) and (check-clippy $crates) and (check-tests $crates))
+    if ($real | is-not-empty) {
+        print $"touched crates: ($real | str join ', ')"
+        $green = ($green and (check-clippy $real) and (check-tests $real))
+    }
     if $green {
         print "GATE GREEN"
         exit 0

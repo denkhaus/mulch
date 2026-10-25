@@ -1,15 +1,16 @@
-//! The line-preserving repair laws over [`StoreFiles`] bytes: the
-//! generic rewrite passes `doctor --fix` drives over a domain file's
-//! current text, shared with the future prune/archive commands
-//! (mulch-7c55). Doctor owns the IO — reading the bytes (a missing
-//! file skips silently), writing the repaired body back — while this
-//! module owns the text-level laws: survivors keep their trimmed
-//! bytes verbatim (raw passes) or rewrite canonically through
-//! `rewrite_domain` (value passes).
+//! The line-preserving repair laws over a domain file's TEXT: the
+//! generic passes `doctor --fix` drives, shared with the future
+//! prune/archive commands (mulch-7c55). The CALLER owns every byte of
+//! IO — reading the domain text (a missing file skips silently),
+//! writing the repaired body or the kept records back through the
+//! store seam — while this module owns the text-level laws only:
+//! survivors keep their trimmed bytes verbatim (raw passes) or the
+//! kept records return for a canonical rewrite (value passes,
+//! mulch-d343's one-write-owner rule).
 
 use serde_json::Value;
 
-use crate::{Registry, Result, StoreFiles};
+use crate::Registry;
 
 /// One parsed line's fate in a line-preserving repair pass (jsonl
 /// integrity, legacy outcome).
@@ -67,32 +68,23 @@ pub fn raw_line_pass(
 
 /// One canonical-rewrite repair pass (the schema-validation and
 /// stale-records fixes): every line parses, `keep` decides each
-/// record, and the survivors rewrite through `rewrite_domain`
-/// (`write_records` semantics incl. id backfill). Returns the number
-/// of dropped records, `None` when nothing dropped (no write).
-///
-/// # Errors
-///
-/// Propagates the store's rewrite error — the pass's only error
-/// source (the caller owns the read that produced `text`).
+/// record. Returns the KEPT records plus the number dropped — the
+/// caller rewrites the domain through the store seam
+/// (`rewrite_domain`, `write_records` semantics incl. id backfill);
+/// `None` when nothing dropped (no write at all).
 pub fn value_line_pass(
-    store: &StoreFiles,
-    domain: &str,
     text: &str,
+    registry: &Registry,
     keep: impl Fn(&Value) -> bool,
-) -> Result<Option<usize>> {
-    let records = parsed_records(text, store.registry());
+) -> Option<(Vec<Value>, usize)> {
+    let records = parsed_records(text, registry);
     let kept: Vec<Value> = records
         .iter()
         .filter(|record| keep(record))
         .cloned()
         .collect();
     let removed = records.len() - kept.len();
-    if removed == 0 {
-        return Ok(None);
-    }
-    store.rewrite_domain(domain, &kept)?;
-    Ok(Some(removed))
+    (removed != 0).then_some((kept, removed))
 }
 
 /// The parseable records of a domain file's bytes, in line order —
@@ -121,6 +113,7 @@ pub fn parsed_records(text: &str, registry: &Registry) -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StoreFiles;
 
     /// A throwaway store with one live domain `d` for the pass tests.
     fn temp_store(tag: &str) -> (std::path::PathBuf, StoreFiles) {
@@ -174,14 +167,21 @@ mod tests {
     }
 
     #[test]
-    fn value_line_pass_counts_drops_and_rewrites_canonically() {
+    fn value_line_pass_returns_kept_records_and_the_caller_writes() {
         let (dir, store) = temp_store("value");
         let text = "{\"type\":\"pattern\",\"name\":\"p\"}\nnot json\n{\"junk\":1}\n";
+        std::fs::write(store.domain_path("d"), text).expect("seed the domain file");
         // unparsable lines drop uncounted; the typeless record drops
-        let removed = value_line_pass(&store, "d", text, |record| record.get("type").is_some())
-            .expect("pass runs");
-        assert_eq!(removed, Some(1));
-        // the canonical rewrite backfills the id (write_records)
+        let (kept, removed) = value_line_pass(text, store.registry(), |record| {
+            record.get("type").is_some()
+        })
+        .expect("pass drops one");
+        assert_eq!(removed, 1);
+        // The pass wrote NOTHING — the caller owns the write, so the
+        // bytes on disk are still the pre-pass state verbatim.
+        assert_eq!(read_domain(&store, "d"), text);
+        // the canonical rewrite (caller-side) backfills the id
+        store.rewrite_domain("d", &kept).expect("write");
         assert_eq!(
             read_domain(&store, "d"),
             format!(
@@ -191,7 +191,7 @@ mod tests {
         );
         // keep-all: None, and non-canonical spacing survives (no write)
         std::fs::write(store.domain_path("d"), "{\"a\": 1}\n").expect("writable");
-        let untouched = value_line_pass(&store, "d", "{\"a\": 1}\n", |_| true).expect("pass runs");
+        let untouched = value_line_pass("{\"a\": 1}\n", store.registry(), |_| true);
         assert_eq!(untouched, None);
         assert_eq!(read_domain(&store, "d"), "{\"a\": 1}\n");
         std::fs::remove_dir_all(&dir).ok();

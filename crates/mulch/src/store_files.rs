@@ -262,6 +262,15 @@ impl StoreFiles {
             .collect()
     }
 
+    /// Whether the domain's live expertise file exists as a regular
+    /// file — the report-only existence probes (doctor's orphan
+    /// check). IO belongs to the methods, existence questions to this
+    /// accessor (mulch-cde9); a caller stat-ing `domain_path` for the
+    /// same answer re-opens the path hand-out this closes.
+    pub fn has_domain_file(&self, domain: &str) -> bool {
+        self.domain_path(domain).is_file()
+    }
+
     /// The live expertise file of a domain.
     ///
     /// A PATH accessor: needed where the file itself is the subject —

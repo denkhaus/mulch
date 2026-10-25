@@ -30,15 +30,13 @@ pub(super) fn run(
         return Err(not_in_config(opts, domain, &domains));
     }
 
-    // Strict read: malformed lines abort before anything is deleted.
-    let file = store.domain_path(domain);
-    let records = mulch::read_strict(store.registry(), &file, opts.allow_unknown_types).map_err(
-        |source| {
-            Failure::handled_on_stderr(
-                "delete-domain",
-                crate::commands::failure::render_core_error(&source),
-            )
-        },
+    // Strict read: malformed lines abort before anything is deleted
+    // (the shared read seam — identical failure shape, mulch-cde9).
+    let records = crate::commands::store::read_domain_records(
+        "delete-domain",
+        &store,
+        domain,
+        opts.allow_unknown_types,
     )?;
     let record_count = records.len();
     let plural = if record_count == 1 {

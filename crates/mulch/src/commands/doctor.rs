@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use jiff::Timestamp;
 use mulch::schema::doctor_detail;
 use mulch::stale::{StaleRule, StaleVerdict};
-use mulch::{LineAction, parsed_records, raw_line_pass, value_line_pass};
+use mulch::{LineAction, parsed_records};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
@@ -101,10 +101,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
             return Err(no_store_report(opts));
         }
         Err(source) => {
-            return Err(match &source {
-                mulch::Error::CustomTypes { message } => Failure::config_error(message),
-                _ => Failure::handled("doctor", crate::output::chain_message(&source)),
-            });
+            return Err(crate::commands::store::locate_error("doctor", &source));
         }
     };
 
@@ -113,7 +110,6 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     let rule = StaleRule::from_shelf_life(&config.effective_shelf_life());
     let governance = config.effective_governance();
     let checks = run_checks(&rule, &governance, &domains, &store, &cwd);
-    let gates = FixGates::from_checks(&checks);
 
     let pass = checks
         .iter()
@@ -133,7 +129,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     // Fixed block and the JSON envelope's `fixed` field.
     let mut store = store;
     let fixed = if fix {
-        apply_fixes(&mut store, &rule, &domains, &gates, &cwd)?
+        apply_fixes(&mut store, &rule, &domains, &checks, &cwd)?
     } else {
         Vec::new()
     };
@@ -277,7 +273,7 @@ fn jsonl_integrity(domains: &[DomainLines]) -> Check {
         .collect();
     if bad.is_empty() {
         Check {
-            name:    "jsonl-integrity",
+            name:    Repair::JsonlIntegrity.check_name(),
             status:  Status::Pass,
             message: "All JSONL lines are valid JSON".into(),
             fixable: true,
@@ -285,7 +281,7 @@ fn jsonl_integrity(domains: &[DomainLines]) -> Check {
         }
     } else {
         Check {
-            name:    "jsonl-integrity",
+            name:    Repair::JsonlIntegrity.check_name(),
             status:  Status::Fail,
             message: format!("{} invalid JSON line(s) found", bad.len()),
             fixable: true,
@@ -317,7 +313,7 @@ fn legacy_outcome(domains: &[DomainLines]) -> Check {
         .collect();
     if bad.is_empty() {
         Check {
-            name:    "legacy-outcome",
+            name:    Repair::LegacyOutcome.check_name(),
             status:  Status::Pass,
             message: "No legacy \"outcome\" fields on disk".into(),
             fixable: true,
@@ -327,7 +323,7 @@ fn legacy_outcome(domains: &[DomainLines]) -> Check {
         // The reference reports legacy fields as a warning, never a
         // failure.
         Check {
-            name:    "legacy-outcome",
+            name:    Repair::LegacyOutcome.check_name(),
             status:  Status::Warn,
             message: format!(
                 "{} record(s) with legacy \"outcome\" field on disk",
@@ -351,7 +347,7 @@ fn schema_validation(registry: &mulch::Registry, domains: &[DomainLines]) -> Che
         .collect();
     if bad.is_empty() {
         Check {
-            name:    "schema-validation",
+            name:    Repair::SchemaValidation.check_name(),
             status:  Status::Pass,
             message: "All records pass schema validation".into(),
             fixable: true,
@@ -359,7 +355,7 @@ fn schema_validation(registry: &mulch::Registry, domains: &[DomainLines]) -> Che
         }
     } else {
         Check {
-            name:    "schema-validation",
+            name:    Repair::SchemaValidation.check_name(),
             status:  Status::Fail,
             message: format!("{} record(s) failed schema validation", bad.len()),
             fixable: true,
@@ -514,7 +510,7 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
     }
     if details.is_empty() {
         Check {
-            name:    "stale-records",
+            name:    Repair::StaleRecords.check_name(),
             status:  Status::Pass,
             message: "No stale records".into(),
             fixable: true,
@@ -522,7 +518,7 @@ fn stale_records(rule: &StaleRule, domains: &[DomainLines]) -> Check {
         }
     } else {
         Check {
-            name: "stale-records",
+            name: Repair::StaleRecords.check_name(),
             status: Status::Warn,
             message: format!("{} stale record(s) found", details.len()),
             fixable: true,
@@ -648,7 +644,7 @@ fn orphaned_domains(store: &mulch::StoreFiles) -> Check {
         }
     }
     for domain in &config_domains {
-        if !store.domain_path(domain).is_file() {
+        if !store.has_domain_file(domain) {
             details.push(format!(
                 "Domain \"{domain}\" in config but no JSONL file exists"
             ));
@@ -656,7 +652,7 @@ fn orphaned_domains(store: &mulch::StoreFiles) -> Check {
     }
     if details.is_empty() {
         Check {
-            name:    "orphaned-domains",
+            name:    Repair::OrphanedDomains.check_name(),
             status:  Status::Pass,
             message: "No orphaned domains".into(),
             fixable: true,
@@ -664,7 +660,7 @@ fn orphaned_domains(store: &mulch::StoreFiles) -> Check {
         }
     } else {
         Check {
-            name: "orphaned-domains",
+            name: Repair::OrphanedDomains.check_name(),
             status: Status::Warn,
             message: format!("{} orphaned domain issue(s)", details.len()),
             fixable: true,
@@ -709,7 +705,7 @@ fn file_anchors(domains: &[DomainLines], project_root: &std::path::Path) -> Chec
     }
     if details.is_empty() {
         Check {
-            name:    "file-anchors",
+            name:    Repair::FileAnchors.check_name(),
             status:  Status::Pass,
             message: "All file anchors resolve to existing paths".into(),
             fixable: true,
@@ -717,7 +713,7 @@ fn file_anchors(domains: &[DomainLines], project_root: &std::path::Path) -> Chec
         }
     } else {
         Check {
-            name: "file-anchors",
+            name: Repair::FileAnchors.check_name(),
             status: Status::Warn,
             message: format!("{} broken file anchor(s) found", details.len()),
             fixable: true,
@@ -868,126 +864,166 @@ fn apply_fixes(
     store: &mut mulch::StoreFiles,
     rule: &StaleRule,
     domains: &[DomainLines],
-    gates: &FixGates,
+    checks: &[Check],
     project_root: &std::path::Path,
 ) -> Result<Vec<String>, Failure> {
     let now = Timestamp::now();
     let mut fixes = Vec::new();
     // The reference iterates its CHECK array, running one repair case
-    // per failed fixable check — jsonl-integrity, legacy-outcome,
-    // schema-validation, stale-records — each re-reading the files the
-    // earlier passes rewrote. The report lines follow that check order,
-    // in domain order within each pass.
-    if gates.jsonl {
-        for domain in domains {
-            let Some(text) = read_domain_text(store, &domain.domain)? else {
-                continue;
-            };
-            if let Some((body, count)) =
-                raw_line_pass(&text, &LineAction::Drop, |_| LineAction::Keep)
-            {
-                write_domain_text(store, &domain.domain, &body)?;
-                fixes.push(format!(
-                    "Removed {count} invalid JSON line(s) from {}",
-                    domain.domain
-                ));
+    // per failed fixable check. Gated by VALUE through [`Repair`], so
+    // the pass list and the check names cannot drift apart
+    // (mulch-d343).
+    for repair in Repair::ALL {
+        if !repair.opens(checks) {
+            continue;
+        }
+        match repair {
+            Repair::JsonlIntegrity => {
+                for domain in domains {
+                    run_raw_pass(
+                        store,
+                        &domain.domain,
+                        &LineAction::Drop,
+                        |_| LineAction::Keep,
+                        &mut fixes,
+                        |count, domain| {
+                            format!("Removed {count} invalid JSON line(s) from {domain}")
+                        },
+                    )?;
+                }
             }
-        }
-    }
-    if gates.legacy {
-        for domain in domains {
-            let Some(text) = read_domain_text(store, &domain.domain)? else {
-                continue;
-            };
-            if let Some((body, count)) = raw_line_pass(&text, &LineAction::Keep, |value| {
-                migrate_legacy_line(value).map_or(LineAction::Keep, LineAction::Replace)
-            }) {
-                write_domain_text(store, &domain.domain, &body)?;
-                fixes.push(format!(
-                    "Migrated {count} legacy \"outcome\" field(s) to \"outcomes[]\" in {}",
-                    domain.domain
-                ));
+            Repair::LegacyOutcome => {
+                for domain in domains {
+                    run_raw_pass(
+                        store,
+                        &domain.domain,
+                        &LineAction::Keep,
+                        |value| {
+                            migrate_legacy_line(value).map_or(LineAction::Keep, LineAction::Replace)
+                        },
+                        &mut fixes,
+                        |count, domain| {
+                            format!(
+                                "Migrated {count} legacy \"outcome\" field(s) to \"outcomes[]\" in {domain}"
+                            )
+                        },
+                    )?;
+                }
             }
-        }
-    }
-    if gates.schema {
-        for domain in domains {
-            let Some(text) = read_domain_text(store, &domain.domain)? else {
-                continue;
-            };
-            let keep = |record: &Value| mulch::schema::survives_repair(store.registry(), record);
-            if let Some(count) = value_line_pass(store, &domain.domain, &text, keep)
-                .map_err(|source| store_failure(&source))?
-            {
-                fixes.push(format!(
-                    "Removed {count} invalid record(s) from {}",
-                    domain.domain
-                ));
+            Repair::SchemaValidation => {
+                let keep =
+                    |record: &Value| mulch::schema::survives_repair(store.registry(), record);
+                for domain in domains {
+                    run_value_pass(store, &domain.domain, keep, &mut fixes, |count, domain| {
+                        format!("Removed {count} invalid record(s) from {domain}")
+                    })?;
+                }
             }
-        }
-    }
-    if gates.stale {
-        // The verdict owns the extraction; an unparsable or missing
-        // recorded_at never prunes, and a missing/unknown
-        // classification never decays (mulch-f9b9).
-        let keep =
-            |record: &Value| !matches!(rule.verdict(record, now), StaleVerdict::Stale { .. });
-        for domain in domains {
-            let Some(text) = read_domain_text(store, &domain.domain)? else {
-                continue;
-            };
-            if let Some(count) = value_line_pass(store, &domain.domain, &text, keep)
-                .map_err(|source| store_failure(&source))?
-            {
-                fixes.push(format!(
-                    "Pruned {count} stale record(s) from {}",
-                    domain.domain
-                ));
+            Repair::StaleRecords => {
+                // The verdict owns the extraction; an unparsable or missing
+                // recorded_at never prunes, and a missing/unknown
+                // classification never decays (mulch-f9b9).
+                let keep = |record: &Value| {
+                    !matches!(rule.verdict(record, now), StaleVerdict::Stale { .. })
+                };
+                for domain in domains {
+                    run_value_pass(store, &domain.domain, keep, &mut fixes, |count, domain| {
+                        format!("Pruned {count} stale record(s) from {domain}")
+                    })?;
+                }
             }
-        }
-    }
-    if gates.orphaned {
-        // Adopts orphan files into the config (unvalidated — whatever
-        // `.jsonl` names exist), creates missing domain files, and
-        // rewrites the config once when anything was fixed (the
-        // reference checks its whole `fixed` array, so an earlier
-        // pass's lines also trigger the rewrite — byte-identical
-        // either way).
-        let config_domains = store.domains();
-        for domain in domains_on_disk(store) {
-            if !config_domains.contains(&domain) {
-                store.adopt_domain(&domain);
-                fixes.push(format!("Added orphaned domain \"{domain}\" to config"));
+            Repair::OrphanedDomains => {
+                // Adopts orphan files into the config (unvalidated — whatever
+                // `.jsonl` names exist), creates missing domain files, and
+                // rewrites the config once when anything was fixed (the
+                // reference checks its whole `fixed` array, so an earlier
+                // pass's lines also trigger the rewrite — byte-identical
+                // either way).
+                let config_domains = store.domains();
+                for domain in domains_on_disk(store) {
+                    if !config_domains.contains(&domain) {
+                        store.adopt_domain(&domain);
+                        fixes.push(format!("Added orphaned domain \"{domain}\" to config"));
+                    }
+                }
+                for domain in store.domains() {
+                    if store
+                        .ensure_domain_file(&domain)
+                        .map_err(|source| store_failure(&source))?
+                    {
+                        fixes.push(format!(
+                            "Created missing JSONL file for domain \"{domain}\""
+                        ));
+                    }
+                }
+                if !fixes.is_empty() {
+                    store
+                        .write_config()
+                        .map_err(|source| store_failure(&source))?;
+                }
             }
-        }
-        for domain in store.domains() {
-            if store
-                .ensure_domain_file(&domain)
-                .map_err(|source| store_failure(&source))?
-            {
-                fixes.push(format!(
-                    "Created missing JSONL file for domain \"{domain}\""
-                ));
-            }
-        }
-        if !fixes.is_empty() {
-            store
-                .write_config()
-                .map_err(|source| store_failure(&source))?;
-        }
-    }
-    if gates.anchors {
-        // Fresh config order: the orphan pass above may have adopted
-        // domains whose records carry broken anchors too.
-        for domain in store.domains() {
-            if let Some(count) = anchors_pass(store, &domain, project_root)? {
-                fixes.push(format!(
-                    "Removed {count} broken file anchor(s) from {domain}"
-                ));
+            Repair::FileAnchors => {
+                // Fresh config order: the orphan pass above may have adopted
+                // domains whose records carry broken anchors too.
+                for domain in store.domains() {
+                    if let Some(count) = anchors_pass(store, &domain, project_root)? {
+                        fixes.push(format!(
+                            "Removed {count} broken file anchor(s) from {domain}"
+                        ));
+                    }
+                }
             }
         }
     }
     Ok(fixes)
+}
+
+/// The raw-line repair shape (jsonl-integrity, legacy-outcome): run
+/// the pass over the domain's text and, when it changed, write the
+/// body back and report one fix line. The CALLER owns the IO; the
+/// pass owns only the line laws (one write owner, mulch-d343).
+fn run_raw_pass(
+    store: &mulch::StoreFiles,
+    domain: &str,
+    unparsable: &LineAction,
+    action: impl Fn(&Value) -> LineAction,
+    fixes: &mut Vec<String>,
+    message: impl Fn(usize, &str) -> String,
+) -> Result<(), Failure> {
+    let Some(text) = read_domain_text(store, domain)? else {
+        return Ok(());
+    };
+    let Some((body, count)) = mulch::raw_line_pass(&text, unparsable, action) else {
+        return Ok(());
+    };
+    write_domain_text(store, domain, &body)?;
+    fixes.push(message(count, domain));
+    Ok(())
+}
+
+/// The canonical-rewrite repair shape (schema-validation,
+/// stale-records): run the pure value pass over the domain's text
+/// and, when records dropped, rewrite the domain through the store
+/// seam and report one fix line. Again the caller owns both the read
+/// and the write; the pass returns what to keep.
+fn run_value_pass(
+    store: &mulch::StoreFiles,
+    domain: &str,
+    keep: impl Fn(&Value) -> bool,
+    fixes: &mut Vec<String>,
+    message: impl Fn(usize, &str) -> String,
+) -> Result<(), Failure> {
+    let Some(text) = read_domain_text(store, domain)? else {
+        return Ok(());
+    };
+    let Some((kept, removed)) = mulch::value_line_pass(&text, store.registry(), keep) else {
+        return Ok(());
+    };
+    store
+        .rewrite_domain(domain, &kept)
+        .map_err(|source| store_failure(&source))?;
+    fixes.push(message(removed, domain));
+    Ok(())
 }
 
 /// Maps a lib store error onto the doctor failure shape.
@@ -995,33 +1031,57 @@ fn store_failure(source: &mulch::Error) -> Failure {
     Failure::handled("doctor", crate::output::chain_message(source))
 }
 
-/// Which failed checks open their repair pass — the reference gates
-/// every fix case on `status !== "pass" && fixable`, so a check that
-/// passes never repairs (its data is clean by construction).
-struct FixGates {
-    jsonl:    bool,
-    legacy:   bool,
-    schema:   bool,
-    stale:    bool,
-    orphaned: bool,
-    anchors:  bool,
+/// The repairable checks, keyed by VALUE (mulch-d343): each variant
+/// names the check it repairs, and the check BUILDERS mint their
+/// report names from [`Repair::check_name`] — one spelling for the
+/// mint and the gate. A renamed check whose repair was not carried
+/// along used to silently disable the repair (no compile error, no
+/// test); now the name exists exactly here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Repair {
+    JsonlIntegrity,
+    LegacyOutcome,
+    SchemaValidation,
+    StaleRecords,
+    OrphanedDomains,
+    FileAnchors,
 }
 
-impl FixGates {
-    fn from_checks(checks: &[Check]) -> Self {
-        fn open(checks: &[Check], name: &str) -> bool {
-            checks.iter().any(|check| {
-                check.name == name && check.fixable && !matches!(check.status, Status::Pass)
-            })
+impl Repair {
+    /// Every repair pass, in the reference's fix-case order (jsonl,
+    /// legacy, schema, stale, orphaned, anchors — report lines follow
+    /// this order, domain order within each pass).
+    const ALL: [Repair; 6] = [
+        Repair::JsonlIntegrity,
+        Repair::LegacyOutcome,
+        Repair::SchemaValidation,
+        Repair::StaleRecords,
+        Repair::OrphanedDomains,
+        Repair::FileAnchors,
+    ];
+
+    /// The check's report name — parity-pinned report bytes, spelled
+    /// exactly once as the single source for the builder AND the gate.
+    fn check_name(self) -> &'static str {
+        match self {
+            Repair::JsonlIntegrity => "jsonl-integrity",
+            Repair::LegacyOutcome => "legacy-outcome",
+            Repair::SchemaValidation => "schema-validation",
+            Repair::StaleRecords => "stale-records",
+            Repair::OrphanedDomains => "orphaned-domains",
+            Repair::FileAnchors => "file-anchors",
         }
-        FixGates {
-            jsonl:    open(checks, "jsonl-integrity"),
-            legacy:   open(checks, "legacy-outcome"),
-            schema:   open(checks, "schema-validation"),
-            stale:    open(checks, "stale-records"),
-            orphaned: open(checks, "orphaned-domains"),
-            anchors:  open(checks, "file-anchors"),
-        }
+    }
+
+    /// The reference's gate law: a pass repairs only when its check
+    /// is fixable and did not pass (a passing check's data is clean
+    /// by construction).
+    fn opens(self, checks: &[Check]) -> bool {
+        checks.iter().any(|check| {
+            check.name == self.check_name()
+                && check.fixable
+                && !matches!(check.status, Status::Pass)
+        })
     }
 }
 
@@ -1148,6 +1208,18 @@ fn no_store_report(opts: &GlobalOpts) -> Failure {
 
 #[cfg(test)]
 mod tests {
+    /// A fixable check with the given name and status — the gate
+    /// tests' report input.
+    fn check(name: &'static str, status: Status) -> Check {
+        Check {
+            name,
+            status,
+            message: String::new(),
+            fixable: true,
+            details: Vec::new(),
+        }
+    }
+
     use super::*;
 
     fn record(line: &str) -> Value {
@@ -1324,15 +1396,6 @@ mod tests {
 
     #[test]
     fn fix_gates_open_only_for_failed_fixable_checks() {
-        fn check(name: &'static str, status: Status) -> Check {
-            Check {
-                name,
-                status,
-                message: String::new(),
-                fixable: true,
-                details: Vec::new(),
-            }
-        }
         let mut unfixable = check("stale-records", Status::Fail);
         unfixable.fixable = false;
         let checks = vec![
@@ -1341,18 +1404,31 @@ mod tests {
             check("schema-validation", Status::Fail),
             unfixable,
         ];
-        let gates = FixGates::from_checks(&checks);
-        assert!(!gates.jsonl);
-        assert!(gates.legacy);
-        assert!(gates.schema);
+        // Gate by value: only failed fixable checks open their pass.
+        // Catches a gate that ignores `fixable` (the unfixable stale
+        // check must stay closed) or matches the NAME only loosely.
+        assert!(!Repair::JsonlIntegrity.opens(&checks));
+        assert!(Repair::LegacyOutcome.opens(&checks));
+        assert!(Repair::SchemaValidation.opens(&checks));
         // failed but not fixable: the pass stays closed
-        assert!(!gates.stale);
+        assert!(!Repair::StaleRecords.opens(&checks));
         // the sprint-24 checks gate like the rest
-        assert!(!gates.orphaned);
-        assert!(!gates.anchors);
-        let gates = FixGates::from_checks(&[check("orphaned-domains", Status::Warn)]);
-        assert!(gates.orphaned);
-        assert!(!gates.anchors);
+        assert!(!Repair::OrphanedDomains.opens(&checks));
+        assert!(!Repair::FileAnchors.opens(&checks));
+        assert!(Repair::OrphanedDomains.opens(&[check("orphaned-domains", Status::Warn)]));
+        assert!(!Repair::FileAnchors.opens(&[check("orphaned-domains", Status::Warn)]));
+        // The name source: builders mint from Repair, so the mint and
+        // the gate cannot drift apart (the silent-disable class,
+        // mulch-d343). Catches a builder reverting to a literal that
+        // differs from the gate's key.
+        assert_eq!(
+            jsonl_integrity(&[]).name,
+            Repair::JsonlIntegrity.check_name()
+        );
+        assert_eq!(
+            file_anchors(&[], std::path::Path::new("/tmp")).name,
+            Repair::FileAnchors.check_name()
+        );
     }
 
     /// A file-anchors detail fixture: two broken files, a broken dir
@@ -1523,15 +1599,8 @@ mod tests {
         // file whose name register_domain would reject
         std::fs::write(dir.join(".mulch/expertise/we ird.jsonl"), "").expect("orphan file");
         let rule = StaleRule::from_shelf_life(&store.config().effective_shelf_life());
-        let gates = FixGates {
-            jsonl:    false,
-            legacy:   false,
-            schema:   false,
-            stale:    false,
-            orphaned: true,
-            anchors:  false,
-        };
-        let fixes = apply_fixes(&mut store, &rule, &[], &gates, &dir).expect("fix pass runs");
+        let checks = vec![check("orphaned-domains", Status::Warn)];
+        let fixes = apply_fixes(&mut store, &rule, &[], &checks, &dir).expect("fix pass runs");
         assert_eq!(fixes, [
             "Added orphaned domain \"we ird\" to config",
             "Created missing JSONL file for domain \"d\"",
