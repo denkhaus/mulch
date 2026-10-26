@@ -290,7 +290,14 @@ before trusting a new test, patch the mechanism to the naive form and watch
 the test fail (sprint 44: ADR-0004 claimed one atomicity owner while
 `rewrite_archive` still held its own temp+rename, and the round-trip test
 would have passed against a plain `fs::write`; the hard-link inode witness
-was verified red, and the archive copy was folded).
+was verified red, and the archive copy was folded). Restore the real form
+from a SAVED COPY (write the real form to /tmp first, patch, verify red,
+write the saved copy back) — never with `git checkout --`: the checkout
+reverts every uncommitted sibling in the file, and mid-red-verification
+that file holds the very ctor/table under test (sprint 55: output.rs lost
+both ctors + tables to a checkout aimed at the naive patch; the
+post-checkout grep-verify rule caught it, but the re-apply cost a full
+edit round).
 **After any mid-sprint `git checkout --`/restore, re-verify the
 sprint's surfaces before committing**: a checkout aimed at one file's
 botched edit silently reverts every uncommitted sibling — sprint 49
