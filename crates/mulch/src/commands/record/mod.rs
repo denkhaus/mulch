@@ -285,9 +285,10 @@ const BLOCK_DEFAULT: &str = "pre-record hook blocked the write";
 
 /// A hook failure with the reference's two-channel shape: plain mode
 /// says `Error: {reason}` on stderr, the json envelope carries the
-/// bare reason (probe-pinned).
-fn hook_failure(reason: String) -> Failure {
-    Failure::divergent("record", format!("Error: {reason}"), reason)
+/// bare reason (probe-pinned) — the prefix-strip idiom, not the
+/// divergent pair (spec review, sprint 55).
+fn hook_failure(reason: &str) -> Failure {
+    Failure::error_line("record", reason)
 }
 
 /// The flag path's pre-record phase: runs the hook family outside
@@ -308,13 +309,13 @@ fn pre_record_phase(
     let payload = json!({"domain": domain, "record": sent});
     let phase = HookPhase::run(HookEvent::PreRecord, payload, store, "record")?;
     if let Some(reason) = phase.blocked_reason(BLOCK_DEFAULT) {
-        return Err(hook_failure(reason.to_string()));
+        return Err(hook_failure(reason));
     }
     let mut record = record;
     match phase.adopt_record(store.registry()) {
         Adopt::Keep => {}
         Adopt::Replace(adopted) => record = mulch::ensure_write_id(store.registry(), adopted),
-        Adopt::Invalid(reason) => return Err(hook_failure(reason)),
+        Adopt::Invalid(reason) => return Err(hook_failure(&reason)),
     }
     Ok((record, phase.into_warnings()))
 }
