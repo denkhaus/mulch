@@ -251,7 +251,10 @@ starts on the right diff (sprint-20/21 lesson: an id `git show` cannot
 resolve cost both reviewers a hunt).
 
 Aggregate both axes, fix findings, commit via git, then close the ticket
-with `seeds close --reason` referencing the commits. (AGENTS.md's "never
+with `seeds close --reason` referencing the commits — and READ the hash
+from `git log` in the same cell, never from memory (sprint 53: one close
+reason carried a placeholder hash and needed a reopen+reclose; close
+reasons are immutable after the fact). (AGENTS.md's "never
 close by hand" binds the fabro develop line's runs — this local loop closes
 its own tickets explicitly.) Before the fold commit:
 grep-verify EVERY claimed fix against the code in the same cell — the
