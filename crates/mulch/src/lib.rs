@@ -15,6 +15,7 @@
 //! tracker (seed ids `mulch-…`).
 
 pub mod anchors;
+pub mod audit;
 pub mod bm25;
 pub mod budget;
 pub mod compact;
@@ -39,8 +40,9 @@ mod time;
 mod upsert;
 
 pub use config::{
-    Config, Governance, Prime, SUPPORTED_VERSION, Search, SessionClose, ShelfLife, Tier,
-    TierWeights,
+    AuditConfig, AuditThresholds, Config, DEFAULT_AUDIT_THRESHOLDS, Governance, Prime,
+    ResolvedAuditThresholds, SUPPORTED_VERSION, Search, SessionClose, ShelfLife, Tier, TierWeights,
+    resolve_audit_thresholds,
 };
 pub use error::{Error, Result};
 pub use ids::{

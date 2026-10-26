@@ -299,6 +299,27 @@ pub(crate) enum Command {
         /// Shell to generate completions for.
         shell: String,
     },
+
+    /// Audit corpus health (evidence coverage, rule density,
+    /// floaters, per-domain mix).
+    Audit {
+        /// Exit 1 if any signal is in FAIL band; output JSON.
+        #[arg(long)]
+        ci: bool,
+
+        /// Emit specific record IDs to archive/revise/attribute.
+        #[arg(long)]
+        suggest: bool,
+
+        /// Scope all metrics to one domain.
+        #[arg(long)]
+        domain: Option<String>,
+
+        /// Comma-separated domain names excluded from audit (merged
+        /// with audit.ignore_domains from config).
+        #[arg(long = "ignore-domains")]
+        ignore_domains: Option<String>,
+    },
 }
 
 /// Flags of `mulch record` (reference surface).

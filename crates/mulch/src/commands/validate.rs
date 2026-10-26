@@ -4,19 +4,12 @@ use mulch::schema::{self, plain_detail_lines, validate_message};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
+use crate::commands::findings::{Finding, MALFORMED_LINE, finding_json, walk_lenient};
 use crate::output::{Failure, failure_envelope, print_json, print_line, success_envelope};
 
 /// The legacy-outcome warning text (reference validate.ts).
 const LEGACY_OUTCOME_WARNING: &str =
     "Legacy \"outcome\" field (singular); run `mulch doctor --fix` to migrate to \"outcomes[]\"";
-
-/// One validation finding (`domain:line` addressed).
-#[derive(Clone)]
-struct Finding {
-    domain:  String,
-    line:    usize,
-    message: String,
-}
 
 /// Runs `validate`: summary on stdout, details on stderr, JSON envelope
 /// on stdout (reference channel quirk), exit 1 on any error.
@@ -26,89 +19,71 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     // Findings in encounter order: the reference prints each line's
     // error or warning inline, interleaved by line number.
     let mut stream: Vec<(bool, Finding)> = Vec::new();
-    let mut total_records = 0;
-    for domain in store.domains() {
+    let total_records = walk_lenient(&store, &mut |domain, finding| match finding {
         // The one lenient reader (lib seam): parse outcomes are
         // findings, physical line numbers preserved.
-        for finding in store.read_lenient(&domain) {
-            total_records += 1;
-            match finding {
-                mulch::LenientLine::Malformed { line } => stream.push((false, Finding {
-                    domain: domain.clone(),
-                    line,
-                    message: "Invalid JSON: failed to parse".into(),
-                })),
-                mulch::LenientLine::Record { line, record } => {
-                    // Unknown type first (reference validate.ts): the
-                    // targeted error is the record's ONLY finding — a
-                    // legacy singular outcome stays unreported on an
-                    // unknown-type record — and --allow-unknown-types
-                    // skips the record entirely, the downstream Ajv
-                    // check included.
-                    if matches!(
-                        schema::verdict(store.registry(), &record),
-                        schema::Verdict::Unknown(_)
-                    ) {
-                        if !opts.allow_unknown_types
-                            && let Some(message) = validate_message(store.registry(), &record)
-                        {
-                            stream.push((false, Finding {
-                                domain: domain.clone(),
-                                line,
-                                message,
-                            }));
-                        }
-                        continue;
-                    }
-                    // Legacy singular outcome: a warning, and it
-                    // REPLACES the schema check for that record
-                    // (reference else-if).
-                    let legacy = mulch::legacy_outcome(&record).is_some();
-                    if legacy {
-                        stream.push((true, Finding {
-                            domain: domain.clone(),
-                            line,
-                            message: LEGACY_OUTCOME_WARNING.into(),
-                        }));
-                        continue;
-                    }
-                    if let Some(message) = validate_message(store.registry(), &record) {
-                        stream.push((false, Finding {
-                            domain: domain.clone(),
-                            line,
-                            message,
-                        }));
-                    }
+        mulch::LenientLine::Malformed { line } => stream.push((false, Finding {
+            domain: domain.to_string(),
+            line,
+            message: MALFORMED_LINE.into(),
+        })),
+        mulch::LenientLine::Record { line, record } => {
+            // Unknown type first (reference validate.ts): the
+            // targeted error is the record's ONLY finding — a
+            // legacy singular outcome stays unreported on an
+            // unknown-type record — and --allow-unknown-types
+            // skips the record entirely, the downstream Ajv
+            // check included.
+            if matches!(
+                schema::verdict(store.registry(), &record),
+                schema::Verdict::Unknown(_)
+            ) {
+                if !opts.allow_unknown_types
+                    && let Some(message) = validate_message(store.registry(), &record)
+                {
+                    stream.push((false, Finding {
+                        domain: domain.to_string(),
+                        line,
+                        message,
+                    }));
                 }
+                return;
+            }
+            // Legacy singular outcome: a warning, and it
+            // REPLACES the schema check for that record
+            // (reference else-if).
+            let legacy = mulch::legacy_outcome(&record).is_some();
+            if legacy {
+                stream.push((true, Finding {
+                    domain: domain.to_string(),
+                    line,
+                    message: LEGACY_OUTCOME_WARNING.into(),
+                }));
+                return;
+            }
+            if let Some(message) = validate_message(store.registry(), &record) {
+                stream.push((false, Finding {
+                    domain: domain.to_string(),
+                    line,
+                    message,
+                }));
             }
         }
-    }
+    });
 
-    let findings: Vec<Finding> = stream
+    let findings: Vec<&Finding> = stream
         .iter()
         .filter(|(warning, _)| !warning)
-        .map(|(_, finding)| finding.clone())
+        .map(|(_, finding)| finding)
         .collect();
-    let warnings: Vec<Finding> = stream
+    let warnings: Vec<&Finding> = stream
         .iter()
         .filter(|(warning, _)| *warning)
-        .map(|(_, finding)| finding.clone())
+        .map(|(_, finding)| finding)
         .collect();
     let total_errors = findings.len();
     if opts.json {
-        let errors: Vec<Value> = findings
-            .iter()
-            .map(|f| {
-                let mut item = Map::new();
-                item.insert("domain".into(), Value::String(f.domain.clone()));
-                item.insert(
-                    "line".into(),
-                    Value::from(u64::try_from(f.line).unwrap_or(0)),
-                );
-                item.insert("message".into(), Value::String(f.message.clone()));
-                Value::Object(item)
-            })
-            .collect();
+        let errors: Vec<Value> = findings.iter().map(|f| finding_json(f)).collect();
         let mut fields = Map::new();
         fields.insert("valid".into(), Value::Bool(findings.is_empty()));
         fields.insert(
@@ -124,19 +99,7 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
             Value::from(u64::try_from(warnings.len()).unwrap_or(0)),
         );
         fields.insert("errors".into(), Value::Array(errors));
-        let warnings_json: Vec<Value> = warnings
-            .iter()
-            .map(|f| {
-                let mut item = Map::new();
-                item.insert("domain".into(), Value::String(f.domain.clone()));
-                item.insert(
-                    "line".into(),
-                    Value::from(u64::try_from(f.line).unwrap_or(0)),
-                );
-                item.insert("message".into(), Value::String(f.message.clone()));
-                Value::Object(item)
-            })
-            .collect();
+        let warnings_json: Vec<Value> = warnings.iter().map(|f| finding_json(f)).collect();
         fields.insert("warnings".into(), Value::Array(warnings_json));
         let envelope = if findings.is_empty() {
             success_envelope("validate", fields)

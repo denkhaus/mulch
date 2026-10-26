@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
+use crate::commands::findings::{Finding, MALFORMED_LINE, finding_json, walk_lenient};
 use crate::commands::git::{self, GitError};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -105,13 +106,6 @@ pub(super) fn run(
     }
 }
 
-/// One validation finding (`domain:line` addressed).
-struct Finding {
-    domain:  String,
-    line:    usize,
-    message: String,
-}
-
 /// The validate step's outcome (reference ValidateResult).
 struct ValidateResult {
     valid:         bool,
@@ -138,95 +132,87 @@ fn validate_expertise(cwd: &Path) -> Result<ValidateResult, Failure> {
     };
     let config = store.config();
     let mut errors = Vec::new();
-    let mut total_records = 0usize;
-    for domain in store.domains() {
+    let total_records = walk_lenient(&store, &mut |domain, finding| match finding {
         // Empty/missing rule lists mean "no rule" (domain-rules.ts).
-        let allowed = config
-            .allowed_types(&domain)
-            .ok()
-            .flatten()
-            .filter(|list| !list.is_empty());
-        let required = config
-            .required_fields(&domain)
-            .ok()
-            .flatten()
-            .filter(|list| !list.is_empty());
-        // The lenient reader (aliases applied at the seam, `#` lines
-        // are findings): exactly the reference's raw split/trim loop.
-        for finding in store.read_lenient(&domain) {
-            total_records += 1;
-            match finding {
-                mulch::LenientLine::Malformed { line } => errors.push(Finding {
-                    domain: domain.clone(),
+        mulch::LenientLine::Malformed { line } => errors.push(Finding {
+            domain: domain.to_string(),
+            line,
+            message: MALFORMED_LINE.into(),
+        }),
+        mulch::LenientLine::Record { line, record } => {
+            let allowed = config
+                .allowed_types(domain)
+                .ok()
+                .flatten()
+                .filter(|list| !list.is_empty());
+            let required = config
+                .required_fields(domain)
+                .ok()
+                .flatten()
+                .filter(|list| !list.is_empty());
+            // The lenient reader (aliases applied at the seam, `#` lines
+            // are findings): exactly the reference's raw split/trim loop.
+            // Unknown type is the record's only finding
+            // (validate_message's bytes are shared with
+            // validate.ts).
+            if let Some(message) = mulch::schema::validate_message(store.registry(), &record) {
+                errors.push(Finding {
+                    domain: domain.to_string(),
                     line,
-                    message: "Invalid JSON: failed to parse".into(),
-                }),
-                mulch::LenientLine::Record { line, record } => {
-                    // Unknown type is the record's only finding
-                    // (validate_message's bytes are shared with
-                    // validate.ts).
-                    if let Some(message) =
-                        mulch::schema::validate_message(store.registry(), &record)
-                    {
-                        errors.push(Finding {
-                            domain: domain.clone(),
-                            line,
-                            message,
-                        });
-                        continue;
-                    }
-                    let Some(object) = record.as_object() else {
-                        continue;
-                    };
-                    // The domain rules: allowed types first, then the
-                    // missing-field subset (undefined/null/""/empty
-                    // array count as missing — domain-rules.ts).
-                    let record_type = object
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("<unknown>");
-                    let id_part = object
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map_or(String::new(), |id| format!(" (id={id})"));
-                    if let Some(allowed) = allowed.as_ref()
-                        && !allowed.iter().any(|kind| kind == record_type)
-                    {
-                        errors.push(Finding {
-                            domain: domain.clone(),
-                            line,
-                            message: format!(
-                                "type \"{record_type}\"{id_part} is not allowed in domain \
-                                 \"{domain}\". Allowed types: {}. Fix the record or relax \
-                                 allowed_types in mulch.config.yaml.",
-                                allowed.join(", ")
-                            ),
-                        });
-                        continue;
-                    }
-                    if let Some(required) = required.as_ref() {
-                        let missing = mulch::schema::missing_domain_fields(&record, required);
-                        if !missing.is_empty() {
-                            let quoted = missing
-                                .iter()
-                                .map(|field| format!("\"{field}\""))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            errors.push(Finding {
-                                domain: domain.clone(),
-                                line,
-                                message: format!(
-                                    "record{id_part} missing required field(s) {quoted} in \
-                                     domain \"{domain}\". Fix the record or relax required_fields \
-                                     in mulch.config.yaml."
-                                ),
-                            });
-                        }
-                    }
+                    message,
+                });
+                return;
+            }
+            let Some(object) = record.as_object() else {
+                return;
+            };
+            // The domain rules: allowed types first, then the
+            // missing-field subset (undefined/null/""/empty
+            // array count as missing — domain-rules.ts).
+            let record_type = object
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("<unknown>");
+            let id_part = object
+                .get("id")
+                .and_then(Value::as_str)
+                .map_or(String::new(), |id| format!(" (id={id})"));
+            if let Some(allowed) = allowed.as_ref()
+                && !allowed.iter().any(|kind| kind == record_type)
+            {
+                errors.push(Finding {
+                    domain: domain.to_string(),
+                    line,
+                    message: format!(
+                        "type \"{record_type}\"{id_part} is not allowed in domain \
+                         \"{domain}\". Allowed types: {}. Fix the record or relax \
+                         allowed_types in mulch.config.yaml.",
+                        allowed.join(", ")
+                    ),
+                });
+                return;
+            }
+            if let Some(required) = required.as_ref() {
+                let missing = mulch::schema::missing_domain_fields(&record, required);
+                if !missing.is_empty() {
+                    let quoted = missing
+                        .iter()
+                        .map(|field| format!("\"{field}\""))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    errors.push(Finding {
+                        domain: domain.to_string(),
+                        line,
+                        message: format!(
+                            "record{id_part} missing required field(s) {quoted} in \
+                             domain \"{domain}\". Fix the record or relax required_fields \
+                             in mulch.config.yaml."
+                        ),
+                    });
                 }
             }
         }
-    }
+    });
     let valid = errors.is_empty();
     Ok(ValidateResult {
         valid,
@@ -292,20 +278,7 @@ fn finish(
 /// printed by the command; the Failure carries only the exit code.
 fn validation_failure(opts: &GlobalOpts, result: &ValidateResult) -> Failure {
     if opts.json {
-        let errors: Vec<Value> = result
-            .errors
-            .iter()
-            .map(|finding| {
-                let mut item = Map::new();
-                item.insert("domain".into(), Value::String(finding.domain.clone()));
-                item.insert(
-                    "line".into(),
-                    Value::from(u64::try_from(finding.line).unwrap_or(0)),
-                );
-                item.insert("message".into(), Value::String(finding.message.clone()));
-                Value::Object(item)
-            })
-            .collect();
+        let errors: Vec<Value> = result.errors.iter().map(finding_json).collect();
         let mut fields = Map::new();
         fields.insert("validated".into(), Value::Bool(false));
         fields.insert("committed".into(), Value::Bool(false));

@@ -166,6 +166,184 @@ pub struct Search {
     pub boost_factor: f64,
 }
 
+/// One `audit.thresholds` knob set — every field optional, a partial
+/// block merges on top of [`DEFAULT_AUDIT_THRESHOLDS`] (the
+/// reference's `resolveAuditThresholds` spread).
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct AuditThresholds {
+    /// Evidence-coverage PASS band (`>=`), default 0.5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_coverage:      Option<f64>,
+    /// Evidence-coverage WARN band (`>=`; below is FAIL), default 0.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_coverage_warn: Option<f64>,
+    /// Floater-rate PASS band (`<=`, fraction of records), default 0.2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floater_max:            Option<f64>,
+    /// Rule-density PASS band (`>=`), default 0.25.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_density_min:       Option<f64>,
+    /// Rule-density WARN band (`>=`; below is FAIL), default 0.15.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_density_warn:      Option<f64>,
+    /// Per-domain record-count PASS band (`<=`), default 200.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_records_per_domain: Option<f64>,
+    /// Per-domain stale-count PASS band (`<=`), default 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_stale:              Option<f64>,
+}
+
+/// The `audit` optional knob block, typed (thresholds, ignored
+/// domains, per-domain overrides).
+#[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct AuditConfig {
+    /// Global threshold overrides (partial blocks merge).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thresholds:     Option<AuditThresholds>,
+    /// Domains excluded from audit metrics entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore_domains: Option<Vec<String>>,
+    /// Per-domain threshold overrides, merged on top of the global
+    /// set for that domain only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_domain:     Option<HashMap<String, AuditThresholds>>,
+}
+
+/// The fully merged audit thresholds — every knob set. Serialized
+/// numbers keep the reference's JS shape: integral doubles print
+/// without a decimal point (`1`, not `1.0`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedAuditThresholds {
+    /// Evidence-coverage PASS band (`>=`).
+    pub evidence_coverage:      f64,
+    /// Evidence-coverage WARN band (`>=`; below is FAIL).
+    pub evidence_coverage_warn: f64,
+    /// Floater-rate PASS band (`<=`, fraction of records).
+    pub floater_max:            f64,
+    /// Rule-density PASS band (`>=`).
+    pub rule_density_min:       f64,
+    /// Rule-density WARN band (`>=`; below is FAIL).
+    pub rule_density_warn:      f64,
+    /// Per-domain record-count PASS band (`<=`).
+    pub max_records_per_domain: f64,
+    /// Per-domain stale-count PASS band (`<=`).
+    pub max_stale:              f64,
+}
+
+/// The reference audit-threshold defaults (schemas/config.ts) —
+/// relaxed from the Python prototype per V1_PLAN §4.2.
+pub const DEFAULT_AUDIT_THRESHOLDS: ResolvedAuditThresholds = ResolvedAuditThresholds {
+    evidence_coverage:      0.5,
+    evidence_coverage_warn: 0.3,
+    floater_max:            0.2,
+    rule_density_min:       0.25,
+    rule_density_warn:      0.15,
+    max_records_per_domain: 200.0,
+    max_stale:              0.0,
+};
+
+impl ResolvedAuditThresholds {
+    /// Merges a partial override on top of `self` (set fields win,
+    /// unset fields keep the base — the reference's object spread).
+    #[must_use]
+    fn merged(self, over: &AuditThresholds) -> Self {
+        Self {
+            evidence_coverage:      over.evidence_coverage.unwrap_or(self.evidence_coverage),
+            evidence_coverage_warn: over
+                .evidence_coverage_warn
+                .unwrap_or(self.evidence_coverage_warn),
+            floater_max:            over.floater_max.unwrap_or(self.floater_max),
+            rule_density_min:       over.rule_density_min.unwrap_or(self.rule_density_min),
+            rule_density_warn:      over.rule_density_warn.unwrap_or(self.rule_density_warn),
+            max_records_per_domain: over
+                .max_records_per_domain
+                .unwrap_or(self.max_records_per_domain),
+            max_stale:              over.max_stale.unwrap_or(self.max_stale),
+        }
+    }
+}
+
+/// The reference `resolveAuditThresholds`: defaults ⊕ the global
+/// `audit.thresholds` block, then (for a named domain) that domain's
+/// `audit.per_domain.<name>` override merged on top.
+#[must_use]
+pub fn resolve_audit_thresholds(
+    cfg: Option<&AuditConfig>,
+    domain: Option<&str>,
+) -> ResolvedAuditThresholds {
+    let global = DEFAULT_AUDIT_THRESHOLDS;
+    let global = cfg
+        .and_then(|cfg| cfg.thresholds.as_ref())
+        .map_or(global, |over| global.merged(over));
+    let Some(domain) = domain else {
+        return global;
+    };
+    cfg.and_then(|cfg| cfg.per_domain.as_ref())
+        .and_then(|per| per.get(domain))
+        .map_or(global, |over| global.merged(over))
+}
+
+/// Serialize one threshold knob as a JS number: integral doubles
+/// print bare (`1`/`200`), fractional keep serde's shortest form
+/// (mirrors [`crate::jsval::js_number`], the report JSON's law).
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's serialize_with passes field references"
+)]
+pub(crate) fn serialize_js_f64<S: serde::Serializer>(
+    value: &f64,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    if value.fract() == 0.0 && value.abs() < 9_007_199_254_740_992.0 {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "the bound check keeps the integer exact"
+        )]
+        serializer.serialize_i64(*value as i64)
+    } else {
+        serializer.serialize_f64(*value)
+    }
+}
+
+impl serde::Serialize for ResolvedAuditThresholds {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct as _;
+        let mut out = serializer.serialize_struct("ResolvedAuditThresholds", 7)?;
+        out.serialize_field("evidence_coverage", &JsF64(self.evidence_coverage))?;
+        out.serialize_field(
+            "evidence_coverage_warn",
+            &JsF64(self.evidence_coverage_warn),
+        )?;
+        out.serialize_field("floater_max", &JsF64(self.floater_max))?;
+        out.serialize_field("rule_density_min", &JsF64(self.rule_density_min))?;
+        out.serialize_field("rule_density_warn", &JsF64(self.rule_density_warn))?;
+        out.serialize_field(
+            "max_records_per_domain",
+            &JsF64(self.max_records_per_domain),
+        )?;
+        out.serialize_field("max_stale", &JsF64(self.max_stale))?;
+        out.end()
+    }
+}
+
+/// Newtype carrying [`serialize_js_f64`] as a `Serialize` impl (the
+/// struct serializer above needs a value with the impl, not a bare
+/// fn).
+struct JsF64(f64);
+
+impl serde::Serialize for JsF64 {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serialize_js_f64(&self.0, serializer)
+    }
+}
+
 /// The `.mulch/mulch.config.yaml` document.
 ///
 /// Field order on write matches the reference serializer: `version`,
@@ -484,6 +662,11 @@ impl Config {
     /// The typed optional `search` knob block, if set.
     pub fn search(&self) -> Result<Option<Search>> {
         self.typed_field("search")
+    }
+
+    /// The typed optional `audit` knob block, if set.
+    pub fn audit(&self) -> Result<Option<AuditConfig>> {
+        self.typed_field("audit")
     }
 
     /// Any other top-level key (additive fields, `custom_types`, `hooks`,
@@ -916,5 +1099,102 @@ custom_types:
             malformed.effective_shelf_life(),
             ShelfLife::reference_default()
         );
+    }
+
+    /// The audit threshold merge law: defaults ⊕ global ⊕ per-domain
+    /// (reference `resolveAuditThresholds`). Rows: absent block,
+    /// global-only partial, per-domain partial on top, an unlisted
+    /// domain falling back to global.
+    #[test]
+    fn audit_thresholds_merge_law() {
+        // no audit block at all: the pinned defaults
+        assert_eq!(
+            resolve_audit_thresholds(None, None),
+            DEFAULT_AUDIT_THRESHOLDS
+        );
+        assert_eq!(DEFAULT_AUDIT_THRESHOLDS.floater_max, 0.2);
+        assert_eq!(DEFAULT_AUDIT_THRESHOLDS.max_records_per_domain, 200.0);
+        // a global PARTIAL block: set fields win, unset backfill
+        let cfg = AuditConfig {
+            thresholds:     Some(AuditThresholds {
+                evidence_coverage: Some(0.1),
+                floater_max: Some(0.9),
+                ..AuditThresholds::default()
+            }),
+            ignore_domains: None,
+            per_domain:     Some(HashMap::from([("dev".into(), AuditThresholds {
+                max_stale: Some(5.0),
+                ..AuditThresholds::default()
+            })])),
+        };
+        let global = resolve_audit_thresholds(Some(&cfg), None);
+        assert_eq!(global.evidence_coverage, 0.1);
+        assert_eq!(global.evidence_coverage_warn, 0.3);
+        assert_eq!(global.floater_max, 0.9);
+        assert_eq!(global.max_records_per_domain, 200.0);
+        // per-domain override merges ON TOP of the merged global
+        let dev = resolve_audit_thresholds(Some(&cfg), Some("dev"));
+        assert_eq!(dev.max_stale, 5.0);
+        assert_eq!(dev.evidence_coverage, 0.1, "global values carry");
+        // an unlisted domain falls back to the merged global
+        let other = resolve_audit_thresholds(Some(&cfg), Some("ops"));
+        assert_eq!(other, global);
+        // a block with only per_domain keeps defaults globally
+        let per_only = AuditConfig {
+            per_domain: Some(HashMap::from([("x".into(), AuditThresholds {
+                rule_density_min: Some(1.0),
+                ..AuditThresholds::default()
+            })])),
+            ..AuditConfig::default()
+        };
+        assert_eq!(
+            resolve_audit_thresholds(Some(&per_only), Some("x")).rule_density_min,
+            1.0
+        );
+        assert_eq!(
+            resolve_audit_thresholds(Some(&per_only), None).rule_density_min,
+            0.25
+        );
+    }
+
+    /// The audit block parses through the config accessor: thresholds
+    /// and per-domain overrides survive, and the serialized resolved
+    /// knobs keep the reference's JS number shape (integral doubles
+    /// print bare).
+    #[test]
+    fn audit_block_parses_and_serializes_js_numbers() {
+        let config = Config::parse(
+            "version: '1'\ndomains:\n  dev: {}\naudit:\n  thresholds:\n    evidence_coverage: 0.1\n  ignore_domains:\n    - ghost\n  per_domain:\n    dev:\n      max_stale: 5\n",
+        )
+        .expect("parses");
+        let audit = config.audit().expect("shape ok").expect("present");
+        assert_eq!(
+            audit.thresholds.expect("thresholds").evidence_coverage,
+            Some(0.1)
+        );
+        assert_eq!(audit.ignore_domains, Some(vec!["ghost".to_string()]));
+        assert!(
+            audit
+                .per_domain
+                .as_ref()
+                .expect("per_domain")
+                .contains_key("dev")
+        );
+        // absent block reads None
+        assert!(
+            Config::parse("version: '1'\ndomains: {}\n")
+                .expect("parses")
+                .audit()
+                .expect("shape ok")
+                .is_none()
+        );
+        // the resolved knobs serialize with JS numbers: 200/0/5 bare,
+        // 0.5/0.25 fractional
+        let resolved = resolve_audit_thresholds(Some(&audit), Some("dev"));
+        let json = serde_json::to_value(resolved).expect("serializes");
+        assert_eq!(json["max_records_per_domain"], serde_json::json!(200));
+        assert_eq!(json["max_stale"], serde_json::json!(5));
+        assert_eq!(json["evidence_coverage"], serde_json::json!(0.1));
+        assert_eq!(json["floater_max"], serde_json::json!(0.2));
     }
 }

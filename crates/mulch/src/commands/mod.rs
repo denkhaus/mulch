@@ -7,6 +7,7 @@
 mod active_work;
 mod add;
 mod archive;
+mod audit;
 mod compact;
 mod completions;
 pub(crate) mod config;
@@ -16,6 +17,7 @@ pub(crate) mod diff_cmd;
 mod doctor;
 mod edit;
 mod failure;
+mod findings;
 mod git;
 mod git_context;
 mod hooks_surface;
@@ -138,6 +140,18 @@ pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failu
         Command::Onboard(args) => onboard::run(opts, args),
         Command::Upgrade { check } => upgrade::run(opts, *check),
         Command::Completions { shell } => completions::run(shell),
+        Command::Audit {
+            ci,
+            suggest,
+            domain,
+            ignore_domains,
+        } => audit::run(
+            opts,
+            *ci,
+            *suggest,
+            domain.as_deref(),
+            ignore_domains.as_deref(),
+        ),
     }
 }
 

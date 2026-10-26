@@ -223,7 +223,7 @@ complete -c ml -n '__fish_use_subcommand' -a 'add' -d 'add command'
         // help honesty: commands this port has not implemented never
         // appear (deliberately excludes config/diff — sibling slices
         // may land them; only not-yet-existing commands pin here)
-        for absent in ["setup", "audit", "update"] {
+        for absent in ["setup", "update"] {
             assert!(
                 !commands.iter().any(|command| command == absent),
                 "{absent} must not be listed before it is implemented"

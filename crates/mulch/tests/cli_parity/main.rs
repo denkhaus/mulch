@@ -9,6 +9,7 @@
 
 mod aliases;
 mod archive;
+mod audit;
 mod compact;
 mod completions;
 mod config;

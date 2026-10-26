@@ -102,15 +102,13 @@ fn completions_templates_match_and_word_lists_follow_their_binaries() {
             }
         }
         // ours never names a reference command this port has not
-        // implemented (setup/audit/update — config/diff are sibling
-        // slices and may legitimately appear once wired)
-        for absent in ["setup", "audit"] {
-            assert!(
-                !our.stdout.contains(&format!(" {absent} "))
-                    && !our.stdout.contains(&format!("'{absent}'")),
-                "{shell}: {absent} must not be in our list (honest help)"
-            );
-        }
+        // implemented (setup — config/diff are sibling slices and
+        // may legitimately appear once wired; audit landed with its
+        // own parity battery)
+        assert!(
+            !our.stdout.contains(" setup ") && !our.stdout.contains("'setup'"),
+            "{shell}: setup must not be in our list (honest help)"
+        );
         if shell != "fish" {
             assert!(
                 their.stdout.contains(" setup "),
