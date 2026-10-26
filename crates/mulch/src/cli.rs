@@ -259,6 +259,17 @@ pub(crate) enum Command {
 
     /// Prime a session with relevant expertise (mulch-16da).
     Prime(Box<PrimeArgs>),
+
+    /// Validate, stage, and commit .mulch/ changes (mulch-176f).
+    Sync {
+        /// Custom commit message.
+        #[arg(long)]
+        message: Option<String>,
+
+        /// Skip validation step.
+        #[arg(long = "no-validate")]
+        no_validate: bool,
+    },
 }
 
 /// Flags of `mulch record` (reference surface).

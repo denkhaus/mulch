@@ -32,6 +32,7 @@ mod restore;
 mod search;
 mod status;
 mod store;
+mod sync;
 mod validate;
 
 use crate::cli::{Command, GlobalOpts};
@@ -123,6 +124,10 @@ pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failu
         } => ready::run(opts, limit.as_str(), domain.as_deref(), since.as_deref()),
         Command::Learn { since } => learn::run(opts, since),
         Command::Prime(args) => prime::run(opts, args),
+        Command::Sync {
+            message,
+            no_validate,
+        } => sync::run(opts, message.clone(), *no_validate),
     }
 }
 

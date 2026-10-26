@@ -28,4 +28,5 @@ mod restore;
 mod search;
 mod status;
 mod support;
+mod sync;
 mod validate;

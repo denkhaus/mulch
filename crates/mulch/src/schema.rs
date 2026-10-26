@@ -662,6 +662,28 @@ pub fn plain_detail_lines(message: &str) -> Vec<String> {
     }
 }
 
+/// The missing-domain-fields subset (reference domain-rules.ts
+/// `findMissingDomainFields`, sync's required-fields gate): a field
+/// counts as missing when absent, `null`, the empty string, or an
+/// empty array; any other value — `false`, `0`, a non-empty object —
+/// passes. Top-level names only; nested paths are out of scope.
+#[must_use]
+pub fn missing_domain_fields<'a>(record: &serde_json::Value, fields: &'a [String]) -> Vec<&'a str> {
+    let object = record.as_object();
+    fields
+        .iter()
+        .filter(
+            |field| match object.and_then(|object| object.get(field.as_str())) {
+                None | Some(serde_json::Value::Null) => true,
+                Some(serde_json::Value::String(text)) => text.is_empty(),
+                Some(serde_json::Value::Array(items)) => items.is_empty(),
+                Some(_) => false,
+            },
+        )
+        .map(String::as_str)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -849,5 +871,53 @@ mod tests {
             &registry(),
             &record(r#"{"type":"pattern"}"#)
         ));
+    }
+
+    /// The required-fields gate's missing subset (domain-rules.ts,
+    /// mulch-176f): absent/null/""/[] are missing; every other value
+    /// passes — including the falsy JS would keep (`false`, `0`) —
+    /// and nested shapes are out of scope by name.
+    #[test]
+    fn missing_domain_fields_treats_only_absent_and_empty_as_missing() {
+        let field = |name: &str| vec![name.to_string()];
+        let record = serde_json::json!({
+            "empty_string": "",
+            "empty_array": [],
+            "null": null,
+            "false": false,
+            "zero": 0,
+            "text": "x",
+            "array": [1],
+            "object": {},
+        });
+        // every missing shape reports, one per requested field
+        for name in ["empty_string", "empty_array", "null", "absent"] {
+            assert_eq!(
+                missing_domain_fields(&record, &field(name)),
+                vec![name],
+                "{name} is missing"
+            );
+        }
+        // every present shape passes — falsy-but-nonempty included
+        for name in ["false", "zero", "text", "array", "object"] {
+            assert!(
+                missing_domain_fields(&record, &field(name)).is_empty(),
+                "{name} passes"
+            );
+        }
+        // multiple fields report in request order
+        assert_eq!(
+            missing_domain_fields(&record, &[
+                "absent".to_string(),
+                "null".to_string(),
+                "text".to_string()
+            ]),
+            vec!["absent", "null"]
+        );
+        // a non-object record has every field missing
+        assert_eq!(
+            missing_domain_fields(&serde_json::json!(42), &["a".to_string()]),
+            vec!["a"]
+        );
     }
 }
