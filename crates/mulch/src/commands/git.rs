@@ -141,6 +141,7 @@ fn git(cwd: &Path, args: &[&str]) -> std::process::Command {
 
 #[cfg(test)]
 mod tests {
+
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 

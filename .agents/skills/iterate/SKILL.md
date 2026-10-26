@@ -384,7 +384,10 @@ shared files (`tests/`, `README.md`, `.seeds/`, `.mulch/`) are
 host-folded from child deliveries under `/tmp/sprintNN/<child>/`;
 children NEVER touch git (no add/commit/pull/push/`ml sync`, no branch of
 their own): each child writes only its OWNED files, delivers the rest to
-its /tmp dir, and the HOST commits each delivery as it arrives
+its /tmp dir — INCLUDING shared-file changes as PATCH TEXT with quoted
+anchors (cli.rs arms, mod wiring, README bullets), so the host applies
+and adapts when anchors drift instead of merging conflicts — and the
+HOST commits each delivery as it arrives
 (`git add <that child's paths> && git commit` — one commit per child,
 explicit paths only — see the commit-integrity check); children run NO
 workspace fmt/clippy/qualitygate (host gates at integration) and wrap
@@ -417,7 +420,13 @@ note is the same shape (sprint 52: no note, zero decision tables, and
 a call site still calling a fn the child had deleted) — treat a
 missing note as an unmet delivery contract and inventory the diff
 before continuing. If the quota blocks respawning, the HOST finishes
-the delivery and records the deviation in the sprint note.
+the delivery and records the deviation in the sprint note. Best practice
+(sprint 54): a child with dispatch needs verifies in a FULL WORKSPACE
+COPY under /tmp (host WIP + its patch text applied) and runs the
+ENTIRE suite there — verification moves into the child and the host's
+integration step shrinks to wiring + gate; out-of-repo copies lose the
+.mise.toml pins, so a reference-gated child pins PATH explicitly (see
+the tooling failure record on the ml 0.11.0 hazard).
 
 ## State file (sprint counter)
 
