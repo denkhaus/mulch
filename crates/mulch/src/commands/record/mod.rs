@@ -180,65 +180,68 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
         return Ok(());
     }
 
-    // Phase 2: the locked load→mutate→save. The writer lock wraps the
-    // cycle and drops before the post-record hooks fire — the
-    // reference runs them outside the lock so observation hooks can
-    // never stall lock holders (mulch-7f49).
-    let decision = {
-        let locked = crate::commands::store::open_store_mut("record", false)?;
-        // Duplicate detection over the STRICT read (reference
-        // `readExpertiseFile` + `findDuplicate`): malformed lines and
-        // unregistered types abort before the write, and the dedup key is
-        // the type's dedup FIELD (registry dedupKey), never the id — a
-        // renamed record still dedupes after `edit --name` (mulch-ccf6).
-        let existing = crate::commands::store::read_domain_records(
-            "record",
-            &locked,
-            &domain,
-            opts.allow_unknown_types,
-        )?;
-        // One decision owner (lib `upsert_plan`): named duplicates upsert
-        // with merged outcomes, anonymous ones skip, --force falls through
-        // to the create path below.
-        let working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
-        match mulch::upsert_plan(
-            locked.registry(),
-            &working,
-            &Value::Object(record.clone()),
-            args.force,
-        ) {
-            mulch::UpsertPlan::Skip { index } => Decision::Skip { index },
-            mulch::UpsertPlan::Update { index, merged } => {
-                // id LAST: lift the record's pre-assigned id over the
-                // merged outcomes (the reference's `{ ...record,
-                // outcomes }` + write-time id placement, mulch-351e).
-                let mut upserted = merged;
-                if let Some(id) = upserted.remove("id") {
-                    upserted.insert("id".into(), id);
+    // Phase 2: the locked write phase (the two-open ritual's owner,
+    // mulch-73b5): the writer lock wraps the cycle and drops before
+    // the post-record hooks fire — the reference runs them outside the
+    // lock so observation hooks can never stall lock holders
+    // (mulch-7f49).
+    let decision = crate::commands::store::locked_write_phase(
+        "record",
+        false,
+        &domain,
+        opts.allow_unknown_types,
+        |locked, existing| {
+            // Duplicate detection over the STRICT read (reference
+            // `readExpertiseFile` + `findDuplicate`): malformed lines
+            // and unregistered types abort before the write, and the
+            // dedup key is the type's dedup FIELD (registry
+            // dedupKey), never the id — a renamed record still
+            // dedupes after `edit --name` (mulch-ccf6).
+            //
+            // One decision owner (lib `upsert_plan`): named
+            // duplicates upsert with merged outcomes, anonymous ones
+            // skip, --force falls through to the create path below.
+            let working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
+            match mulch::upsert_plan(
+                locked.registry(),
+                &working,
+                &Value::Object(record.clone()),
+                args.force,
+            ) {
+                mulch::UpsertPlan::Skip { index } => Ok(Decision::Skip { index }),
+                mulch::UpsertPlan::Update { index, merged } => {
+                    // id LAST: lift the record's pre-assigned id over
+                    // the merged outcomes (the reference's
+                    // `{ ...record, outcomes }` + write-time id
+                    // placement, mulch-351e).
+                    let mut upserted = merged;
+                    if let Some(id) = upserted.remove("id") {
+                        upserted.insert("id".into(), id);
+                    }
+                    let mut lines: Vec<Value> =
+                        existing.iter().map(|line| line.record.clone()).collect();
+                    lines[index] = Value::Object(upserted.clone());
+                    crate::commands::store::persist("record", locked, &domain, &lines)?;
+                    Ok(Decision::Written {
+                        action: RecordAction::Update { index },
+                        record: upserted,
+                    })
                 }
-                let mut lines: Vec<Value> =
-                    existing.iter().map(|line| line.record.clone()).collect();
-                lines[index] = Value::Object(upserted.clone());
-                crate::commands::store::persist("record", &locked, &domain, &lines)?;
-                Decision::Written {
-                    action: RecordAction::Update { index },
-                    record: upserted,
+                mulch::UpsertPlan::Create => {
+                    let line = Value::Object(record.clone()).to_string();
+                    locked
+                        .append_domain_line(&domain, &line)
+                        .map_err(|source| {
+                            Failure::handled("record", crate::output::chain_message(&source))
+                        })?;
+                    Ok(Decision::Written {
+                        action: RecordAction::Create,
+                        record,
+                    })
                 }
             }
-            mulch::UpsertPlan::Create => {
-                let line = Value::Object(record.clone()).to_string();
-                locked
-                    .append_domain_line(&domain, &line)
-                    .map_err(|source| {
-                        Failure::handled("record", crate::output::chain_message(&source))
-                    })?;
-                Decision::Written {
-                    action: RecordAction::Create,
-                    record,
-                }
-            }
-        }
-    };
+        },
+    )?;
 
     match decision {
         Decision::Skip { index } => {

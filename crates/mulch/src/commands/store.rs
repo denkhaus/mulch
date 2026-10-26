@@ -254,6 +254,35 @@ pub(crate) fn read_domain_records(
         .map_err(|source| Failure::handled_on_stderr(command, render_core_error(&source)))
 }
 
+/// The two-open write ritual's LOCKED phase (mulch-7f49 ordering,
+/// named by mulch-73b5): the pre-phase ran OUTSIDE (hooks, gates,
+/// verdicts, the output record); this opens the writer lock, re-reads
+/// the target domain STRICTLY under it, hands both to the mutation,
+/// and drops the lock when it returns — the caller's post-record
+/// phase then fires outside every lock. Three spellings collapsed
+/// into this owner (record's flag path, record --batch's pass, move's
+/// source rewrite): they differed only in the mutation, never in the
+/// ritual. Callers keep their Failure renderings (ADR-0003) and own
+/// the persist/append calls — the write SHAPES differ per command,
+/// the open→re-read→mutate→drop order does not.
+///
+/// # Errors
+///
+/// [`open_store_mut`]' no-store/lock failures, then
+/// [`read_domain_records`]' strict-read failures, then the mutation's
+/// own [`Failure`]s — all under the command's name.
+pub(crate) fn locked_write_phase<T>(
+    command: &'static str,
+    config_message: bool,
+    domain: &str,
+    allow_unknown: bool,
+    mutate: impl FnOnce(&mulch::StoreFiles, Vec<mulch::LineRecord>) -> Result<T, Failure>,
+) -> Result<T, Failure> {
+    let locked = open_store_mut(command, config_message)?;
+    let existing = read_domain_records(command, &locked, domain, allow_unknown)?;
+    mutate(&locked, existing)
+}
+
 /// The read half of the record-locator seam: strict-reads the domain
 /// and resolves the identifier (exact id, bare hash, or unique prefix).
 /// `move` and `delete` reach this half directly — their prologues pin
@@ -495,6 +524,112 @@ mod tests {
             json.envelope["error"],
             serde_json::json!("Domain \"nope\" not found in config.")
         );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The seam opens from the CWD like every command: these tests
+    /// chdir into the scratch store, serialized by one mutex and
+    /// restored after, so they stay safe under plain `cargo test`
+    /// (one process) as well as nextest (process per test).
+    fn in_scratch_cwd<T>(root: &std::path::Path, body: impl FnOnce() -> T) -> T {
+        static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = CWD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous = std::env::current_dir().expect("cwd readable");
+        std::env::set_current_dir(root).expect("chdir into the scratch store");
+        let result = body();
+        std::env::set_current_dir(previous).expect("chdir back");
+        result
+    }
+
+    /// The two-open ritual's owner (mulch-73b5): the writer lock is
+    /// HELD across the mutation — a contender on another thread
+    /// cannot take it while the closure runs — and released when the
+    /// phase returns, so the post-phase hooks run outside every lock.
+    #[test]
+    fn locked_write_phase_holds_the_lock_across_the_mutation() {
+        let (root, _store) = alias_store("phase-lock");
+        let mulch_dir = root.join(".mulch");
+        in_scratch_cwd(&root, || {
+            locked_write_phase("record", false, "dev", false, |_locked, existing| {
+                assert!(existing.is_empty(), "the strict re-read is delivered");
+                let contender_dir = mulch_dir.clone();
+                let contender = std::thread::spawn(move || {
+                    // Takes the 5s acquire budget or fails — either
+                    // way it cannot finish while this closure holds
+                    // the lock.
+                    drop(mulch::lock::WriterLock::acquire(&contender_dir));
+                });
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                assert!(
+                    !contender.is_finished(),
+                    "the writer lock is held during the mutation"
+                );
+                Ok(())
+            })
+            .expect("phase runs");
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(mulch::lock::WriterLock::acquire(&mulch_dir).expect("released after the phase"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The seam's re-read is the STRICT one under the command's
+    /// rendering (mulch-73b5): a malformed line aborts the phase
+    /// BEFORE the mutation runs, with the shared chain wording.
+    #[test]
+    fn locked_write_phase_fails_the_strict_read_before_the_mutation() {
+        let (root, _store) = alias_store("phase-strict");
+        std::fs::create_dir_all(root.join(".mulch/expertise")).expect("dir");
+        std::fs::write(root.join(".mulch/expertise/dev.jsonl"), "not json\n").expect("bad line");
+        in_scratch_cwd(&root, || {
+            let Err(failure) = locked_write_phase(
+                "record",
+                false,
+                "dev",
+                false,
+                |_, _| -> Result<(), Failure> {
+                    Err(Failure::handled("record", "the mutation must not run"))
+                },
+            ) else {
+                panic!("expected the strict read to fail");
+            };
+            assert!(
+                failure.message.contains("dev.jsonl"),
+                "names the file: {}",
+                failure.message
+            );
+            assert!(
+                failure.message.contains("JSON Parse error"),
+                "the chain wording: {}",
+                failure.message
+            );
+        });
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The closure receives the LOCKED store (mulch-73b5): a persist
+    /// through it lands in the domain file — the mutation owns the
+    /// write shape, the seam owns the open→read→drop order.
+    #[test]
+    fn locked_write_phase_hands_the_locked_store_to_the_mutation() {
+        let (root, _store) = alias_store("phase-write");
+        let record = serde_json::json!({
+            "type": "pattern",
+            "classification": "tactical",
+            "recorded_at": "2026-10-26T10:00:00.000Z",
+            "name": "through the seam",
+            "description": "d",
+        });
+        in_scratch_cwd(&root, || {
+            locked_write_phase("record", false, "dev", false, |locked, _| {
+                persist("record", locked, "dev", std::slice::from_ref(&record))
+            })
+            .expect("phase runs");
+        });
+        let text = std::fs::read_to_string(root.join(".mulch/expertise/dev.jsonl")).expect("file");
+        assert!(text.contains("through the seam"), "{text}");
         std::fs::remove_dir_all(&root).ok();
     }
 }

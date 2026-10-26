@@ -222,77 +222,106 @@ pub(super) fn stdin_batch(
                 }
             }
         } else {
-            // The locked load→mutate→save (reference `withFileLock`
-            // block): the writer lock wraps the whole pass and drops
-            // before the post-record hooks fire.
-            let locked = crate::commands::store::open_store_mut("record", false)?;
-            let existing = crate::commands::store::read_domain_records(
-                "record",
-                &locked,
-                &args.domain,
-                opts.allow_unknown_types,
-            )?;
-            // The working copy the reference dedupes against
-            // (`currentRecords`): existing records plus this batch's
-            // accepted appends — within-batch duplicates upsert too.
-            let mut working: Vec<Value> = existing.iter().map(|line| line.record.clone()).collect();
-            for line in records_to_write {
-                let record_type =
-                    mulch::effective_type(line.get("type").and_then(Value::as_str)).to_string();
-                let id_key = locked.registry().id_key_field(&record_type);
-                let id_value = line
-                    .get(id_key)
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                // Write-time id (reference writeExpertiseFile's
-                // `if (!r.id)`), appended LAST when the record (or its
-                // hook mutation) carried none.
-                let id = record_id(&record_type, &id_value);
-                // One decision owner (lib `upsert_plan`): the dedup
-                // field against the working copy, never the id
-                // (mulch-ccf6). The adopted record is safe here: the
-                // plan compares only `type` and the type's dedup
-                // field, which enrichment never touches.
-                match mulch::upsert_plan(
-                    locked.registry(),
-                    &working,
-                    &Value::Object(line.clone()),
-                    args.force,
-                ) {
-                    mulch::UpsertPlan::Update { index, merged } => {
-                        // The plan already merged the outcomes
-                        // (existing first); an input id keeps its
-                        // position, a generated one lands after the
-                        // merged outcomes (reference write-time
-                        // `if (!r.id)`).
-                        let mut line = merged;
-                        line.entry("id").or_insert_with(|| Value::String(id));
-                        working[index] = Value::Object(line.clone());
-                        updated += 1;
-                        written.push((line, "updated"));
-                    }
-                    mulch::UpsertPlan::Skip { .. } => {
-                        skipped += 1;
-                    }
-                    mulch::UpsertPlan::Create => {
-                        let mut line = line;
-                        line.entry("id").or_insert_with(|| Value::String(id));
-                        working.push(Value::Object(line.clone()));
-                        created += 1;
-                        written.push((line, "created"));
-                    }
-                }
-            }
-            // Partial writes (reference `processStdinRecords` + the
-            // batch caller): valid records WRITE even when others
-            // failed; the write guard is `created > 0 || updated > 0`
-            // (comments and blank lines drop, id-less survivors get
-            // ids — a skip-only or empty batch leaves the file
-            // byte-identical; mulch-ca49).
-            if created > 0 || updated > 0 {
-                crate::commands::store::persist("record", &locked, &args.domain, &working)?;
-            }
+            // The locked write phase (the two-open ritual's owner,
+            // mulch-73b5; reference `withFileLock` block): the writer
+            // lock wraps the whole pass and drops before the
+            // post-record hooks fire.
+            let (pass_created, pass_updated, pass_skipped, pass_written) =
+                crate::commands::store::locked_write_phase(
+                    "record",
+                    false,
+                    &args.domain,
+                    opts.allow_unknown_types,
+                    |locked, existing| {
+                        // The working copy the reference dedupes
+                        // against (`currentRecords`): existing records
+                        // plus this batch's accepted appends —
+                        // within-batch duplicates upsert too.
+                        let mut working: Vec<Value> =
+                            existing.iter().map(|line| line.record.clone()).collect();
+                        let mut created = 0usize;
+                        let mut updated = 0usize;
+                        let mut skipped = 0usize;
+                        // One entry per actual write — post-record
+                        // fires on each of them after the lock
+                        // releases (reference `writtenForPostHook`).
+                        let mut written: Vec<(Map<String, Value>, &'static str)> = Vec::new();
+                        for line in records_to_write {
+                            let record_type =
+                                mulch::effective_type(line.get("type").and_then(Value::as_str))
+                                    .to_string();
+                            let id_key = locked.registry().id_key_field(&record_type);
+                            let id_value = line
+                                .get(id_key)
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            // Write-time id (reference
+                            // writeExpertiseFile's `if (!r.id)`),
+                            // appended LAST when the record (or its
+                            // hook mutation) carried none.
+                            let id = record_id(&record_type, &id_value);
+                            // One decision owner (lib `upsert_plan`):
+                            // the dedup field against the working
+                            // copy, never the id (mulch-ccf6). The
+                            // adopted record is safe here: the plan
+                            // compares only `type` and the type's
+                            // dedup field, which enrichment never
+                            // touches.
+                            match mulch::upsert_plan(
+                                locked.registry(),
+                                &working,
+                                &Value::Object(line.clone()),
+                                args.force,
+                            ) {
+                                mulch::UpsertPlan::Update { index, merged } => {
+                                    // The plan already merged the
+                                    // outcomes (existing first); an
+                                    // input id keeps its position, a
+                                    // generated one lands after the
+                                    // merged outcomes (reference
+                                    // write-time `if (!r.id)`).
+                                    let mut line = merged;
+                                    line.entry("id").or_insert_with(|| Value::String(id));
+                                    working[index] = Value::Object(line.clone());
+                                    updated += 1;
+                                    written.push((line, "updated"));
+                                }
+                                mulch::UpsertPlan::Skip { .. } => {
+                                    skipped += 1;
+                                }
+                                mulch::UpsertPlan::Create => {
+                                    let mut line = line;
+                                    line.entry("id").or_insert_with(|| Value::String(id));
+                                    working.push(Value::Object(line.clone()));
+                                    created += 1;
+                                    written.push((line, "created"));
+                                }
+                            }
+                        }
+                        // Partial writes (reference
+                        // `processStdinRecords` + the batch caller):
+                        // valid records WRITE even when others failed;
+                        // the write guard is `created > 0 || updated >
+                        // 0` (comments and blank lines drop, id-less
+                        // survivors get ids — a skip-only or empty
+                        // batch leaves the file byte-identical;
+                        // mulch-ca49).
+                        if created > 0 || updated > 0 {
+                            crate::commands::store::persist(
+                                "record",
+                                locked,
+                                &args.domain,
+                                &working,
+                            )?;
+                        }
+                        Ok((created, updated, skipped, written))
+                    },
+                )?;
+            created = pass_created;
+            updated = pass_updated;
+            skipped = pass_skipped;
+            written = pass_written;
         }
     }
 

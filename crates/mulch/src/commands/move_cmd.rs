@@ -187,38 +187,41 @@ pub(super) fn run(
 
     let mut moved_opt: Option<Value> = None;
     if !dry_run {
-        // The locked write phase: re-read + re-resolve UNDER the lock
-        // (the reference reads the source inside its lock too,
+        // The locked write phase (the two-open ritual's owner,
+        // mulch-73b5): re-read + re-resolve UNDER the lock (the
+        // reference reads the source inside its lock too,
         // move.ts:262-266). The pre-lock read was advisory — gates and
         // verdicts judged it; the OUTPUT mirrors record_to_write, not
         // the re-read line.
-        let locked = crate::commands::store::open_store_mut("move", true)?;
-        let (lines, index) = crate::commands::store::read_and_resolve(
+        moved_opt = crate::commands::store::locked_write_phase(
             "move",
-            &locked,
+            true,
             source,
-            id,
             opts.allow_unknown_types,
-        )?;
-        let survivors: Vec<Value> = lines
-            .iter()
-            .enumerate()
-            .filter(|(position, _)| *position != index)
-            .map(|(_, line)| line.record.clone())
-            .collect();
-        crate::commands::store::persist("move", &locked, source, &survivors)?;
+            |locked, lines| {
+                let index = mulch::resolve_record_id(&lines, id)
+                    .map_err(|error| crate::commands::failure::resolve_failure("move", error))?;
+                let survivors: Vec<Value> = lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(position, _)| *position != index)
+                    .map(|(_, line)| line.record.clone())
+                    .collect();
+                crate::commands::store::persist("move", locked, source, &survivors)?;
 
-        // Target: the seam's append-verbatim policy (existing bytes
-        // preserved, newline guard included).
-        let mut moved = record_to_write.clone();
-        mulch::assign_missing_id(locked.registry(), &mut moved);
-        let line = serde_json::to_string(&moved).unwrap_or_default();
-        locked
-            .append_domain_line(target, &line)
-            .map_err(|source_err| {
-                Failure::handled("move", crate::output::chain_message(&source_err))
-            })?;
-        moved_opt = Some(moved);
+                // Target: the seam's append-verbatim policy (existing
+                // bytes preserved, newline guard included).
+                let mut moved = record_to_write.clone();
+                mulch::assign_missing_id(locked.registry(), &mut moved);
+                let line = serde_json::to_string(&moved).unwrap_or_default();
+                locked
+                    .append_domain_line(target, &line)
+                    .map_err(|source_err| {
+                        Failure::handled("move", crate::output::chain_message(&source_err))
+                    })?;
+                Ok(Some(moved))
+            },
+        )?;
     }
     // post-record with the WRITTEN record (move.ts:273-277): warn-only,
     // AFTER the locked scope dropped — outside every lock, like pre.
