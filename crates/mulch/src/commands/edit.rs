@@ -13,8 +13,10 @@ use crate::output::{Failure, print_json, print_line, success_envelope};
 /// the id, and succeeds as a no-op when no flags are given.
 pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     // The record-locator seam: open store, check domain, strict read
-    // (reference `readExpertiseFile`), resolve the id.
-    let (store, mut records, position) = locate_record(
+    // (reference `readExpertiseFile`), resolve the id. The canonical
+    // domain comes back with the read — every write below addresses
+    // it (an alias never creates a file, ADR-0006/mulch-8452).
+    let (store, domain, mut records, position) = locate_record(
         opts,
         "edit",
         &args.domain,
@@ -88,18 +90,18 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     // schema or nothing is written (reference edit.ts).
     let updated = Value::Object(record.clone());
     if let mulch::schema::FullVerdict::Invalid { subs, .. } =
-        store.updated_line_verdict(&args.domain, records[position].line, &updated)
+        store.updated_line_verdict(&domain, records[position].line, &updated)
     {
         return Err(updated_record_failed(&subs, opts.json));
     }
 
     records[position].record = updated;
     let payload: Vec<Value> = records.iter().map(|line| line.record.clone()).collect();
-    crate::commands::store::persist("edit", &store, &args.domain, &payload)?;
+    crate::commands::store::persist("edit", &store, &domain, &payload)?;
 
     if opts.json {
         let mut fields = serde_json::Map::new();
-        fields.insert("domain".into(), Value::String(args.domain.clone()));
+        fields.insert("domain".into(), Value::String(domain.clone()));
         fields.insert("id".into(), Value::String(resolved_id.clone()));
         fields.insert("type".into(), Value::String(record_type));
         fields.insert("record".into(), Value::Object(record));
@@ -107,7 +109,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     } else {
         print_line(
             opts.quiet,
-            &format!("✓ Updated {} {resolved_id} in {}", record_type, args.domain),
+            &format!("✓ Updated {record_type} {resolved_id} in {domain}"),
         );
     }
     Ok(())

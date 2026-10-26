@@ -1,7 +1,9 @@
 //! The store seam of the parity commands (mulch-3326): locating
 //! and opening the store (the no-store contracts, the writer
-//! lock), the strict domain reads with identifier resolution,
-//! the updated-record write gate, and the write-path law. One
+//! lock), the strict domain reads with identifier resolution, the
+//! one domain-addressing table ([`resolve_domain_set`] /
+//! [`ensure_domain`] / [`ensure_canonical`], mulch-8452), the
+//! updated-record write gate, and the write-path law. One
 //! owner for every `StoreFiles` lifecycle the commands share —
 //! the failure and format shapes live in [`super::failure`], the
 //! flag and prompt adapters in [`super::input`].
@@ -110,6 +112,17 @@ fn chain_message_from(error: &mulch::Error) -> String {
 /// unknown_domain_failure(...)` couple that lived in six commands
 /// across five files (move, archive, delete, prime, and edit/outcome
 /// through locate_record).
+/// The addressing table's single-domain arm: resolve the address onto
+/// its canonical domain (alias chains included, ADR-0006), require
+/// membership, and render the command's failure shape. Every
+/// single-domain entry (archive, delete, move's two ends, record's
+/// write path via [`super::store::open_store_mut`] callers) speaks
+/// through this, and the set arm wraps it (mulch-8452).
+///
+/// # Errors
+///
+/// [`unknown_domain_failure`]'s [`Failure`] when the address is not a
+/// configured domain.
 pub(crate) fn ensure_domain<'a>(
     command: &'static str,
     store: &'a mulch::StoreFiles,
@@ -118,18 +131,62 @@ pub(crate) fn ensure_domain<'a>(
     shape: DomainFailure,
 ) -> Result<&'a str, Failure> {
     // Aliases resolve FIRST (ADR-0006): the caller receives — and
-    // addresses files by — the canonical domain; a miss names the
-    // ALIAS the user typed. The return borrows from BOTH inputs: the
-    // canonical may live in the store's alias map or be the argument
-    // itself (a non-alias) — hence the twice-bound lifetime.
+    // addresses files by — the canonical domain. The return borrows
+    // from BOTH inputs: the canonical may live in the store's alias
+    // map or be the argument itself (a non-alias) — hence the
+    // twice-bound lifetime.
     let canonical = store.resolve_domain(domain);
+    ensure_canonical(command, store, canonical, json, shape)
+}
+
+/// The addressing table's check-only arm: prime resolves its names at
+/// ENTRY (for dedupe and the exclusion walk), so its validation must
+/// not walk the alias map a second time — membership is the whole
+/// check from there (mulch-8452: resolve once, validate once).
+///
+/// # Errors
+///
+/// [`unknown_domain_failure`]'s [`Failure`] when `canonical` is not a
+/// configured domain.
+pub(crate) fn ensure_canonical<'a>(
+    command: &'static str,
+    store: &mulch::StoreFiles,
+    canonical: &'a str,
+    json: bool,
+    shape: DomainFailure,
+) -> Result<&'a str, Failure> {
     let domains = store.domains();
-    if domains.iter().any(|d| d == canonical) {
+    if domains.iter().any(|domain| domain == canonical) {
         return Ok(canonical);
     }
     Err(unknown_domain_failure(
-        command, domain, &domains, json, shape,
+        command, canonical, &domains, json, shape,
     ))
+}
+
+/// The addressing table's set arm: `None` is every configured domain
+/// in config order, `Some(address)` the resolved canonical singleton.
+/// The four read-family commands (query, search, rank, ready) and
+/// compact's three modes each spelled this law by hand; this is the
+/// one body now (mulch-8452).
+///
+/// # Errors
+///
+/// [`unknown_domain_failure`]'s [`Failure`] when the address is not a
+/// configured domain.
+pub(crate) fn resolve_domain_set(
+    command: &'static str,
+    store: &mulch::StoreFiles,
+    wanted: Option<&str>,
+    json: bool,
+    shape: DomainFailure,
+) -> Result<Vec<String>, Failure> {
+    match wanted {
+        Some(wanted) => Ok(vec![
+            ensure_domain(command, store, wanted, json, shape)?.to_string(),
+        ]),
+        None => Ok(store.domains()),
+    }
 }
 
 /// A domain file's mtime as the section-header's `updated …` suffix
@@ -194,6 +251,13 @@ pub(crate) fn read_and_resolve(
 /// [`unknown_domain_failure`] and [`resolve_failure`]). `shape` and
 /// `config_message` select the unknown-domain and no-store wordings;
 /// the future per-record commands (query family) start here.
+///
+/// The CANONICAL domain comes back with the read (mulch-8452): the
+/// addressing table already resolved it, so a caller that writes must
+/// address the canonical rather than re-resolve the raw argument — an
+/// `edit`/`outcome` through an alias that wrote the RAW name would
+/// create a new alias-named file, the fragmentation ADR-0006 forbids
+/// (caught by the aliases entry batteries).
 pub(crate) fn locate_record(
     opts: &crate::cli::GlobalOpts,
     command: &'static str,
@@ -202,7 +266,7 @@ pub(crate) fn locate_record(
     shape: DomainFailure,
     config_message: bool,
     exclusive: bool,
-) -> Result<(mulch::StoreFiles, Vec<mulch::LineRecord>, usize), Failure> {
+) -> Result<(mulch::StoreFiles, String, Vec<mulch::LineRecord>, usize), Failure> {
     // Mutating callers (edit, outcome) hold the writer lock across
     // the whole cycle; the read family (query, mulch-16da) passes
     // false (mulch-228d).
@@ -211,10 +275,10 @@ pub(crate) fn locate_record(
     } else {
         open_store(command, config_message)?
     };
-    let domain = ensure_domain(command, &store, domain, opts.json, shape)?;
+    let domain = ensure_domain(command, &store, domain, opts.json, shape)?.to_string();
     let (records, position) =
-        read_and_resolve(command, &store, domain, id, opts.allow_unknown_types)?;
-    Ok((store, records, position))
+        read_and_resolve(command, &store, &domain, id, opts.allow_unknown_types)?;
+    Ok((store, domain, records, position))
 }
 
 /// The write-path law of the mutating commands (mulch-b6d5): rewrite
@@ -232,4 +296,171 @@ pub(crate) fn persist(
     store
         .rewrite_domain(domain, records)
         .map_err(|source| Failure::handled(command, chain_message_from(&source)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::testscratch::store_with;
+
+    /// The shared alias fixture: `dev`/`rust` domains with a chained
+    /// alias (develop -> dev, devloop -> develop) and a direct one
+    /// (rs -> rust).
+    fn alias_store(tag: &str) -> (std::path::PathBuf, mulch::StoreFiles) {
+        store_with(
+            tag,
+            "version: '1'\ndomains:\n  dev: {}\n  rust: {}\n\
+             domain_aliases:\n  develop: dev\n  devloop: develop\n  rs: rust\n",
+            true,
+        )
+    }
+
+    /// The table's all-arm: `None` is every configured domain in
+    /// config order — never alphabetical, never resolved.
+    #[test]
+    fn resolve_domain_set_none_is_all_in_config_order() {
+        let (root, store) = alias_store("set-all");
+        let all = resolve_domain_set("query", &store, None, false, DomainFailure::QueryHint)
+            .expect("all domains");
+        assert_eq!(all, vec!["dev".to_string(), "rust".to_string()]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The table's one-arm resolves alias CHAINS to the canonical
+    /// singleton and leaves real domains alone (ADR-0006).
+    #[test]
+    fn resolve_domain_set_resolves_aliases_to_the_canonical_singleton() {
+        let (root, store) = alias_store("set-alias");
+        let chained = resolve_domain_set(
+            "query",
+            &store,
+            Some("devloop"),
+            false,
+            DomainFailure::QueryHint,
+        )
+        .expect("alias");
+        assert_eq!(chained, vec!["dev".to_string()]);
+        let direct =
+            resolve_domain_set("query", &store, Some("rs"), false, DomainFailure::QueryHint)
+                .expect("direct alias");
+        assert_eq!(direct, vec!["rust".to_string()]);
+        let domain = resolve_domain_set(
+            "query",
+            &store,
+            Some("rust"),
+            false,
+            DomainFailure::QueryHint,
+        )
+        .expect("domain");
+        assert_eq!(domain, vec!["rust".to_string()]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A miss names the address the caller typed and lists the
+    /// configured domains (the read-family shape).
+    #[test]
+    fn resolve_domain_set_miss_names_the_address_and_lists_available() {
+        let (root, store) = alias_store("set-miss");
+        let Err(failure) = resolve_domain_set(
+            "query",
+            &store,
+            Some("nope"),
+            false,
+            DomainFailure::QueryHint,
+        ) else {
+            panic!("expected a miss");
+        };
+        assert!(
+            failure
+                .message
+                .contains("Domain \"nope\" not found in config."),
+            "{}",
+            failure.message
+        );
+        assert!(
+            failure.message.contains("Available domains: dev, rust"),
+            "{}",
+            failure.message
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The single arm and the set arm are ONE law: same address, same
+    /// shape, byte-identical failure text (the fold's whole point).
+    #[test]
+    fn single_and_set_arms_fail_identically() {
+        let (root, store) = alias_store("set-identical");
+        let Err(single) = ensure_domain("rank", &store, "nope", false, DomainFailure::RankHint)
+        else {
+            panic!("expected a miss");
+        };
+        let Err(set) =
+            resolve_domain_set("rank", &store, Some("nope"), false, DomainFailure::RankHint)
+        else {
+            panic!("expected a miss");
+        };
+        assert_eq!(single.message, set.message);
+        assert_eq!(single.envelope, set.envelope);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The check-only arm (prime's pre-resolved names) validates
+    /// membership without walking the alias map: a canonical passes,
+    /// an alias name does NOT resolve here (the caller already did).
+    #[test]
+    fn ensure_canonical_checks_membership_without_resolving() {
+        let (root, store) = alias_store("set-canonical");
+        assert_eq!(
+            ensure_canonical("prime", &store, "dev", false, DomainFailure::Prime {
+                excluded: false,
+            })
+            .expect("canonical"),
+            "dev"
+        );
+        assert!(
+            ensure_canonical("prime", &store, "develop", false, DomainFailure::Prime {
+                excluded: false,
+            })
+            .is_err(),
+            "an alias name is not a configured domain"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// compact's one-line arm (mulch-8452): capital `D`, NO available
+    /// list, no hint; the json envelope carries the bare sentence
+    /// (the handled law strips the `Error: ` prefix).
+    #[test]
+    fn compact_arm_carries_its_own_one_line_shape() {
+        let (root, store) = store_with("compact-arm", "version: '1'\ndomains:\n  dev: {}\n", true);
+        let Err(plain) = resolve_domain_set(
+            "compact",
+            &store,
+            Some("nope"),
+            false,
+            DomainFailure::Compact,
+        ) else {
+            panic!("expected a miss");
+        };
+        assert_eq!(plain.message, "Error: Domain \"nope\" not found in config.");
+        assert_eq!(
+            plain.envelope["error"],
+            serde_json::json!("Domain \"nope\" not found in config.")
+        );
+        let Err(json) = resolve_domain_set(
+            "compact",
+            &store,
+            Some("nope"),
+            true,
+            DomainFailure::Compact,
+        ) else {
+            panic!("expected a miss");
+        };
+        assert_eq!(json.message, "Domain \"nope\" not found in config.");
+        assert_eq!(
+            json.envelope["error"],
+            serde_json::json!("Domain \"nope\" not found in config.")
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

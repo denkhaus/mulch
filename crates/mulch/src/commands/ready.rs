@@ -10,13 +10,11 @@
 
 use std::cmp::Ordering;
 
-use mulch::{DomainSpec, date_ms, now_ms, time_ago};
+use mulch::{date_ms, now_ms, time_ago};
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::failure::{
-    DomainFailure, flag_value_failure, render_core_error, unknown_domain_failure,
-};
+use crate::commands::failure::{DomainFailure, flag_value_failure, render_core_error};
 use crate::commands::store::open_store;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -49,24 +47,13 @@ pub(crate) fn run(
     let domain = mulch::truthy_str(domain);
     let since = mulch::truthy_str(since);
 
-    let domains = store.domains();
-    let to_check = match domain {
-        // Aliases resolve onto canonical domains (ADR-0006).
-        Some(wanted) => mulch::domain_set(
-            &domains,
-            &DomainSpec::One(store.resolve_domain(wanted).to_string()),
-        )
-        .map_err(|unknown| {
-            unknown_domain_failure(
-                "ready",
-                &unknown.domain,
-                &unknown.available,
-                opts.json,
-                DomainFailure::ReadyOneLine,
-            )
-        })?,
-        None => domains,
-    };
+    let to_check = crate::commands::store::resolve_domain_set(
+        "ready",
+        &store,
+        domain,
+        opts.json,
+        DomainFailure::ReadyOneLine,
+    )?;
 
     let since_ms = match since {
         Some(raw) => Some(

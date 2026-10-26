@@ -381,3 +381,78 @@ fn incoming_references(
     }
     incoming
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::testscratch::store_with;
+
+    /// Inbound references over a seeded expertise dir (mulch-8452/E6,
+    /// pinning the entry law without the reference binary): every
+    /// OTHER domain file's records naming the id report their domain
+    /// and the field that named it; the source and target files are
+    /// skipped entirely; no id short-circuits.
+    #[test]
+    fn incoming_references_reports_other_domains_only() {
+        let (root, store) = store_with(
+            "incoming",
+            "version: '1'\ndomains:\n  dev: {}\n  rust: {}\n  other: {}\n",
+            true,
+        );
+        let record = |name: &str, relates: &str, supersedes: &str| {
+            format!(
+                "{{\"type\":\"pattern\",\"classification\":\"tactical\",\
+                 \"recorded_at\":\"2026-10-26T10:00:00.000Z\",\"name\":\"{name}\",\
+                 \"description\":\"d\",\"id\":\"mx-{name}\",\
+                 \"relates_to\":[{relates}],\"supersedes\":[{supersedes}]}}\n"
+            )
+        };
+        let expertise = root.join(".mulch/expertise");
+        std::fs::write(
+            expertise.join("dev.jsonl"),
+            record("source", "\"mx-target\"", ""),
+        )
+        .expect("source");
+        std::fs::write(
+            expertise.join("rust.jsonl"),
+            record("target", "\"mx-target\"", ""),
+        )
+        .expect("target");
+        std::fs::write(
+            expertise.join("other.jsonl"),
+            format!(
+                "{}{}",
+                record("a", "\"mx-target\"", ""),
+                record("b", "", "\"mx-target\"")
+            ),
+        )
+        .expect("other");
+
+        let dev = expertise.join("dev.jsonl");
+        let rust = expertise.join("rust.jsonl");
+        let incoming = incoming_references(
+            store.registry(),
+            &root.join(".mulch"),
+            &dev,
+            &rust,
+            Some("mx-target"),
+        );
+        assert_eq!(incoming.len(), 2, "{incoming:?}");
+        let fields: Vec<&str> = incoming
+            .iter()
+            .filter_map(|entry| entry.get("field").and_then(Value::as_str))
+            .collect();
+        assert_eq!(fields, vec!["relates_to", "supersedes"]);
+        for entry in &incoming {
+            assert_eq!(entry["domain"], serde_json::json!("other"), "{entry}");
+            assert!(
+                entry["id"].as_str().is_some_and(|id| id.starts_with("mx-")),
+                "{entry}"
+            );
+        }
+        // An id-less call (delete/id-less move) reports nothing.
+        let none = incoming_references(store.registry(), &root.join(".mulch"), &dev, &rust, None);
+        assert!(none.is_empty(), "no id reports nothing: {none:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+}

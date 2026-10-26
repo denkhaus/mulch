@@ -5,11 +5,10 @@
 //! `< minScore` skip, stable descending sort, slice to the limit.
 //! Probed live vs ml 0.10.7, 2026-10-23 (/tmp/opencode/childC).
 
-use mulch::DomainSpec;
 use serde_json::{Map, Value};
 
 use crate::cli::GlobalOpts;
-use crate::commands::failure::{DomainFailure, flag_value_failure, unknown_domain_failure};
+use crate::commands::failure::{DomainFailure, flag_value_failure};
 use crate::commands::store::open_store;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
@@ -38,24 +37,14 @@ pub(crate) fn run(
         .ok_or_else(|| flag_value_failure("rank", "min-score", "non-negative number", min_score))?;
 
     let store = open_store("rank", true)?;
-    let domains = store.domains();
-    let domains_to_rank = match domain {
-        // Aliases resolve onto canonical domains (ADR-0006).
-        Some(wanted) => mulch::domain_set(
-            &domains,
-            &DomainSpec::One(store.resolve_domain(wanted).to_string()),
-        )
-        .map_err(|unknown| {
-            unknown_domain_failure(
-                "rank",
-                &unknown.domain,
-                &unknown.available,
-                opts.json,
-                DomainFailure::RankHint,
-            )
-        })?,
-        None => domains,
-    };
+    // One addressing table (mulch-8452): resolve, check, render.
+    let domains_to_rank = crate::commands::store::resolve_domain_set(
+        "rank",
+        &store,
+        domain,
+        opts.json,
+        DomainFailure::RankHint,
+    )?;
 
     let mut ranked: Vec<RankedRecord> = Vec::new();
     for domain in domains_to_rank {

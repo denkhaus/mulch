@@ -20,7 +20,9 @@ pub(super) fn run(
     id: &str,
     flags: &OutcomeFlags,
 ) -> Result<(), Failure> {
-    let (store, records, position) = locate_record(
+    // The canonical domain comes back with the read: the append writes
+    // it, so an alias never creates a file (ADR-0006/mulch-8452).
+    let (store, domain, records, position) = locate_record(
         opts,
         "outcome",
         domain,
@@ -31,8 +33,8 @@ pub(super) fn run(
     )?;
 
     match flags.status.as_deref() {
-        Some(status) => append(opts, &store, records, position, domain, id, status, flags),
-        None => list(opts, &records, position, domain),
+        Some(status) => append(opts, &store, records, position, &domain, id, status, flags),
+        None => list(opts, &records, position, &domain),
     }
 }
 

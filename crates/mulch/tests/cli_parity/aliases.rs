@@ -194,3 +194,108 @@ fn doctor_fix_skips_alias_named_orphans() {
     let status = run_in(&dir.0, Path::new(mulch_bin()), &["status"]);
     assert_eq!(status.code, 0, "store still opens: {}", status.stderr);
 }
+
+/// A seeded canonical record for the entry-side batteries: `mx-abc123`
+/// in dev's file (the alias fixtures carry empty files).
+fn seed_canonical_record(dir: &Path, name: &str) {
+    let body = format!(
+        "{{\"type\":\"pattern\",\"classification\":\"tactical\",\
+         \"recorded_at\":\"2026-10-25T10:00:00.000Z\",\"name\":\"{name}\",\
+         \"description\":\"d\",\"id\":\"mx-abc123\"}}\n"
+    );
+    std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), body).expect("seed");
+}
+
+/// Archiving through an alias archives FROM the canonical: the record
+/// lands in `archive/dev.jsonl`, `dev.jsonl` empties, and no
+/// `archive/develop.jsonl` appears. Catches an archive entry that
+/// resolves the live file but not the archive path.
+#[test]
+fn archive_through_an_alias_uses_the_canonical_archive() {
+    let dir = alias_store("alias-archive");
+    seed_canonical_record(&dir.0, "archived");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &[
+        "archive",
+        "develop",
+        "mx-abc123",
+        "--reason",
+        "alias battery",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        !dir.0.join(".mulch/archive/develop.jsonl").exists(),
+        "no alias-named archive"
+    );
+    let archive = read_store_file(&dir.0, "archive/dev.jsonl");
+    assert!(archive.contains("alias battery"), "{archive}");
+    let live = read_store_file(&dir.0, "expertise/dev.jsonl");
+    assert!(!live.contains("mx-abc123"), "{live}");
+}
+
+/// Deleting through an alias empties the CANONICAL file and leaves no
+/// alias-named residue. Catches a delete that addresses the alias
+/// path (which would fail — no such file — or create one).
+#[test]
+fn delete_through_an_alias_empties_the_canonical_file() {
+    let dir = alias_store("alias-delete");
+    seed_canonical_record(&dir.0, "deleted");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &[
+        "delete",
+        "develop",
+        "mx-abc123",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let live = read_store_file(&dir.0, "expertise/dev.jsonl");
+    assert!(!live.contains("mx-abc123"), "{live}");
+    assert!(
+        !dir.0.join(".mulch/expertise/develop.jsonl").exists(),
+        "no alias-named file appears"
+    );
+}
+
+/// Editing through an alias updates the CANONICAL record — the write
+/// half of the resolution law. Catches an edit that reads through the
+/// alias and writes through the raw argument name.
+#[test]
+fn edit_through_an_alias_updates_the_canonical_record() {
+    let dir = alias_store("alias-edit");
+    seed_canonical_record(&dir.0, "before");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &[
+        "edit",
+        "develop",
+        "mx-abc123",
+        "--description",
+        "edited through the alias",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let live = read_store_file(&dir.0, "expertise/dev.jsonl");
+    assert!(live.contains("edited through the alias"), "{live}");
+    assert!(
+        !dir.0.join(".mulch/expertise/develop.jsonl").exists(),
+        "no alias-named file appears"
+    );
+}
+
+/// Appending an outcome through an alias writes the CANONICAL file —
+/// the second caller of the record-locator seam (mulch-8452), pinned
+/// separately so a regression in one entry cannot hide behind the
+/// edit battery.
+#[test]
+fn outcome_through_an_alias_writes_the_canonical_file() {
+    let dir = alias_store("alias-outcome");
+    seed_canonical_record(&dir.0, "outcome");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &[
+        "outcome",
+        "develop",
+        "mx-abc123",
+        "--status",
+        "success",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let live = read_store_file(&dir.0, "expertise/dev.jsonl");
+    assert!(live.contains("\"success\""), "{live}");
+    assert!(
+        !dir.0.join(".mulch/expertise/develop.jsonl").exists(),
+        "no alias-named file appears"
+    );
+}

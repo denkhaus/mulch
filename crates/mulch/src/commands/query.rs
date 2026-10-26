@@ -19,11 +19,11 @@
 //!   promotion for byte comparisons.
 
 use jiff::Timestamp;
-use mulch::{DomainSpec, RecordFilter};
+use mulch::RecordFilter;
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, QueryArgs};
-use crate::commands::failure::{DomainFailure, unknown_domain_failure};
+use crate::commands::failure::DomainFailure;
 use crate::commands::store::open_store;
 use crate::commands::truthy_owned;
 use crate::output::{Failure, print_json, print_line, success_envelope};
@@ -51,17 +51,14 @@ pub(super) fn run(opts: &GlobalOpts, args: &QueryArgs) -> Result<(), Failure> {
         }
         configured
     } else if let Some(domain) = mulch::truthy_str(args.domain.as_deref()) {
-        // Aliases resolve onto canonical domains (ADR-0006).
-        let domain = store.resolve_domain(domain);
-        mulch::domain_set(&configured, &DomainSpec::One(domain.to_string())).map_err(|unknown| {
-            unknown_domain_failure(
-                "query",
-                &unknown.domain,
-                &unknown.available,
-                opts.json,
-                DomainFailure::QueryHint,
-            )
-        })?
+        // One addressing table (mulch-8452): resolve, check, render.
+        crate::commands::store::resolve_domain_set(
+            "query",
+            &store,
+            Some(domain),
+            opts.json,
+            DomainFailure::QueryHint,
+        )?
     } else {
         return Err(Failure::handled_on_stderr(
             "query",

@@ -50,6 +50,11 @@ pub(crate) enum DomainFailure {
         /// Whether the name came from the exclusion walk.
         excluded: bool,
     },
+    /// compact's one-line arm (compact.ts): capital `D`, NO available
+    /// list, no hint — the json surface is the bare sentence through
+    /// the shared handled law (mulch-8452 grew the arm so compact's
+    /// private not-found body could join the table).
+    Compact,
 }
 
 /// The one unknown-domain failure: the available-list join, every
@@ -83,7 +88,14 @@ pub(crate) fn unknown_domain_failure(
     };
     // The one-line capital-D sentence: json output for every
     // shape, and `move`'s plain text prefixed with `Error: `.
-    let one_line = format!("{subject} \"{domain}\" not found in config. Available domains: {list}");
+    // compact's arm carries no available list (compact.ts's own
+    // not-found text, mulch-8452).
+    let one_line = match shape {
+        DomainFailure::Compact => format!("{subject} \"{domain}\" not found in config."),
+        _ => {
+            format!("{subject} \"{domain}\" not found in config. Available domains: {list}")
+        }
+    };
     // The read family's shared hint line (query, search, rank,
     // prime): it promotes THIS binary and names the config file.
     let hint = format!(
@@ -94,7 +106,10 @@ pub(crate) fn unknown_domain_failure(
         DomainFailure::Standard => {
             format!("Error: domain \"{domain}\" not found in config.\nAvailable domains: {list}")
         }
-        DomainFailure::Move => format!("Error: {one_line}"),
+        // `move` and `compact` both render the one-line capital-D
+        // sentence (the difference is only whether `one_line` carries
+        // the available list, decided above).
+        DomainFailure::Move | DomainFailure::Compact => format!("Error: {one_line}"),
         DomainFailure::WithHint => format!(
             "Error: domain \"{domain}\" not found in config.\nHint: Run `mulch add {domain}` to create it, or check `mulch status` for existing domains."
         ),

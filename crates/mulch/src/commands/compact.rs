@@ -41,7 +41,7 @@ use mulch::{CompactStrategy, LineRecord, record_summary_value};
 use serde_json::{Map, Value};
 
 use crate::cli::{CompactArgs, GlobalOpts};
-use crate::commands::failure::now_iso;
+use crate::commands::failure::{DomainFailure, now_iso};
 use crate::commands::hooks_surface::{HookPhase, print_hook_warnings};
 use crate::commands::store::{open_store, open_store_mut, read_domain_records};
 use crate::output::{Failure, print_json, print_line, success_envelope};
@@ -134,7 +134,13 @@ fn compact_failure(json: bool, message: impl AsRef<str>) -> Failure {
 /// `--analyze`: candidates across the given domain or all domains.
 fn analyze(opts: &GlobalOpts, domain: Option<&str>) -> Result<(), Failure> {
     let store = open_store("compact", true)?;
-    let domains = domain_check(&store, domain, opts.json)?;
+    let domains = crate::commands::store::resolve_domain_set(
+        "compact",
+        &store,
+        domain,
+        opts.json,
+        DomainFailure::Compact,
+    )?;
     let rule = stale_rule(&store);
     let now = jiff::Timestamp::now();
 
@@ -221,7 +227,13 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
     )?;
 
     let store = open_store_mut("compact", true)?;
-    let domains = domain_check(&store, args.domain.as_deref(), opts.json)?;
+    let domains = crate::commands::store::resolve_domain_set(
+        "compact",
+        &store,
+        args.domain.as_deref(),
+        opts.json,
+        DomainFailure::Compact,
+    )?;
     let rule = stale_rule(&store);
     let now = jiff::Timestamp::now();
 
@@ -508,7 +520,13 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
 /// `--apply`: replace `--records` with one explicit replacement.
 fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Failure> {
     let store = open_store_mut("compact", true)?;
-    domain_check(&store, Some(domain), opts.json)?;
+    crate::commands::store::resolve_domain_set(
+        "compact",
+        &store,
+        Some(domain),
+        opts.json,
+        DomainFailure::Compact,
+    )?;
 
     let Some(raw) = args.records.as_deref() else {
         return Err(compact_failure(
@@ -696,30 +714,6 @@ fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Fail
         );
     }
     Ok(())
-}
-
-/// The validated domain list: one domain or all, with the shared
-/// not-found error.
-fn domain_check(
-    store: &mulch::StoreFiles,
-    domain: Option<&str>,
-    json: bool,
-) -> Result<Vec<String>, Failure> {
-    let domains = store.domains();
-    match domain {
-        // Aliases resolve onto the canonical domain first (ADR-0006).
-        Some(domain) => {
-            let canonical = store.resolve_domain(domain);
-            domains
-                .iter()
-                .find(|d| *d == canonical)
-                .map(|_| vec![canonical.to_string()])
-                .ok_or_else(|| {
-                    compact_failure(json, format!("Domain \"{domain}\" not found in config."))
-                })
-        }
-        None => Ok(domains),
-    }
 }
 
 /// The strict positive-int flag law (rank's `parseStrictPositiveInt`).

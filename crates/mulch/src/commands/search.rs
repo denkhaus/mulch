@@ -23,11 +23,11 @@
 
 use jiff::Timestamp;
 use mulch::bm25::{Bm25Result, DEFAULT_BM25_PARAMS, search_bm25};
-use mulch::{DomainSpec, RecordFilter, apply_confirmation_boost};
+use mulch::{RecordFilter, apply_confirmation_boost};
 use serde_json::{Map, Value};
 
 use crate::cli::{GlobalOpts, SearchArgs};
-use crate::commands::failure::{DomainFailure, unknown_domain_failure};
+use crate::commands::failure::DomainFailure;
 use crate::commands::store::open_store;
 use crate::commands::truthy_owned;
 use crate::output::{Failure, print_json, print_line, success_envelope};
@@ -55,24 +55,14 @@ pub(super) fn run(opts: &GlobalOpts, args: &SearchArgs) -> Result<(), Failure> {
 
     let store = open_store("search", true)?;
     let boost_factor = effective_boost(&store, args.no_boost)?;
-    let configured = store.domains();
-    let domains = match domain_flag {
-        // Aliases resolve onto canonical domains (ADR-0006).
-        Some(domain) => mulch::domain_set(
-            &configured,
-            &DomainSpec::One(store.resolve_domain(domain).to_string()),
-        )
-        .map_err(|unknown| {
-            unknown_domain_failure(
-                "search",
-                &unknown.domain,
-                &unknown.available,
-                opts.json,
-                DomainFailure::SearchHint,
-            )
-        })?,
-        None => configured,
-    };
+    // One addressing table (mulch-8452): resolve, check, render.
+    let domains = crate::commands::store::resolve_domain_set(
+        "search",
+        &store,
+        domain_flag,
+        opts.json,
+        DomainFailure::SearchHint,
+    )?;
 
     let format =
         crate::commands::render::Format::parse(opts.format.as_deref().unwrap_or("markdown"));

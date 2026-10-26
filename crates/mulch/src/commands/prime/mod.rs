@@ -114,9 +114,12 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
         .and_then(|prime| prime.default_mode.clone());
 
     // Unknown-domain validation, requested first, then exclusions.
+    // The names are ALREADY canonical (resolved at entry above), so
+    // this is the table's check-only arm — no second alias walk
+    // (mulch-8452).
     let available = store.domains();
     for domain in &requested {
-        crate::commands::store::ensure_domain(
+        crate::commands::store::ensure_canonical(
             "prime",
             &store,
             domain,
@@ -125,7 +128,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
         )?;
     }
     for domain in &excluded {
-        crate::commands::store::ensure_domain(
+        crate::commands::store::ensure_canonical(
             "prime",
             &store,
             domain,
@@ -133,11 +136,25 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
             crate::commands::failure::DomainFailure::Prime { excluded: true },
         )?;
     }
-    let target_domains = mulch::domain_set(&available, &mulch::DomainSpec::Union {
+    let union = mulch::DomainSpec::Union {
         domains: requested,
-        exclude: excluded,
-    })
-    .unwrap_or_default();
+        exclude: excluded.clone(),
+    };
+    let target_domains = mulch::domain_set(&available, &union).map_err(|unknown| {
+        // Unreachable: every member was validated above. Rendering
+        // the table's own shape keeps a future desync honest instead
+        // of swallowing it (mulch-8452).
+        let excluded_hit = excluded.contains(&unknown.domain);
+        crate::commands::failure::unknown_domain_failure(
+            "prime",
+            &unknown.domain,
+            &unknown.available,
+            json_mode,
+            crate::commands::failure::DomainFailure::Prime {
+                excluded: excluded_hit,
+            },
+        )
+    })?;
 
     // --context resolves the changed-file set before the budget parse.
     let mut files_to_filter: Option<Vec<String>> = None;
