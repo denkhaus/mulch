@@ -69,7 +69,9 @@ impl Failure {
     /// the bare message ([`Failure::handled`] strips the prefix this
     /// adds). `message` takes `Display` (not `Into<String>` like the
     /// siblings) because the ctor interpolates it — pass the value,
-    /// never a `format!` of it. Sites with MULTI-LINE or hint-carrying
+    /// never a `format!` of it (composing STATIC text with a source
+    /// value is fine, cf. `store::cwd_failure`; the rule bans
+    /// double-interpolation). Sites with MULTI-LINE or hint-carrying
     /// wordings (`commands::failure`'s domain shapes) deliberately
     /// stay on `handled*` — the deviators are visible by not calling
     /// this.
