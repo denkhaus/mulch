@@ -100,6 +100,16 @@ Trigger a grilling round whenever a **load-bearing decision** is open (scope,
 architecture direction, milestone content, go/no-go):
 
 - Use the **grilling** skill (rounds, whole frontier, recommended answers).
+- **Questions go through the question tool, ALWAYS (user directive
+  2026-10-26)**: every grilling question is a structured selection —
+  the RECOMMENDED option first (labelled "(Recommended)"), the real
+  alternatives as further options, `multiple: true` where several
+  choices combine. Free-text question lists in chat are OUT; chat
+  carries the context AROUND a question (why it is load-bearing, what
+  the frontier is), the question tool carries the question itself.
+  Rationale: overview — the user answers decisions in one place with
+  one click each, and the recommendation is visible before the
+  alternatives.
 - Rust design decisions (API shape, errors, async, traits, newtypes) start
   from the **rust-style-guide**: load the relevant guideline pages FIRST —
   policy pages constrain the options a grilling round may weigh. A decision

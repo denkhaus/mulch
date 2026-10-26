@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "rust-security": {
+      "source": "mohitmishra786/low-level-dev-skills",
+      "sourceType": "github",
+      "skillPath": "skills/rust/rust-security/SKILL.md",
+      "computedHash": "3c3763fbb2da225b1286304e42bae6d95201e1a1fdc15d7550eee5ab337394f6"
+    }
+  }
+}
