@@ -1,6 +1,6 @@
 ---
 name: iterate
-description: 'The mulch LOCAL development loop (independent of the fabro develop line). Drive the project forward in sprints: grilling sessions with docs at decision points, implementation in working mode (git commits, mulch, seeds, quality gates), automatic code-review after every sprint, improve-codebase-architecture after every 3rd sprint, and a self-reflection phase that evolves this skill from session learnings. Runs when the user says "iterate", "weiter", "mach weiter", or asks to advance the project.'
+description: 'The mulch LOCAL development loop (independent of the fabro develop line). Drive the project forward in sprints: grilling sessions with docs at decision points, implementation in working mode (git commits, mulch, seeds, quality gates), automatic code-review after every sprint, improve-codebase-architecture after every 3rd sprint, a rust-security review after every 5th sprint, and a self-reflection phase that evolves this skill from session learnings. Runs when the user says "iterate", "weiter", "mach weiter", or asks to advance the project.'
 ---
 
 # Iterate — the mulch local development loop
@@ -315,7 +315,10 @@ closeout — both sprint-49 incidents (the checkout that silently
 reverted a seed, the rebase ours/theirs loss) were caught by exactly
 this comparison.
 
-## 5. Architecture gate — every 3rd sprint
+## 5. Review cadences — code review every sprint, arch gate every 3rd, rust-security every 5th
+
+After EVERY sprint close run the **code-review** skill (both axes —
+see step 4); set `last_code_review_at_sprint` in the state file.
 
 After every **3 completed sprints** (sprint count from the state file), run
 the **improve-codebase-architecture** skill (global): explorer subagent, HTML report served on a localhost URL
@@ -326,6 +329,18 @@ every STRONG candidate becomes a seed IMMEDIATELY; WORTH-EXPLORING findings
 are the loop's own relevance call — seed them when they connect to an
 active theme or an old seed, skip them otherwise; Speculative ones stay
 referenced by their existing seed/ADR. Reset nothing — sprints keep counting.
+
+After every **5 completed sprints** (user directive 2026-10-26), run the
+**rust-security** skill: a supply-chain + memory-safety pass over the
+workspace — `cargo audit` (RUSTSEC advisories) and the cargo-deny
+policies if configured, plus a review of every dependency the last
+5 sprints ADDED or bumped (`git log --oneline -20 -- '**/Cargo.toml'`
+and the lockfile diff for the span). Findings become seeds (filer files
+unassigned); the pass itself sets `last_rust_security_review_at_sprint`
+in the state file — with `null` as the starting point, the FIRST review
+fires at the next multiple of 5 (sprint 55). Clean runs record the
+outcome as a mulch decision (`dev-loop`) so the next gate knows the
+baseline.
 
 ## 6. Reflect — self-evolution of this skill
 
@@ -444,27 +459,49 @@ found in a handoff-shaped file belongs in one of those four.
   "sprints_reflected": <int>,
   "last_arch_review_at_sprint": <int|null>,
   "last_reflection": "<date>",
-  "notes": []
+  "last_code_review_at_sprint": <int|null>,
+  "last_rust_security_review_at_sprint": <int|null>,
+  "sprints": [{"sprint": <int>, "notes": ["…", …]}],
+  "last_test_count": <int>
 }
 ```
+
+The state's unit is the SPRINT OBJECT `{"sprint": N, "notes": […]}`
+(user directive 2026-10-26, structure ported from fabro): a sprint can
+carry SEVERAL notes (the close note, a gate note, a correction), the
+record doubles as its own archive row, and further fields get
+introduced per need without touching the rotation script.
 
 Increment `sprints_completed` when a sprint's ticket closes; set
 `sprints_reflected = sprints_completed` when its reflection ran. Invariant:
 `sprints_reflected >= sprints_completed - 1` after every session step, and
 equal after a reflection. ORIENT refuses to start a sprint while
-`sprints_reflected < sprints_completed`. Trigger step 5 when
-`sprints_completed % 3 == 0` and `last_arch_review_at_sprint !=
-sprints_completed`.
+`sprints_reflected < sprints_completed`.
 
-**Notes rotate (ported from brightctl 2026-10-17):** the state file keeps
-the **last 10** notes; older ones move to `.iterate-state-archive.jsonl`
-as JSONL (history stays git-diffable, one `{"note": …}` record per line,
-oldest first). Deterministic and idempotent: `nu
-scripts/rotate-sprint-notes.nu` (just: `just rotate-notes`, `-dry` to
-preview). Run it after every sprint close when `notes > 10` — 41 notes
-had grown the state file to 33 KB, read whole at every session start.
-The script needs no entry in the reflection procedure: it changes the
-file, not the loop.
+**Review cadences (all tracked by their `last_*_at_sprint` field):**
+- **code review** (the code-review skill, both axes) — EVERY sprint
+  close; set `last_code_review_at_sprint = sprints_completed`.
+- **architecture gate** (improve-codebase-architecture, explorer +
+  candidates → seeds) — trigger when `sprints_completed % 3 == 0` and
+  `last_arch_review_at_sprint != sprints_completed`; the field moves
+  only when the filings land.
+- **rust-security review** (the rust-security skill: cargo-audit /
+  cargo-deny over the workspace, RUSTSEC advisories, and a supply-chain
+  pass over the dependencies the last 5 sprints added or bumped —
+  findings become seeds, the outcome a mulch record) — trigger when
+  `sprints_completed % 5 == 0` and `last_rust_security_review_at_sprint
+  != sprints_completed`; set the field when the review's findings are
+  filed/recorded. First due at sprint 55.
+
+**Notes rotate:** the state file keeps the **last 10** SPRINTS; older
+ones move to `.iterate-state-archive.jsonl` as JSONL (history stays
+git-diffable, ONE `{"sprint": …, "notes": […]}` record per line,
+oldest first, the sprint's whole notes array verbatim). Deterministic
+and idempotent (dedup by sprint id, archive written before the state):
+`nu scripts/rotate-sprint-notes.nu` (just: `just rotate-notes`, `-dry`
+to preview). Run it after every sprint close when the state holds more
+than 10 sprint objects. The script needs no entry in the reflection
+procedure: it changes the file, not the loop.
 
 ## Pointers (read, don't duplicate)
 
