@@ -302,8 +302,9 @@ impl StoreFiles {
 
     /// The alias names whose chain ends at `canonical`, in CONFIG
     /// order — the read-view merge's file order (mulch-7112). A chain
-    /// contributes every member: `devloop -> develop -> dev` yields
-    /// `[develop, devloop]` for `dev`.
+    /// contributes every member; the order is the block's, never the
+    /// chain's: for `devloop: develop` declared before
+    /// `develop: dev`, `aliases_of("dev")` is `[devloop, develop]`.
     #[must_use]
     pub fn aliases_of(&self, canonical: &str) -> Vec<&str> {
         self.alias_pairs

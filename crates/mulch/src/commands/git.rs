@@ -100,7 +100,7 @@ pub(crate) fn commit(cwd: &Path, message: &str) -> Result<String, GitError> {
 /// `args` in `cwd`; `None` on any failure — spawn error, non-zero
 /// exit, non-UTF-8 stdout. The reference's per-call try/catch with
 /// an empty fallback.
-pub(super) fn run(cwd: &Path, args: &[&str]) -> Option<String> {
+pub(crate) fn run(cwd: &Path, args: &[&str]) -> Option<String> {
     let output = git(cwd, args).output().ok()?;
     if !output.status.success() {
         return None;
@@ -215,6 +215,14 @@ mod tests {
         assert!(!is_git_repo(&outside));
         let repo = scratch_repo("inside");
         assert!(is_git_repo(&repo));
+    }
+
+    /// sync.ts:29-40's catch arm: outside a repository, changes read
+    /// as false — never an error, never a panic.
+    #[test]
+    fn has_changes_law_is_false_outside_a_repo() {
+        let outside = scratch_dir("haschanges-outside");
+        assert!(!has_changes(&outside));
     }
 
     #[test]

@@ -552,26 +552,37 @@ mod tests {
         let (root, _store) = alias_store("phase-lock");
         let mulch_dir = root.join(".mulch");
         in_scratch_cwd(&root, || {
-            locked_write_phase("record", false, "dev", false, |_locked, existing| {
-                assert!(existing.is_empty(), "the strict re-read is delivered");
-                let contender_dir = mulch_dir.clone();
-                let contender = std::thread::spawn(move || {
-                    // Takes the 5s acquire budget or fails — either
-                    // way it cannot finish while this closure holds
-                    // the lock.
-                    drop(mulch::lock::WriterLock::acquire(&contender_dir));
-                });
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                assert!(
-                    !contender.is_finished(),
-                    "the writer lock is held during the mutation"
-                );
-                Ok(())
-            })
-            .expect("phase runs");
+            // Boundary timeout, never a sleep: the contender signals
+            // ONLY after acquiring; while the mutation holds the lock
+            // the channel must stay silent.
+            let (held_tx, held_rx) = std::sync::mpsc::channel();
+            let contender =
+                locked_write_phase("record", false, "dev", false, |_locked, existing| {
+                    assert!(existing.is_empty(), "the strict re-read is delivered");
+                    let contender_dir = mulch_dir.clone();
+                    let contender = std::thread::spawn(move || {
+                        // The 5s acquire budget waits out this closure's
+                        // lock; the send happens only on acquisition.
+                        drop(mulch::lock::WriterLock::acquire(&contender_dir));
+                        held_tx.send(()).expect("sender alive");
+                    });
+                    assert!(
+                        held_rx
+                            .recv_timeout(std::time::Duration::from_millis(150))
+                            .is_err(),
+                        "the writer lock is held during the mutation"
+                    );
+                    // The handle rides out of the phase for the join below.
+                    Ok(contender)
+                })
+                .expect("phase runs");
+            // The lock dropped with the phase: the contender acquires
+            // within its budget and signals.
+            held_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("the lock is released after the phase");
+            contender.join().expect("contender thread");
         });
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        drop(mulch::lock::WriterLock::acquire(&mulch_dir).expect("released after the phase"));
         std::fs::remove_dir_all(&root).ok();
     }
 
