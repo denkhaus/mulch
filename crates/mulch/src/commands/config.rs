@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 
 use serde_yaml::Mapping;
 
-use crate::cli::GlobalOpts;
+use crate::cli::{ConfigSub, GlobalOpts};
 use crate::output::{EXIT_ERROR, Failure, print_json};
 
 /// The MulchConfig JSON Schema, pinned byte-for-byte from
@@ -51,53 +51,10 @@ fn schema() -> &'static serde_json::Value {
     })
 }
 
-/// The `config` subcommand surface (reference commander tree,
-/// config.ts:11-97). clap wording for help/errors is the documented
-/// deviation family (README DEVIATIONS); the flag/argument shapes
-/// match the reference.
-#[derive(Debug, clap::Subcommand)]
-pub(crate) enum ConfigSub {
-    /// Emit MulchConfig JSON Schema for warren and other config-UI
-    /// consumers.
-    Schema,
-
-    /// Emit the effective MulchConfig as JSON. Pass --path to read a
-    /// single knob; falls back to the schema default when the knob is
-    /// unset.
-    Show {
-        /// Dot-notation path to a single knob (e.g.
-        /// governance.max_entries, search.boost_factor).
-        #[arg(long)]
-        path: Option<String>,
-    },
-
-    /// Set a config knob via dot-notation path. <value> is
-    /// YAML-parsed; the resulting config is validated against the
-    /// schema before an atomic write under the writer lock.
-    Set {
-        /// Dot-notation path (e.g. governance.max_entries,
-        /// search.boost_factor, domains.warren.allowed_types).
-        path: String,
-
-        /// YAML-parsed value to set at <path>.
-        // allow_hyphen_values: commander passes `-1`-shaped values
-        // through to the YAML parse (probed); clap would abort
-        // pre-dispatch.
-        #[arg(allow_hyphen_values = true)]
-        value: String,
-    },
-
-    /// Remove a config knob via dot-notation path so subsequent reads
-    /// fall back to the schema default. Idempotent — unsetting a
-    /// never-set path is a silent no-op.
-    Unset {
-        /// Dot-notation path (e.g. search.boost_factor, domains.warren,
-        /// hooks.pre-record).
-        path: String,
-    },
-}
-
-/// Runs `config` (all four subcommands).
+/// Runs `config` (all four subcommands; the subcommand surface lives
+/// in `cli.rs` with the other clap types — reference commander tree,
+/// config.ts:11-97, clap wording for help/errors is the documented
+/// deviation family, README DEVIATIONS).
 pub(crate) fn run(opts: &GlobalOpts, sub: &ConfigSub) -> Result<(), Failure> {
     match sub {
         ConfigSub::Schema => {

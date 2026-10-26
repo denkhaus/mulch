@@ -263,11 +263,11 @@ pub(crate) enum Command {
     /// Read and write .mulch/mulch.config.yaml (mulch-176f).
     Config {
         #[command(subcommand)]
-        command: crate::commands::config::ConfigSub,
+        command: ConfigSub,
     },
 
     /// Show expertise record changes since a git ref (mulch-176f).
-    Diff(crate::commands::diff_cmd::DiffArgs),
+    Diff(DiffArgs),
 
     /// Validate, stage, and commit .mulch/ changes (mulch-176f).
     Sync {
@@ -761,6 +761,59 @@ pub(crate) struct OnboardArgs {
     /// Check if the onboarding snippet is installed and up to date.
     #[arg(long)]
     pub(crate) check: bool,
+}
+
+/// Flags of `mulch diff` (reference surface, diff.ts:109).
+#[derive(Debug, clap::Args)]
+pub(crate) struct DiffArgs {
+    /// Git ref to diff against.
+    // allow_hyphen_values: commander passes `-ref`-shaped values
+    // through (probed family, cli.rs); clap would abort pre-dispatch.
+    #[arg(long, default_value = "HEAD~1", allow_hyphen_values = true)]
+    pub(crate) since: String,
+}
+
+/// match the reference.
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum ConfigSub {
+    /// Emit MulchConfig JSON Schema for warren and other config-UI
+    /// consumers.
+    Schema,
+
+    /// Emit the effective MulchConfig as JSON. Pass --path to read a
+    /// single knob; falls back to the schema default when the knob is
+    /// unset.
+    Show {
+        /// Dot-notation path to a single knob (e.g.
+        /// governance.max_entries, search.boost_factor).
+        #[arg(long)]
+        path: Option<String>,
+    },
+
+    /// Set a config knob via dot-notation path. <value> is
+    /// YAML-parsed; the resulting config is validated against the
+    /// schema before an atomic write under the writer lock.
+    Set {
+        /// Dot-notation path (e.g. governance.max_entries,
+        /// search.boost_factor, domains.warren.allowed_types).
+        path: String,
+
+        /// YAML-parsed value to set at <path>.
+        // allow_hyphen_values: commander passes `-1`-shaped values
+        // through to the YAML parse (probed); clap would abort
+        // pre-dispatch.
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
+
+    /// Remove a config knob via dot-notation path so subsequent reads
+    /// fall back to the schema default. Idempotent — unsetting a
+    /// never-set path is a silent no-op.
+    Unset {
+        /// Dot-notation path (e.g. search.boost_factor, domains.warren,
+        /// hooks.pre-record).
+        path: String,
+    },
 }
 
 /// Outcome flags of `record --outcome-*` and the `outcome` command.

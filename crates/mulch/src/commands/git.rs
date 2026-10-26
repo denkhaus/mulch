@@ -21,13 +21,6 @@
 //! keeps its `gh pr view` probe in `utils/active-work.ts` (line
 //! 113), off `utils/git.ts` — see `active_work::resolve_gh`.
 
-// 176f prep (mulch-cc7a): the sync write laws land ahead of their
-// only consumer (`ml sync`), like the render seam before them.
-#![allow(
-    dead_code,
-    reason = "176f prep (mulch-cc7a): the sync laws land ahead of `ml sync`"
-)]
-
 use std::path::Path;
 
 /// A failed git invocation from a write law — the Rust side of the

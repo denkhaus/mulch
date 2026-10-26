@@ -340,6 +340,15 @@ expectation (the parity rule: never silently):
   `upToDate` are `null` (unknown), `updated` is `false`, plus a
   `note` explaining the divergence. Expectation: no network access,
   no install, exit 0, the report above.
+- **`diff` sorts domains by bytes, not locale collation.** The
+  reference orders diff sections with JS `localeCompare`; we order by
+  raw bytes — identical for same-case domain names (the probed set:
+  `_`-leading, embedded hyphens), observably different only for MIXED
+  case (`Beta` sorts before `asset` here, after in the reference's
+  collation). Byte order is environment-independent; ICU collation is
+  not worth the dependency. Expectation: same order as the reference
+  for same-case domains, our pinned order for mixed case (pinned
+  ungated by `diff_sorts_domains_by_bytes_not_locale_collation`).
 - **`completions` word lists name THIS binary's implemented
   commands.** The reference's hand-rolled scripts (not commander's
   generator — template bytes are otherwise identical for bash, zsh,

@@ -30,19 +30,9 @@
 
 use serde_json::{Map, Value};
 
-use crate::cli::GlobalOpts;
+use crate::cli::{DiffArgs, GlobalOpts};
 use crate::commands::failure::summary_text;
 use crate::output::{Failure, print_json, print_line, success_envelope};
-
-/// Flags of `mulch diff` (reference surface, diff.ts:109).
-#[derive(Debug, clap::Args)]
-pub(crate) struct DiffArgs {
-    /// Git ref to diff against.
-    // allow_hyphen_values: commander passes `-ref`-shaped values
-    // through (probed family, cli.rs); clap would abort pre-dispatch.
-    #[arg(long, default_value = "HEAD~1", allow_hyphen_values = true)]
-    pub(crate) since: String,
-}
 
 /// One domain's diff entry (diff.ts:10-14): the FULL parsed records,
 /// not projections — the json envelope ships them verbatim.
@@ -282,9 +272,12 @@ pub(crate) fn parse_expertise_diff(diff_output: &str) -> Vec<DiffEntry> {
         .into_iter()
         .filter(|entry| !entry.added.is_empty() || !entry.removed.is_empty())
         .collect();
-    // The reference sorts with localeCompare; byte order agrees on the
-    // domain charset [a-zA-Z0-9_-] (probe-pinned incl. `_`-leading
-    // and embedded-hyphen names) and stays environment-independent.
+    // DEVIATION (README): the reference sorts with localeCompare, we
+    // by bytes — identical for same-case domain names (the probe set:
+    // `_`-leading, embedded hyphens), observably different only for
+    // MIXED case (`Beta` sorts before `asset` here, after in the
+    // reference's collation). Byte order is environment-independent;
+    // ICU collation is not worth the dependency.
     kept.sort_by(|a, b| a.domain.cmp(&b.domain));
     kept
 }

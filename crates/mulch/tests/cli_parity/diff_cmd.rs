@@ -340,3 +340,50 @@ fn diff_id_less_record_and_broken_custom_types() {
         our.stderr
     );
 }
+
+/// The documented sort DEVIATION (README): the reference sorts domains
+/// with localeCompare, we by bytes — identical for same-case names,
+/// observably different for MIXED case (`Beta` before `asset` here).
+/// This pin holds OUR order so the divergence is a decision, not an
+/// accident; a same-case twin stays reference-covered above.
+#[test]
+fn diff_sorts_domains_by_bytes_not_locale_collation() {
+    let dir = TempDir::new("diff-mixed-case");
+    let config = "version: '1'\ndomains:\n  asset: {}\n  Beta: {}\n";
+    super::support::write_seed_with_config(&dir.0, config, &[("asset", ""), ("Beta", "")]);
+    let git = |args: &[&str]| {
+        let output = std::process::Command::new("git")
+            .args(["-c", "core.hooksPath=/dev/null"])
+            .args(args)
+            .current_dir(&dir.0)
+            .output()
+            .expect("fixture git");
+        assert!(output.status.success(), "fixture git {args:?}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    git(&["add", ".mulch/"]);
+    git(&["commit", "-qm", "seed"]);
+    let body = |name: &str| {
+        format!(
+            "{{\"type\":\"pattern\",\"classification\":\"tactical\",\
+             \"recorded_at\":\"2026-10-26T10:00:00.000Z\",\"name\":\"{name}\",\
+             \"description\":\"d\"}}\n"
+        )
+    };
+    std::fs::write(dir.0.join(".mulch/expertise/asset.jsonl"), body("a")).expect("asset");
+    std::fs::write(dir.0.join(".mulch/expertise/Beta.jsonl"), body("b")).expect("Beta");
+    git(&["add", ".mulch/"]);
+    git(&["commit", "-qm", "records"]);
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &[
+        "diff", "--since", "HEAD~1",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    // BYTE order: `Beta` (0x42) before `asset` (0x61) — the reference's
+    // collation would print asset first.
+    let beta_at = run.stdout.find("Beta").expect("Beta section");
+    let asset_at = run.stdout.find("asset").expect("asset section");
+    assert!(beta_at < asset_at, "byte order: {}", run.stdout);
+}
