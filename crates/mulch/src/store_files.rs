@@ -107,20 +107,25 @@ pub enum StoreLocation {
 /// Embedders that mutate a store must open it exclusively.
 #[derive(Debug)]
 pub struct StoreFiles {
-    root:     PathBuf,
-    config:   Config,
+    root:        PathBuf,
+    config:      Config,
     /// The merged type registry (builtins + validated custom_types),
     /// built once at open (mulch-b4bd).
-    registry: crate::ids::Registry,
+    registry:    crate::ids::Registry,
     /// The validated alias -> canonical map (ADR-0006): built once at
     /// open from `domain_aliases`; resolution is transitive and
     /// acyclic by construction.
-    aliases:  std::collections::HashMap<String, String>,
+    aliases:     std::collections::HashMap<String, String>,
+    /// The validated alias -> canonical pairs of the
+    /// `domain_aliases` block (ADR-0006), in CONFIG order — the
+    /// read-view merge's file order (mulch-7112). The [`Self::aliases`]
+    /// map above owns resolution; this list owns order.
+    alias_pairs: Vec<(String, String)>,
     /// The writer lock held by exclusive sessions; `None` for
     /// read-only sessions. Held for its drop side effect — releasing
     /// the lock — never read.
     #[expect(dead_code, reason = "holding the lock is the field's whole purpose")]
-    lock:     Option<crate::lock::WriterLock>,
+    lock:        Option<crate::lock::WriterLock>,
 }
 
 impl StoreFiles {
@@ -177,15 +182,20 @@ impl StoreFiles {
         let config = Config::parse(&text)?;
         config.ensure_supported()?;
         let registry = crate::ids::Registry::from_config(&config)?;
-        let aliases = config
-            .validated_domain_aliases()?
-            .into_iter()
+        // Both alias shapes at open (mulch-7112): the pairs keep the
+        // block's CONFIG order (the read-view merge's file order), the
+        // map owns O(1) resolution.
+        let alias_pairs = config.validated_domain_aliases()?;
+        let aliases = alias_pairs
+            .iter()
+            .cloned()
             .collect::<std::collections::HashMap<_, _>>();
         Ok(StoreLocation::Open(Self {
             root: root.to_path_buf(),
             config,
             registry,
             aliases,
+            alias_pairs,
             lock,
         }))
     }
@@ -288,6 +298,69 @@ impl StoreFiles {
     #[must_use]
     pub fn alias_target_of(&self, domain: &str) -> Option<&str> {
         self.aliases.get(domain).map(String::as_str)
+    }
+
+    /// The alias names whose chain ends at `canonical`, in CONFIG
+    /// order — the read-view merge's file order (mulch-7112). A chain
+    /// contributes every member: `devloop -> develop -> dev` yields
+    /// `[develop, devloop]` for `dev`.
+    #[must_use]
+    pub fn aliases_of(&self, canonical: &str) -> Vec<&str> {
+        self.alias_pairs
+            .iter()
+            .map(|(alias, _)| alias.as_str())
+            .filter(|alias| self.resolve_domain(alias) == canonical)
+            .collect()
+    }
+
+    /// The canonical's READ VIEW (ADR-0006's deferred half,
+    /// mulch-7112): the canonical file's strict records, then every
+    /// alias-named file whose chain ends at the canonical — config
+    /// order, missing files contribute nothing. The view exists for
+    /// consumers that treat a domain's records as a SET (the read
+    /// family: query, search, rank, ready, prime, status); writers
+    /// and per-file laws stay on [`StoreFiles::read_records`] —
+    /// merging files would be the destructive healing ADR-0006
+    /// forbids, and line-addressed consumers (edit's write gate,
+    /// doctor's integrity passes) must keep physical per-file lines.
+    ///
+    /// No dedup: a record copied into both files surfaces twice
+    /// (healing is destructive and forbidden; the duplicate is the
+    /// store's own state, made visible rather than silently
+    /// repaired). `domain` may be an alias — it resolves first.
+    ///
+    /// # Errors
+    ///
+    /// [`StoreFiles::read_records`]' errors, from whichever file
+    /// fails the strict read.
+    pub fn read_view(&self, domain: &str, allow_unknown: bool) -> Result<Vec<LineRecord>> {
+        let canonical = self.resolve_domain(domain);
+        let mut records = self.read_records(canonical, allow_unknown)?;
+        for alias in self.aliases_of(canonical) {
+            records.extend(self.read_records(alias, allow_unknown)?);
+        }
+        Ok(records)
+    }
+
+    /// The read view's modification time: the NEWEST mtime among the
+    /// canonical file and the alias-named files that contributed to
+    /// it (mulch-7112) — a view that changed through an alias file
+    /// must not stamp the canonical file's older mtime. `None` when
+    /// no file of the view exists.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Read`] when an existing file's metadata cannot be
+    /// read.
+    pub fn view_modified(&self, domain: &str) -> Result<Option<std::time::SystemTime>> {
+        let canonical = self.resolve_domain(domain);
+        let mut newest = self.domain_modified(canonical)?;
+        for alias in self.aliases_of(canonical) {
+            if let Some(mtime) = self.domain_modified(alias)? {
+                newest = Some(newest.map_or(mtime, |current| current.max(mtime)));
+            }
+        }
+        Ok(newest)
     }
 
     /// Live domain names in config order.
@@ -1074,6 +1147,152 @@ mod tests {
             }
             other => panic!("expected open, got {other:?}"),
         }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The read-view merge's ORDER law (mulch-7112): aliases_of lists
+    /// every chain member that ends at the canonical, in CONFIG
+    /// order — never map order, never sorted.
+    #[test]
+    fn aliases_of_lists_chain_members_in_config_order() {
+        let (root, store) = alias_store(
+            "aliases-of",
+            "domain_aliases:\n  devloop: develop\n  rs: rust\n  develop: dev\n",
+        );
+        // devloop is declared BEFORE develop; both end at dev.
+        assert_eq!(store.aliases_of("dev"), vec!["devloop", "develop"]);
+        assert_eq!(store.aliases_of("rust"), vec!["rs"]);
+        assert!(
+            store.aliases_of("nope").is_empty(),
+            "no aliases of an unknown domain"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The read view (mulch-7112): the canonical file's records first,
+    /// then every alias-named file in config order; missing alias
+    /// files contribute nothing; an alias ADDRESS resolves first.
+    #[test]
+    fn read_view_orders_canonical_then_alias_files_in_config_order() {
+        let (root, store) = alias_store(
+            "view-order",
+            "domain_aliases:\n  devloop: develop\n  develop: dev\n",
+        );
+        let expertise = root.join(".mulch/expertise");
+        std::fs::create_dir_all(&expertise).expect("dir");
+        let record = |name: &str| {
+            format!(
+                "{{\"type\":\"pattern\",\"classification\":\"tactical\",\
+                 \"recorded_at\":\"2026-10-26T10:00:00.000Z\",\"name\":\"{name}\",\
+                 \"description\":\"d\"}}\n"
+            )
+        };
+        std::fs::write(expertise.join("dev.jsonl"), record("canonical")).expect("dev");
+        std::fs::write(expertise.join("devloop.jsonl"), record("first-declared")).expect("devloop");
+        std::fs::write(expertise.join("develop.jsonl"), record("second-declared"))
+            .expect("develop");
+        let names = |domain: &str| {
+            store
+                .read_view(domain, false)
+                .expect("view")
+                .iter()
+                .map(|line| line.record["name"].as_str().expect("name").to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names("dev"),
+            vec!["canonical", "first-declared", "second-declared"],
+            "canonical first, then config order"
+        );
+        assert_eq!(
+            names("devloop"),
+            vec!["canonical", "first-declared", "second-declared"],
+            "an alias address resolves before the view"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The view's read policy is per-file identical (mulch-7112): a
+    /// malformed line in an ALIAS file is the same typed strict error
+    /// as one in the canonical; a missing alias file is not an error;
+    /// --allow-unknown-types carries through to every file.
+    #[test]
+    fn read_view_keeps_the_strict_per_file_policy() {
+        let (root, store) = alias_store("view-strict", "domain_aliases:\n  develop: dev\n");
+        let expertise = root.join(".mulch/expertise");
+        std::fs::create_dir_all(&expertise).expect("dir");
+        let unknown = "{\"type\":\"exotic\",\"classification\":\"tactical\",\
+             \"recorded_at\":\"2026-10-26T10:00:00.000Z\",\"name\":\"x\",\
+             \"description\":\"d\"}\n";
+        std::fs::write(expertise.join("develop.jsonl"), unknown).expect("alias file");
+        assert!(
+            store.read_view("dev", false).is_err(),
+            "an unknown type in an alias file fails the view like the canonical"
+        );
+        assert!(
+            store
+                .read_view("dev", true)
+                .is_ok_and(|view| view.len() == 1),
+            "allow_unknown carries through to alias files"
+        );
+        let err = store.read_view("dev", false).expect_err("typed error");
+        assert!(matches!(err, Error::UnknownRecordType { .. }), "{err}");
+        // a missing canonical file plus a present alias file still views
+        let view = store.read_view("rust", false).expect("no aliases of rust");
+        assert!(view.is_empty(), "missing files contribute nothing");
+        std::fs::remove_file(expertise.join("develop.jsonl")).expect("remove");
+        assert!(
+            store
+                .read_view("dev", false)
+                .is_ok_and(|view| view.is_empty()),
+            "a gone alias file is not an error"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// No dedup by design (mulch-7112): a record sitting in BOTH the
+    /// canonical and an alias file surfaces twice — healing is the
+    /// destructive merge ADR-0006 forbids, so the duplicate is made
+    /// visible, not silently repaired.
+    #[test]
+    fn read_view_surfaces_duplicates_rather_than_healing_them() {
+        let (root, store) = alias_store("view-dup", "domain_aliases:\n  develop: dev\n");
+        let expertise = root.join(".mulch/expertise");
+        std::fs::create_dir_all(&expertise).expect("dir");
+        let record = "{\"type\":\"pattern\",\"classification\":\"tactical\",\
+             \"recorded_at\":\"2026-10-26T10:00:00.000Z\",\"name\":\"same\",\
+             \"description\":\"d\",\"id\":\"mx-dup001\"}\n";
+        std::fs::write(expertise.join("dev.jsonl"), record).expect("dev");
+        std::fs::write(expertise.join("develop.jsonl"), record).expect("develop");
+        let view = store.read_view("dev", false).expect("view");
+        assert_eq!(view.len(), 2, "the duplicate id surfaces twice: {view:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The view's mtime is the NEWEST contributor (mulch-7112): an
+    /// alias file written after the canonical must not report the
+    /// canonical's older stamp; `None` when no file of the view
+    /// exists.
+    #[test]
+    fn view_modified_is_the_newest_contributor() {
+        let (root, store) = alias_store("view-mtime", "domain_aliases:\n  develop: dev\n");
+        let expertise = root.join(".mulch/expertise");
+        std::fs::create_dir_all(&expertise).expect("dir");
+        assert_eq!(store.view_modified("dev").expect("no files"), None);
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let record = "{{\"type\":\"pattern\",\"classification\":\"tactical\",\
+             \"recorded_at\":\"2026-10-26T10:00:00.000Z\",\"name\":\"x\",\
+             \"description\":\"d\"}}\n";
+        std::fs::write(expertise.join("dev.jsonl"), record).expect("dev");
+        std::fs::write(expertise.join("develop.jsonl"), record).expect("develop");
+        std::fs::File::open(expertise.join("dev.jsonl"))
+            .and_then(|file| file.set_modified(old))
+            .expect("backdate");
+        let newest = store.view_modified("dev").expect("view mtime");
+        let alias_time = std::fs::metadata(expertise.join("develop.jsonl"))
+            .and_then(|meta| meta.modified())
+            .expect("alias mtime");
+        assert_eq!(newest, Some(alias_time), "the newer alias file wins");
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -93,7 +93,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &QueryArgs) -> Result<(), Failure> {
         let mut sections = Vec::new();
         for domain in &domains {
             let records = filtered_records(&store, domain, &filter, opts, args.sort_by_score)?;
-            let last_updated = crate::commands::store::domain_modified_ts("query", &store, domain)?;
+            let last_updated = crate::commands::store::view_modified_ts("query", &store, domain)?;
             sections.push(crate::commands::render::render_section(
                 format,
                 store.registry(),
@@ -120,12 +120,10 @@ fn filtered_records(
     opts: &GlobalOpts,
     sort_by_score: bool,
 ) -> Result<Vec<Value>, Failure> {
-    let records = crate::commands::store::read_domain_records(
-        "query",
-        store,
-        domain,
-        opts.allow_unknown_types,
-    )?;
+    // The domain's READ VIEW (mulch-7112): records from historic
+    // alias-named files surface under the canonical.
+    let records =
+        crate::commands::store::read_domain_view("query", store, domain, opts.allow_unknown_types)?;
     let mut records = filter.apply(records.into_iter().map(|row| row.record).collect());
     if sort_by_score {
         mulch::scoring::sort_by_confirmation(&mut records);

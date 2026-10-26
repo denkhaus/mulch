@@ -201,10 +201,20 @@ expectation (the parity rule: never silently):
   canonical ones at every domain-addressing entry (writes land in the
   canonical's file; `prime`/`query`/… through an alias address the
   canonical; move guards two aliases of one domain as the same
-  target). Strictly additive: files and listings never change, an
-  invalid block fails loudly. Expectation: identical behavior under
-  the reference except that aliases resolve — the reference sees the
-  block as inert config.
+  target). The read-VIEW merge (mulch-7112): the read family (query,
+  search, rank, ready, prime, status) surfaces records stranded in
+  historic alias-named files under the canonical — canonical file
+  first, then alias files in config order, no dedup, no file ever
+  moved or merged; `status` marks the merged count (`3 records (+2
+  from aliases)` plain, additive `from_aliases` json field, only when
+  nonzero). Writers and line-addressed consumers (edit/outcome,
+  doctor, move's scan, record, delete, archive, compact, prune,
+  restore) stay per-file — a stranded record surfaces in reads but
+  must be moved explicitly to be edited or deleted. Strictly
+  additive: an alias-free store is byte-identical, an invalid block
+  fails loudly. Expectation: identical behavior under the reference
+  except that aliases resolve — the reference sees the block as inert
+  config.
 - **Alias collisions are refused at WRITE, not only at open
   (mulch-8deb).** The open-time validation rejects a name that is
   both a configured domain and an alias, and a canonical that is not

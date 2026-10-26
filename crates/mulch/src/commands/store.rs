@@ -184,23 +184,59 @@ pub(crate) fn resolve_domain_set(
     }
 }
 
-/// A domain file's mtime as the section-header's `updated …` suffix
-/// (`None` when absent) — the shared read behind search/query/prime
-/// (mulch-1c32: three byte-identical private copies). `status` keeps
-/// its own inline map: its failure renders through the chain
-/// renderer, a different channel law.
-pub(crate) fn domain_modified_ts(
+/// The READ VIEW's mtime (mulch-7112): the newest file among the
+/// canonical and its alias-named contributors — the timestamp half of
+/// [`read_domain_view`], for section headers that label the view
+/// (mulch-1c32's shared read behind search/query/prime; status maps
+/// its own through the chain renderer). With no alias block this is
+/// the per-file mtime, byte-compatible with the reads' pre-alias
+/// behavior.
+///
+/// # Errors
+///
+/// [`Failure::error_line`] when a file's metadata cannot be read.
+pub(crate) fn view_modified_ts(
     command: &'static str,
     store: &mulch::StoreFiles,
     domain: &str,
 ) -> Result<Option<jiff::Timestamp>, Failure> {
-    match store.domain_modified(domain) {
+    modified_ts(command, store.view_modified(domain))
+}
+
+/// The mtime→Timestamp mapping the two modified seams share.
+fn modified_ts(
+    command: &'static str,
+    mtime: mulch::Result<Option<std::time::SystemTime>>,
+) -> Result<Option<jiff::Timestamp>, Failure> {
+    match mtime {
         Ok(Some(time)) => jiff::Timestamp::try_from(time)
             .map(Some)
             .map_err(|source| Failure::error_line(command, source)),
         Ok(None) => Ok(None),
         Err(source) => Err(Failure::error_line(command, source)),
     }
+}
+
+/// The canonical's READ VIEW with its failure mapped onto the
+/// command's handled shape (mulch-7112): the canonical file's records
+/// plus every alias-named contributor, config order — the read
+/// family's SET view. Writers and per-file laws keep
+/// [`read_domain_records`]: merging files is the destructive healing
+/// ADR-0006 forbids, and line-addressed consumers need physical
+/// per-file lines.
+///
+/// # Errors
+///
+/// [`read_domain_records`]' errors, from whichever file fails.
+pub(crate) fn read_domain_view(
+    command: &'static str,
+    store: &mulch::StoreFiles,
+    domain: &str,
+    allow_unknown: bool,
+) -> Result<Vec<mulch::LineRecord>, Failure> {
+    store
+        .read_view(domain, allow_unknown)
+        .map_err(|source| Failure::handled_on_stderr(command, render_core_error(&source)))
 }
 
 /// The strict domain read with its failure mapped onto the command's

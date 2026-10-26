@@ -204,13 +204,15 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     // format pipeline share the dataset.
     let mut loaded: Vec<Loaded> = Vec::new();
     for domain in &target_domains {
-        let records = crate::commands::store::read_domain_records(
+        // The domain's READ VIEW (mulch-7112): priming a canonical
+        // loads the historic alias-named files with it.
+        let records = crate::commands::store::read_domain_view(
             "prime",
             &store,
             domain,
             opts.allow_unknown_types,
         )?;
-        let last_updated = crate::commands::store::domain_modified_ts("prime", &store, domain)?;
+        let last_updated = crate::commands::store::view_modified_ts("prime", &store, domain)?;
         loaded.push(Loaded {
             domain: domain.clone(),
             records: records.into_iter().map(|row| row.record).collect(),

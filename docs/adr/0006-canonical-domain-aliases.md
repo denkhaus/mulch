@@ -55,13 +55,24 @@ domain_aliases:
   addressing an alias lands in one canonical file) and heals
   addressing today (`prime devloop` reads `dev`), which is the
   seed's "resolution at read/prime/query time".
-- The read-VIEW merge (a prime/query of the canonical surfacing
-  records from historic alias-named FILES) is deliberately NOT in v1:
-  the lenient readers carry PHYSICAL line numbers that
-  `updated_line_verdict` matches per file — merging inside them would
-  break line addressing. That half is a follow-up seed with a
-  per-consumer analysis (doctor must never merge; prime/query
-  should).
+- The read-VIEW merge (mulch-7112, sprint 53) is delivered with the
+  per-consumer analysis the deferral owed: SET consumers (query,
+  search, rank, ready, prime's loading, status) read the canonical's
+  VIEW — the canonical file's records, then every alias-named file in
+  config order (`StoreFiles::read_view`); LINE-ADDRESSED consumers
+  (edit/outcome's write gate, doctor's passes, move's incoming scan)
+  and every WRITER (record, delete, archive, compact, prune, restore)
+  stay per-file, because their writes and verdicts match PHYSICAL
+  line numbers of exactly one file — and merging files would be the
+  destructive healing this ADR forbids. The view does not dedup: a
+  record copied into both files surfaces twice (visible, not silently
+  repaired). Listing provenance: `status` marks the merged count
+  (`3 records (+2 from aliases)`, additive `from_aliases` json field,
+  only when nonzero); `prime --manifest` shows the view's size without
+  a marker — that count IS what priming loads. A record stranded in
+  an alias file therefore cannot be edited/deleted in place (edit's
+  resolution runs on the canonical file): surface first, heal by
+  moving the record explicitly.
 - Port-first, not parity: no reference behavior exists to match; the
   block's reference-tolerance was probed before landing.
 

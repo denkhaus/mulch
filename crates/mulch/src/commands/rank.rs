@@ -48,7 +48,9 @@ pub(crate) fn run(
 
     let mut ranked: Vec<RankedRecord> = Vec::new();
     for domain in domains_to_rank {
-        let records = crate::commands::store::read_domain_records(
+        // The domain's READ VIEW (mulch-7112): historic alias-named
+        // files rank under the canonical.
+        let records = crate::commands::store::read_domain_view(
             "rank",
             &store,
             &domain,

@@ -27,10 +27,11 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
     let mut domain_lines = Vec::new();
     let mut domains_json = Vec::new();
     for domain in store.domains() {
-        let (records, mtime) = read_domain(opts, &store, &domain)?;
+        let (records, mtime, from_aliases) = read_domain(opts, &store, &domain)?;
         let status = DomainStatus::compute(
             &domain,
             &records,
+            from_aliases,
             mtime,
             now,
             &rule,
@@ -66,6 +67,9 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
 struct DomainStatus {
     domain:                String,
     count:                 usize,
+    /// Records the read view merged in from alias-named files
+    /// (mulch-7112) — 0 keeps every listing byte reference-shaped.
+    from_aliases:          usize,
     last_updated:          Option<Timestamp>,
     oldest:                StampSlot,
     newest:                StampSlot,
@@ -83,6 +87,7 @@ impl DomainStatus {
     fn compute(
         domain: &str,
         records: &[Value],
+        from_aliases: usize,
         mtime: Option<Timestamp>,
         now: Timestamp,
         rule: &StaleRule,
@@ -145,6 +150,7 @@ impl DomainStatus {
             warn_entries: governance.warn_entries,
             hard_limit: governance.hard_limit,
             count: records.len(),
+            from_aliases,
             last_updated: mtime,
             oldest,
             newest,
@@ -159,8 +165,16 @@ impl DomainStatus {
     /// The plain one-line summary (relative times like the reference).
     fn plain_line(&self, now: Timestamp) -> String {
         let now_ms = mulch::timestamp_ms(now);
+        // The merged-view provenance marker (mulch-7112): only when
+        // alias-named files contributed — otherwise the line keeps
+        // the reference bytes.
+        let merged = if self.from_aliases > 0 {
+            format!(" (+{} from aliases)", self.from_aliases)
+        } else {
+            String::new()
+        };
         let mut line = format!(
-            "  {}: {} records (updated {})",
+            "  {}: {} records{merged} (updated {})",
             self.domain,
             self.count,
             self.last_updated
@@ -249,6 +263,9 @@ impl DomainStatus {
         let mut body = Map::new();
         body.insert("domain".into(), Value::String(self.domain));
         body.insert("count".into(), json_num(self.count as u64));
+        if self.from_aliases > 0 {
+            body.insert("from_aliases".into(), json_num(self.from_aliases as u64));
+        }
         body.insert("lastUpdated".into(), timestamp_json(self.last_updated));
         body.insert("oldest_recorded".into(), iso_json(&self.oldest.as_date()));
         body.insert("newest_recorded".into(), iso_json(&self.newest.as_date()));
@@ -271,8 +288,11 @@ fn read_domain(
     opts: &GlobalOpts,
     store: &mulch::StoreFiles,
     domain: &str,
-) -> Result<(Vec<Value>, Option<Timestamp>), Failure> {
-    let records = crate::commands::store::read_domain_records(
+) -> Result<(Vec<Value>, Option<Timestamp>, usize), Failure> {
+    // The domain's READ VIEW (mulch-7112): the section reports the
+    // canonical plus its historic alias-named files; the mtime is the
+    // view's (newest contributor).
+    let records = crate::commands::store::read_domain_view(
         "status",
         store,
         domain,
@@ -282,10 +302,21 @@ fn read_domain(
     .map(|line| line.record)
     .collect();
     let mtime = store
-        .domain_modified(domain)
+        .view_modified(domain)
         .map_err(|source| Failure::handled("status", crate::output::chain_message(&source)))?
         .and_then(|time| Timestamp::try_from(time).ok());
-    Ok((records, mtime))
+    // The merged provenance for the listing marker (mulch-7112): the
+    // alias-named files' own record counts — a store without the
+    // block, or one whose alias files are gone, contributes 0 and the
+    // marker never appears (reference-shaped bytes unchanged).
+    let mut from_aliases = 0;
+    for alias in store.aliases_of(domain) {
+        from_aliases += store
+            .read_records(alias, opts.allow_unknown_types)
+            .map_err(|source| Failure::handled("status", crate::output::chain_message(&source)))?
+            .len();
+    }
+    Ok((records, mtime, from_aliases))
 }
 
 /// The raw `recorded_at` winner of the health selection. The

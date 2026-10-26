@@ -347,3 +347,137 @@ fn compact_apply_through_an_alias_writes_the_canonical_files() {
         "no alias-named archive appears"
     );
 }
+
+/// A fragmented store for the read-view batteries (mulch-7112): the
+/// canonical `dev` plus records stranded in BOTH alias-named files,
+/// in the fixture's config order (develop declared before devloop).
+fn fragmented_store(tag: &str) -> TempDir {
+    let dir = alias_store(tag);
+    let expertise = dir.0.join(".mulch/expertise");
+    let record = |name: &str| {
+        format!(
+            "{{\"type\":\"pattern\",\"classification\":\"tactical\",\
+             \"recorded_at\":\"2026-10-25T10:00:00.000Z\",\"name\":\"{name}\",\
+             \"description\":\"d\"}}\n"
+        )
+    };
+    std::fs::write(expertise.join("dev.jsonl"), record("canonical-one")).expect("dev");
+    std::fs::write(expertise.join("develop.jsonl"), record("stray-in-develop")).expect("develop");
+    std::fs::write(expertise.join("devloop.jsonl"), record("stray-in-devloop")).expect("devloop");
+    dir
+}
+
+/// The READ-VIEW merge (mulch-7112): `query dev` surfaces the records
+/// stranded in the historic alias-named files, canonical file first
+/// then config order — the fragmentation ADR-0006 set out to heal,
+/// healed at the read layer without touching any file.
+#[test]
+fn query_surfaces_records_stranded_in_alias_files() {
+    let dir = fragmented_store("view-query");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &["query", "dev"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    for name in ["canonical-one", "stray-in-develop", "stray-in-devloop"] {
+        assert!(run.stdout.contains(name), "{name} missing: {}", run.stdout);
+    }
+    // canonical first, then config order (develop before devloop)
+    let canonical_at = run.stdout.find("canonical-one").expect("canonical");
+    let develop_at = run.stdout.find("stray-in-develop").expect("develop");
+    let devloop_at = run.stdout.find("stray-in-devloop").expect("devloop");
+    assert!(canonical_at < develop_at, "canonical first: {}", run.stdout);
+    assert!(develop_at < devloop_at, "config order: {}", run.stdout);
+}
+
+/// Search's BM25 finds a term that ONLY exists in an alias-named
+/// file — the read view feeds the index, so the stranded record is
+/// discoverable under the canonical it belongs to.
+#[test]
+fn search_finds_a_record_only_present_in_an_alias_file() {
+    let dir = fragmented_store("view-search");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &[
+        "search",
+        "stray-in-devloop",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout.contains("stray-in-devloop"),
+        "the stranded record is found: {}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("dev"), "reported under the canonical");
+}
+
+/// Priming the canonical loads its whole read view (mulch-7112): the
+/// stranded records ride along — the alias's expertise is not lost to
+/// priming just because it sits in the wrong file.
+#[test]
+fn prime_loads_the_read_view_of_the_canonical() {
+    let dir = fragmented_store("view-prime");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &["prime", "dev"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout.contains("stray-in-develop"),
+        "merged in: {}",
+        run.stdout
+    );
+}
+
+/// Status reports the merged count with a provenance marker, and only
+/// then (mulch-7112): a store whose alias files carry no records — or
+/// no alias block at all — keeps the reference-shaped line.
+#[test]
+fn status_marks_the_merged_count_and_stays_plain_without_merge() {
+    let dir = fragmented_store("view-status");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout.contains("dev: 3 records (+2 from aliases)"),
+        "marker with the alias contribution: {}",
+        run.stdout
+    );
+    let json = run_in(&dir.0, Path::new(mulch_bin()), &["--json", "status"]);
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    assert!(
+        json.stdout.contains("\"from_aliases\": 2"),
+        "additive json field: {}",
+        json.stdout
+    );
+    // and a store with no stranded records keeps the plain shape
+    let clean = alias_store("view-status-clean");
+    let run = run_in(&clean.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        !run.stdout.contains("from aliases"),
+        "no marker without a merge: {}",
+        run.stdout
+    );
+}
+
+/// Writes stay canonical-only (mulch-7112's documented limit): a
+/// record surfaced from an alias file cannot be EDITED — resolution
+/// for writes happens on the canonical file, because the write itself
+/// must address physical lines of exactly one file. The error is the
+/// shared not-found wording, not a silent cross-file write.
+#[test]
+fn edit_cannot_reach_a_record_stranded_in_an_alias_file() {
+    let dir = fragmented_store("view-edit-limit");
+    let seed = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-25T10:00:00.000Z\",\"name\":\"has-id\",\"description\":\"d\",\"id\":\"mx-view001\"}\n";
+    std::fs::write(dir.0.join(".mulch/expertise/develop.jsonl"), seed).expect("id record");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &[
+        "edit",
+        "dev",
+        "mx-view001",
+        "--description",
+        "cross-file edit",
+    ]);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert!(
+        run.stderr.contains("mx-view001"),
+        "the not-found wording names the id: {}",
+        run.stderr
+    );
+    // and nothing was written anywhere
+    let live = read_store_file(&dir.0, "expertise/dev.jsonl");
+    assert!(!live.contains("cross-file-edit"), "{live}");
+    let stray = read_store_file(&dir.0, "expertise/develop.jsonl");
+    assert!(stray.contains("mx-view001"), "untouched: {stray}");
+}

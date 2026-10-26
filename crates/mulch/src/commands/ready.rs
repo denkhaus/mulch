@@ -70,7 +70,9 @@ pub(crate) fn run(
         if !valid_domain(&domain) {
             return Err(invalid_domain(&domain));
         }
-        let records = crate::commands::store::read_domain_records(
+        // The domain's READ VIEW (mulch-7112): historic alias-named
+        // files surface under the canonical.
+        let records = crate::commands::store::read_domain_view(
             "ready",
             &store,
             &domain,

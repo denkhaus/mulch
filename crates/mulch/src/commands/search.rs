@@ -101,7 +101,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &SearchArgs) -> Result<(), Failure> {
             if !matches.is_empty() {
                 total += matches.len() as u64;
                 let last_updated =
-                    crate::commands::store::domain_modified_ts("search", &store, domain)?;
+                    crate::commands::store::view_modified_ts("search", &store, domain)?;
                 sections.push(crate::commands::render::render_section(
                     format,
                     store.registry(),
@@ -264,7 +264,9 @@ fn read_domain(
     domain: &str,
     opts: &GlobalOpts,
 ) -> Result<Vec<Value>, Failure> {
-    crate::commands::store::read_domain_records("search", store, domain, opts.allow_unknown_types)
+    // The domain's READ VIEW (mulch-7112): historic alias-named
+    // files surface under the canonical.
+    crate::commands::store::read_domain_view("search", store, domain, opts.allow_unknown_types)
         .map(|records| records.into_iter().map(|row| row.record).collect())
 }
 
