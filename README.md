@@ -205,6 +205,19 @@ expectation (the parity rule: never silently):
   invalid block fails loudly. Expectation: identical behavior under
   the reference except that aliases resolve — the reference sees the
   block as inert config.
+- **Alias collisions are refused at WRITE, not only at open
+  (mulch-8deb).** The open-time validation rejects a name that is
+  both a configured domain and an alias, and a canonical that is not
+  configured. Three mutators could introduce exactly that state by
+  writing — `add <alias-name>`, `delete-domain <canonical that live
+  aliases still resolve to>`, and `doctor --fix` adopting an
+  alias-named `.jsonl` file (the historic-fragmentation class ADR-0006
+  targets) — so all three refuse the mutation: `add`/`delete-domain`
+  fail with the typed `invalid domain_aliases` error, `doctor --fix`
+  skips the file with a `Skipped orphaned domain …` fix line. The
+  reference (no alias block) writes the name happily. Expectation:
+  same store files as the reference except the refused mutations,
+  which never write — no command can brick its own store.
 - **Hook parse-error texts are runtime vocabulary (mulch-5708).** When
   a hook prints non-JSON on stdout, the mutation-ignored warning
   embeds the parser's message — the reference's runtime (Bun/Node

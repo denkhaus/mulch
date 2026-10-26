@@ -7,12 +7,36 @@
 //! `prime`/`search` knobs and future additive fields) survive a
 //! read-modify-write cycle in place.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::ser::Error as _;
 use serde_yaml::Mapping;
 
 use crate::error::{Error, Result};
+
+/// Walks an alias chain to its canonical domain — the ONE alias walk
+/// (ADR-0006, mulch-8deb): [`Config::validated_domain_aliases`] runs
+/// it over a freshly built map to detect cycles, and
+/// `StoreFiles::resolve_domain` runs it over the validated map at
+/// every addressing entry. `None` means the chain exceeded the map's
+/// own size, which a validated map cannot do — a cycle is the only
+/// cause.
+pub(crate) fn walk_alias_chain<'a>(
+    aliases: &'a HashMap<String, String>,
+    from: &'a str,
+) -> Option<&'a str> {
+    let mut current = from;
+    let mut hops = 0;
+    while let Some(target) = aliases.get(current) {
+        current = target.as_str();
+        hops += 1;
+        if hops > aliases.len() {
+            return None;
+        }
+    }
+    Some(current)
+}
 
 /// Config version written by `Config::default` and understood by the core.
 pub const SUPPORTED_VERSION: &str = "1";
@@ -270,18 +294,17 @@ impl Config {
             }
             pairs.push((alias.to_string(), canonical.to_string()));
         }
-        // Cycle detection: resolve every alias with a hop budget.
+        // Cycle detection through the shared walk: build the map, then
+        // resolve every alias on it. Non-termination IS the cycle;
+        // `StoreFiles::resolve_domain` runs the same function over the
+        // validated map at every addressing entry (mulch-8deb: one
+        // walk, one budget).
+        let map: HashMap<String, String> = pairs.iter().cloned().collect();
         for (alias, _) in &pairs {
-            let mut current = alias.as_str();
-            let mut hops = 0;
-            while let Some((_, target)) = pairs.iter().find(|(a, _)| a == current) {
-                current = target.as_str();
-                hops += 1;
-                if hops > pairs.len() {
-                    return Err(Error::DomainAliases {
-                        message: format!("{alias:?} is part of an alias cycle"),
-                    });
-                }
+            if walk_alias_chain(&map, alias).is_none() {
+                return Err(Error::DomainAliases {
+                    message: format!("{alias:?} is part of an alias cycle"),
+                });
             }
         }
         Ok(pairs)

@@ -118,3 +118,79 @@ fn invalid_alias_block_fails_loudly() {
         run.stderr
     );
 }
+
+/// The write-time collision guard (mulch-8deb): registering an alias
+/// name is refused and the store still opens. Catches the guard being
+/// placed after the config write (the store would already be bricked)
+/// or missing altogether (the reference happily writes the name).
+#[test]
+fn add_of_an_alias_name_is_refused_and_the_store_stays_open() {
+    let dir = alias_store("alias-add-refuse");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &["add", "develop"]);
+    assert_eq!(run.code, 1);
+    assert!(
+        run.stderr
+            .contains("cannot register \"develop\": it is an alias of \"dev\""),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        !dir.0.join(".mulch/expertise/develop.jsonl").exists(),
+        "the guard fires before any file write"
+    );
+    let status = run_in(&dir.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(status.code, 0, "store still opens: {}", status.stderr);
+}
+
+/// Deleting a canonical that live aliases (transitively) resolve to
+/// is refused (mulch-8deb): the dangling aliases would fail every
+/// later open. The names are sorted, so the message is deterministic.
+#[test]
+fn delete_domain_of_an_aliased_canonical_is_refused() {
+    let dir = alias_store("alias-delete-refuse");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &[
+        "delete-domain",
+        "dev",
+        "--yes",
+    ]);
+    assert_eq!(run.code, 1);
+    assert!(
+        run.stderr
+            .contains("still has live aliases (develop, devloop)"),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        dir.0.join(".mulch/expertise/dev.jsonl").exists(),
+        "the domain file is kept"
+    );
+    let status = run_in(&dir.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(status.code, 0, "store still opens: {}", status.stderr);
+}
+
+/// `doctor --fix` leaves alias-named orphans alone (mulch-8deb):
+/// adopting one would turn the very fragmentation ADR-0006 targets
+/// into an unopenable store. The orphan warning survives the run —
+/// nothing was adopted — and the store stays openable.
+#[test]
+fn doctor_fix_skips_alias_named_orphans() {
+    let dir = alias_store("alias-doctor-skip");
+    let body = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-25T10:00:00.000Z\",\"name\":\"stray\",\"description\":\"d\"}\n";
+    std::fs::write(dir.0.join(".mulch/expertise/develop.jsonl"), body).expect("stray file");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &["doctor", "--fix"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout
+            .contains("Skipped orphaned domain \"develop\": the name is an alias of \"dev\""),
+        "{}",
+        run.stdout
+    );
+    let after = run_in(&dir.0, Path::new(mulch_bin()), &["doctor"]);
+    assert!(
+        after.stdout.contains("develop.jsonl"),
+        "still an orphan: {}",
+        after.stdout
+    );
+    let status = run_in(&dir.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(status.code, 0, "store still opens: {}", status.stderr);
+}

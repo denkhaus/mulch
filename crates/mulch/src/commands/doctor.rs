@@ -909,10 +909,26 @@ fn apply_fixes(
                 // either way).
                 let config_domains = store.domains();
                 for domain in domains_on_disk(store) {
-                    if !config_domains.contains(&domain) {
-                        store.adopt_domain(&domain);
-                        fixes.push(format!("Added orphaned domain \"{domain}\" to config"));
+                    if config_domains.contains(&domain) {
+                        continue;
                     }
+                    // The port's write-time invariant (mulch-8deb): an
+                    // alias-named file must NOT be adopted — the config
+                    // would then carry a name that is both a configured
+                    // domain and an alias, bricking every later open.
+                    // The reference has no alias block; skipping keeps
+                    // the repair useful on exactly the fragmented stores
+                    // ADR-0006 targets (a read-view merge is mulch-7112).
+                    if let Some(canonical) = store.domain_alias_of(&domain) {
+                        fixes.push(format!(
+                            "Skipped orphaned domain \"{domain}\": the name is an alias of \"{canonical}\""
+                        ));
+                        continue;
+                    }
+                    store
+                        .adopt_domain(&domain)
+                        .map_err(|source| store_failure(&source))?;
+                    fixes.push(format!("Added orphaned domain \"{domain}\" to config"));
                 }
                 for domain in store.domains() {
                     if store

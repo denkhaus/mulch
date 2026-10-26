@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::config::Config;
+use crate::config::{Config, walk_alias_chain};
 use crate::error::{Error, Result};
 use crate::records::{LenientLine, LineRecord, read_strict};
 use crate::upsert::write_records;
@@ -268,20 +268,24 @@ impl StoreFiles {
     /// listing and file layout never change: an alias is not a
     /// domain, and an alias-named file stays its own file (the
     /// orphan checks flag it as usual).
+    ///
+    /// The walk is [`walk_alias_chain`] — the same one the config's
+    /// open-time validation runs, so the two can never disagree
+    /// (mulch-8deb).
     #[must_use]
     pub fn resolve_domain<'a>(&'a self, domain: &'a str) -> &'a str {
-        let mut current = domain;
-        let mut hops = 0;
-        while let Some(target) = self.aliases.get(current) {
-            current = target.as_str();
-            hops += 1;
-            // Cannot happen: the config walk validated acyclicity at
-            // open; the bound is paranoia against a future drift.
-            if hops > self.aliases.len() {
-                return domain;
-            }
-        }
-        current
+        // `None` is the cycle arm, unreachable for a map that passed
+        // `validated_domain_aliases` at open; returning the address
+        // unchanged keeps the resolver total without a panic.
+        walk_alias_chain(&self.aliases, domain).unwrap_or(domain)
+    }
+
+    /// The canonical domain `domain` is an alias of, when it is one —
+    /// the write-time guard's probe (mulch-8deb: `add`/`doctor --fix`
+    /// must never register a name the open-time validation forbids).
+    #[must_use]
+    pub fn domain_alias_of(&self, domain: &str) -> Option<&str> {
+        self.aliases.get(domain).map(String::as_str)
     }
 
     /// Live domain names in config order.
@@ -355,13 +359,16 @@ impl StoreFiles {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidDomain`] for a bad name, [`Error::Write`] on I/O.
+    /// [`Error::InvalidDomain`] for a bad name, [`Error::DomainAliases`]
+    /// when the name is a live alias (the port's write-time invariant,
+    /// mulch-8deb), [`Error::Write`] on I/O.
     pub fn register_domain(&mut self, domain: &str) -> Result<()> {
         if !valid_domain(domain) {
             return Err(Error::InvalidDomain {
                 domain: domain.into(),
             });
         }
+        self.reject_alias_name(domain, "register")?;
         self.config.add_domain(domain);
         self.write_config()?;
         self.ensure_domain_file(domain).map(|_| ())
@@ -372,8 +379,17 @@ impl StoreFiles {
     /// registers whatever `.jsonl` files exist — the reference's
     /// orphan fix adds them unvalidated; its `add` path is the one
     /// that validates). Callers batch their config rewrite.
-    pub fn adopt_domain(&mut self, domain: &str) {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::DomainAliases`] when the name is a live alias: the
+    /// reference has no alias block, but adopting an alias-named file
+    /// here would brick every later open (mulch-8deb) — name validity
+    /// stays unvalidated, the port's own invariant does not.
+    pub fn adopt_domain(&mut self, domain: &str) -> Result<()> {
+        self.reject_alias_name(domain, "adopt")?;
         self.config.add_domain(domain);
+        Ok(())
     }
 
     /// Creates a domain's missing expertise file (empty), reporting
@@ -396,10 +412,48 @@ impl StoreFiles {
     ///
     /// # Errors
     ///
-    /// [`Error::Write`] on I/O.
+    /// [`Error::DomainAliases`] when live aliases still resolve to the
+    /// domain (removing it would leave them dangling — the write-time
+    /// invariant, mulch-8deb), [`Error::Write`] on I/O.
     pub fn remove_domain(&mut self, domain: &str) -> Result<()> {
+        self.reject_aliased_canonical(domain)?;
         self.config.remove_domain(domain);
         self.write_config()
+    }
+
+    /// The write-time half of the alias-collision invariant
+    /// (mulch-8deb): the open-time validation rejects a configured
+    /// domain that is also an alias, so a write introducing that
+    /// overlap would brick every later open.
+    fn reject_alias_name(&self, domain: &str, action: &str) -> Result<()> {
+        match self.domain_alias_of(domain) {
+            Some(canonical) => Err(Error::DomainAliases {
+                message: format!("cannot {action} {domain:?}: it is an alias of {canonical:?}"),
+            }),
+            None => Ok(()),
+        }
+    }
+
+    /// The removal half: a canonical that live aliases still resolve
+    /// to cannot go — the dangling aliases fail the open-time
+    /// validation ("neither a configured domain nor another alias").
+    fn reject_aliased_canonical(&self, domain: &str) -> Result<()> {
+        let mut aliases: Vec<&str> = self
+            .aliases
+            .keys()
+            .filter(|alias| walk_alias_chain(&self.aliases, alias.as_str()) == Some(domain))
+            .map(String::as_str)
+            .collect();
+        if aliases.is_empty() {
+            return Ok(());
+        }
+        aliases.sort_unstable();
+        Err(Error::DomainAliases {
+            message: format!(
+                "cannot remove {domain:?}: it still has live aliases ({}); retarget or remove them first",
+                aliases.join(", ")
+            ),
+        })
     }
 
     /// Deletes a domain entirely: config entry removed and the live
@@ -921,12 +975,109 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// Write-time invariant (mulch-8deb): registering an alias name is
+    /// refused with the typed error — the reference would happily
+    /// write it and brick every later open. Catches a guard placed
+    /// after the config write (the store would already be broken).
+    #[test]
+    fn register_refuses_alias_names() {
+        let (root, mut store) = alias_store("register-alias", "domain_aliases:\n  develop: dev\n");
+        let err = store.register_domain("develop").expect_err("alias name");
+        assert!(matches!(err, Error::DomainAliases { .. }), "{err}");
+        assert!(
+            err.to_string()
+                .contains("cannot register \"develop\": it is an alias of \"dev\""),
+            "{err}"
+        );
+        assert!(
+            !store.domains().iter().any(|domain| domain == "develop"),
+            "nothing registered"
+        );
+        drop(store);
+        assert!(
+            matches!(
+                StoreFiles::locate(&root).expect("reopen"),
+                StoreLocation::Open(_)
+            ),
+            "store still opens"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The doctor-adoption half (mulch-8deb): adopting an alias-named
+    /// orphan file is refused for the port's invariant while NAME
+    /// validity stays unvalidated (a weird name is fine).
+    #[test]
+    fn adopt_refuses_alias_names_but_not_weird_names() {
+        let (root, mut store) = alias_store("adopt-alias", "domain_aliases:\n  develop: dev\n");
+        let err = store.adopt_domain("develop").expect_err("alias name");
+        assert!(matches!(err, Error::DomainAliases { .. }), "{err}");
+        assert!(
+            !store.domains().iter().any(|domain| domain == "develop"),
+            "nothing adopted"
+        );
+        store
+            .adopt_domain("weird name!")
+            .expect("name validity stays unvalidated");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The removal half (mulch-8deb): a canonical that live aliases
+    /// (transitively) still resolve to cannot be removed — listing
+    /// every dependent alias in sorted order. Catches a guard that
+    /// only walks DIRECT aliases (devloop -> develop -> dev would
+    /// leave `develop` dangling).
+    #[test]
+    fn remove_refuses_canonicals_with_live_aliases() {
+        let (root, mut store) = alias_store(
+            "remove-alias",
+            "domain_aliases:\n  develop: dev\n  devloop: develop\n  rs: rust\n",
+        );
+        let err = store.remove_domain("dev").expect_err("aliased canonical");
+        assert!(matches!(err, Error::DomainAliases { .. }), "{err}");
+        assert!(
+            err.to_string().contains(
+                "cannot remove \"dev\": it still has live aliases (develop, devloop); retarget or remove them first"
+            ),
+            "{err}"
+        );
+        assert!(
+            store.domains().iter().any(|domain| domain == "dev"),
+            "config unchanged"
+        );
+        let err = store.remove_domain("rust").expect_err("direct alias");
+        assert!(err.to_string().contains("aliases (rs)"), "{err}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// An unaliased domain still removes (the guard must not block the
+    /// normal path), and the store reopens without the domain.
+    #[test]
+    fn remove_allows_unaliased_domains() {
+        let config =
+            "version: '1'\ndomains:\n  dev: {}\n  other: {}\ndomain_aliases:\n  develop: dev\n";
+        let (root, mut store) = super::testscratch::store_with("remove-ok", config, false);
+        store.remove_domain("other").expect("unaliased domain");
+        drop(store);
+        match StoreFiles::locate(&root).expect("reopen") {
+            StoreLocation::Open(reopened) => {
+                assert!(
+                    !reopened.domains().iter().any(|domain| domain == "other"),
+                    "domain removed"
+                );
+                assert_eq!(reopened.resolve_domain("develop"), "dev");
+            }
+            other => panic!("expected open, got {other:?}"),
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     /// The block survives a canonical config rewrite (write_config's
     /// raw passthrough) — aliases are config data, not a view.
     #[test]
     fn alias_block_round_trips_through_write_config() {
         let (root, mut store) = alias_store("roundtrip", "domain_aliases:\n  develop: dev\n");
-        store.adopt_domain("rust");
+        store.adopt_domain("rust").expect("adopt");
         store.write_config().expect("rewrite");
         let text = std::fs::read_to_string(root.join(".mulch/mulch.config.yaml")).expect("config");
         assert!(text.contains("domain_aliases:"), "block survives: {text}");
