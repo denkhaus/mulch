@@ -165,12 +165,17 @@ architecture direction, milestone content, go/no-go):
   / `--dry-run` is the pending-change check).
   **Long or quoted arguments go through a FILE, never inline**: commit
   with `git commit -F /tmp/msg.txt`, and pass `seeds close --reason` /
-  `ml record --rationale` as `"$(cat /tmp/x.txt)"` (one expansion, the
-  content is never re-evaluated). An inline double-quoted string runs
-  every backtick it contains AS A COMMAND (sprint 25: a commit message
-  lost its quoted parts; 2026-10-17 close: backticked words inside an
-  `ml record --rationale` executed a foreign CLI, corrupted both
-  records, and fired an UNGATED push).
+  `ml record --description` / `ml record --rationale` as
+  `"$(cat /tmp/x.txt)"` (one expansion, the content is never
+  re-evaluated). An inline double-quoted string runs every backtick it
+  contains AS A COMMAND (sprint 25: a commit message lost its quoted
+  parts; 2026-10-17 close: backticked words inside an `ml record
+  --rationale` executed a foreign CLI, corrupted both records, and
+  fired an UNGATED push; sprint 52: an `ml record --description` in
+  double quotes ran a backticked example as a mailcap command and the
+  stored text lost that clause — re-record with the same `--name` to
+  repair, since upsert rewrites the record). Single-quoted arguments
+  are safe for text without embedded single quotes; prefer the file.
 - **Commit-integrity check (sprint 20 lesson)**: a file can be invisible
   at commit time (the but-era `but status` under-reported the dirty
   worktree — records.rs never entered the commit while the message
@@ -404,8 +409,12 @@ it compiles. Inventory every aborted child before integrating
 (`git status`, compile, full nextest), then review its laws against
 probes/fixtures (sprint 39: one wrong superseded-id fixture, a bogus
 "valid JSON" row, a banner seeded on both twins, a dead rollback
-branch). If the quota blocks respawning, the HOST finishes the
-delivery and records the deviation in the sprint note.
+branch). A child that ends "completed" with NO reply and NO delivery
+note is the same shape (sprint 52: no note, zero decision tables, and
+a call site still calling a fn the child had deleted) — treat a
+missing note as an unmet delivery contract and inventory the diff
+before continuing. If the quota blocks respawning, the HOST finishes
+the delivery and records the deviation in the sprint note.
 
 ## State file (sprint counter)
 
