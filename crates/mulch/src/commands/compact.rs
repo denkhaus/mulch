@@ -43,7 +43,7 @@ use serde_json::{Map, Value};
 use crate::cli::{CompactArgs, GlobalOpts};
 use crate::commands::failure::{DomainFailure, now_iso};
 use crate::commands::hooks_surface::{HookPhase, print_hook_warnings};
-use crate::commands::store::{open_store, open_store_mut, read_domain_records};
+use crate::commands::store::{open_store, open_store_mut, read_domain_records, resolve_domain_set};
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// One candidate member line (the reference's display triple). The
@@ -134,13 +134,7 @@ fn compact_failure(json: bool, message: impl AsRef<str>) -> Failure {
 /// `--analyze`: candidates across the given domain or all domains.
 fn analyze(opts: &GlobalOpts, domain: Option<&str>) -> Result<(), Failure> {
     let store = open_store("compact", true)?;
-    let domains = crate::commands::store::resolve_domain_set(
-        "compact",
-        &store,
-        domain,
-        opts.json,
-        DomainFailure::Compact,
-    )?;
+    let domains = resolve_domain_set("compact", &store, domain, opts.json, DomainFailure::Compact)?;
     let rule = stale_rule(&store);
     let now = jiff::Timestamp::now();
 
@@ -227,7 +221,7 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
     )?;
 
     let store = open_store_mut("compact", true)?;
-    let domains = crate::commands::store::resolve_domain_set(
+    let domains = resolve_domain_set(
         "compact",
         &store,
         args.domain.as_deref(),
@@ -520,13 +514,18 @@ fn auto(opts: &GlobalOpts, args: &CompactArgs) -> Result<(), Failure> {
 /// `--apply`: replace `--records` with one explicit replacement.
 fn apply(opts: &GlobalOpts, args: &CompactArgs, domain: &str) -> Result<(), Failure> {
     let store = open_store_mut("compact", true)?;
-    crate::commands::store::resolve_domain_set(
+    // The table answers with the canonical address; every read, hook
+    // payload and write below must use it — an alias names no file
+    // (ADR-0006, mulch-8452: the entry batteries caught the read
+    // family and edit/outcome; apply had the same discard).
+    let resolved = resolve_domain_set(
         "compact",
         &store,
         Some(domain),
         opts.json,
         DomainFailure::Compact,
     )?;
+    let domain = resolved.first().map_or(domain, String::as_str);
 
     let Some(raw) = args.records.as_deref() else {
         return Err(compact_failure(

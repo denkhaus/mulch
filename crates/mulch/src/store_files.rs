@@ -269,9 +269,8 @@ impl StoreFiles {
     /// domain, and an alias-named file stays its own file (the
     /// orphan checks flag it as usual).
     ///
-    /// The walk is [`walk_alias_chain`] — the same one the config's
-    /// open-time validation runs, so the two can never disagree
-    /// (mulch-8deb).
+    /// The walk is the same transitive chain the config's open-time
+    /// validation runs, so the two can never disagree (mulch-8deb).
     #[must_use]
     pub fn resolve_domain<'a>(&'a self, domain: &'a str) -> &'a str {
         // `None` is the cycle arm, unreachable for a map that passed
@@ -280,11 +279,14 @@ impl StoreFiles {
         walk_alias_chain(&self.aliases, domain).unwrap_or(domain)
     }
 
-    /// The canonical domain `domain` is an alias of, when it is one —
-    /// the write-time guard's probe (mulch-8deb: `add`/`doctor --fix`
-    /// must never register a name the open-time validation forbids).
+    /// The IMMEDIATE alias target of `domain`, when the name is an
+    /// alias — the write-time guard's probe (mulch-8deb: `add`/
+    /// `doctor --fix` must never register a name the open-time
+    /// validation forbids). Not the chain's end: `devloop` in a
+    /// `devloop -> develop -> dev` chain yields `"develop"`;
+    /// [`StoreFiles::resolve_domain`] walks to the canonical.
     #[must_use]
-    pub fn domain_alias_of(&self, domain: &str) -> Option<&str> {
+    pub fn alias_target_of(&self, domain: &str) -> Option<&str> {
         self.aliases.get(domain).map(String::as_str)
     }
 
@@ -426,12 +428,15 @@ impl StoreFiles {
     /// domain that is also an alias, so a write introducing that
     /// overlap would brick every later open.
     fn reject_alias_name(&self, domain: &str, action: &str) -> Result<()> {
-        match self.domain_alias_of(domain) {
-            Some(canonical) => Err(Error::DomainAliases {
-                message: format!("cannot {action} {domain:?}: it is an alias of {canonical:?}"),
-            }),
-            None => Ok(()),
+        if self.alias_target_of(domain).is_none() {
+            return Ok(());
         }
+        // The message names the CHAIN's canonical end, the useful
+        // domain when the typed name sits mid-chain (devloop).
+        let canonical = self.resolve_domain(domain);
+        Err(Error::DomainAliases {
+            message: format!("cannot {action} {domain:?}: it is an alias of {canonical:?}"),
+        })
     }
 
     /// The removal half: a canonical that live aliases still resolve

@@ -52,8 +52,9 @@ pub use ids::{
 // `mulch::jsval` stays the deep path for the rest, e.g. `js_dedup_eq`)
 #[doc(inline)]
 pub use jsval::{
-    js_key_sorted, js_length, js_number, js_round_u64, js_string, js_truncate, parse_duration,
-    parse_non_negative_number, parse_strict_positive_int, truthy, truthy_str, value_text,
+    days_u64, js_key_sorted, js_length, js_number, js_rel, js_round_u64, js_string, js_truncate,
+    parse_duration, parse_non_negative_number, parse_strict_positive_int, truthy, truthy_str,
+    value_text,
 };
 pub use query::{DomainSpec, RecordFilter, UnknownDomain, domain_set};
 pub use records::{

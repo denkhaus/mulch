@@ -147,11 +147,17 @@ fn to_primitive(value: &Value) -> Primitive {
     }
 }
 
-/// ToNumber of a primitive: numbers pass through; strings take the JS
-/// numeric-literal grammar (a trimmed empty string is 0, Infinity/NaN
-/// only by their exact spellings, `0x` hex, decimal otherwise; every
-/// other shape is NaN — date strings always are, which is what makes
-/// mixed-type comparisons false).
+/// ToNumber of a primitive: numbers pass through; strings take the
+/// numeric subset this port needs — a trimmed empty string is 0,
+/// Infinity/NaN only by their exact spellings, `0x` hex, decimal
+/// otherwise; every other shape is NaN (date strings always are,
+/// which is what makes mixed-type comparisons false). The subset is
+/// deliberately narrower than ECMAScript's StringNumericLiteral:
+/// binary/octal prefixes and hex beyond u128 stay NaN, and no
+/// consumer of the comparison needs them (recorded_at is schema-
+/// required to be a date string; the JSON number side never parses
+/// text). Widening this means re-probing the reference, not just
+/// extending the parse.
 fn to_number(primitive: &Primitive) -> f64 {
     match primitive {
         Primitive::Num(number) => *number,
@@ -710,14 +716,16 @@ mod js_quirk_tests {
         assert_eq!(js_truncate(nel, 12), "Not a break....");
     }
 
-    /// ToNumber's grammar (mulch-d5c3, moved from status): a trimmed
-    /// empty string is 0, the signed Infinity/NaN spellings are what
-    /// they say, hex literals parse, and the Rust-parse guard keeps
-    /// identifiers (`inf`, `nan`) NaN where Rust's parser would
-    /// accept them. Date strings are always NaN — the reason mixed
-    /// recorded_at comparisons never fire.
+    /// The pinned ToNumber subset (mulch-d5c3, moved from status): a
+    /// trimmed empty string is 0, the signed Infinity/NaN spellings
+    /// are what they say, `0x` hex parses up to u128, and the
+    /// Rust-parse guard keeps identifiers (`inf`, `nan`) NaN where
+    /// Rust's parser would accept them. Date strings are always NaN —
+    /// the reason mixed recorded_at comparisons never fire. The
+    /// ECMAScript-only shapes we do NOT implement are pinned too, so
+    /// narrowing stays a decision rather than an accident.
     #[test]
-    fn to_number_follows_the_js_numeric_literal_grammar() {
+    fn to_number_follows_the_pinned_numeric_subset() {
         assert_eq!(js_to_number(""), 0.0);
         assert_eq!(js_to_number("   "), 0.0);
         assert_eq!(js_to_number("Infinity"), f64::INFINITY);
@@ -741,6 +749,19 @@ mod js_quirk_tests {
         assert!(
             js_to_number("2026-10-25T10:00:00.000Z").is_nan(),
             "a date string is NaN"
+        );
+        // Deliberately narrower than StringNumericLiteral: binary and
+        // octal prefixes, and hex beyond u128, stay NaN (no consumer
+        // needs them — see the to_number doc).
+        for unsupported in ["0b101", "0o17", "0B11", "0O7"] {
+            assert!(
+                js_to_number(unsupported).is_nan(),
+                "{unsupported} is outside the pinned subset"
+            );
+        }
+        assert!(
+            js_to_number(&format!("0x{}", "F".repeat(40))).is_nan(),
+            "hex beyond u128 is outside the pinned subset"
         );
     }
 
@@ -824,13 +845,18 @@ mod js_quirk_tests {
         assert_eq!(js_rel(&json!({}), &json!("x")), Some(Ordering::Less));
     }
 
-    /// The rotting day truncation: Math.floor already ran, so only
-    /// the cast's truncation is pinned.
+    /// The rotting day truncation and the cast's saturation arms:
+    /// Math.floor already ran for reachable inputs, so the truncation
+    /// and the unreachable negative/NaN fallbacks are pinned.
     #[test]
-    fn days_u64_truncates_a_floor_quotient() {
+    fn days_u64_truncates_and_saturates_like_the_cast() {
         assert_eq!(days_u64(0.0), 0);
         assert_eq!(days_u64(1.9), 1);
         assert_eq!(days_u64(2.0), 2);
         assert_eq!(days_u64(1_000_000.0), 1_000_000);
+        // Rust's `as` saturates: the caller's guard excludes these,
+        // the arms are pinned so a switch to a panicking cast fails.
+        assert_eq!(days_u64(-1.5), 0, "a negative quotient saturates to 0");
+        assert_eq!(days_u64(f64::NAN), 0, "NaN saturates to 0");
     }
 }

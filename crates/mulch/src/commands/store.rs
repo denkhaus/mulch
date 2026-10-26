@@ -104,20 +104,15 @@ fn chain_message_from(error: &mulch::Error) -> String {
     crate::output::chain_message(error)
 }
 
-/// The domain-exists prologue half (D3, mulch-0e87): the check every
-/// domain-taking command runs, mapped onto ITS wording shape. The
-/// open stays with [`open_store`]/[`open_store_mut`] (callers differ
-/// on lock and timing); order-pinned commands interleave their own
-/// checks around this. Folds the `!domains.iter().any(...) +
-/// unknown_domain_failure(...)` couple that lived in six commands
-/// across five files (move, archive, delete, prime, and edit/outcome
-/// through locate_record).
-/// The addressing table's single-domain arm: resolve the address onto
-/// its canonical domain (alias chains included, ADR-0006), require
-/// membership, and render the command's failure shape. Every
-/// single-domain entry (archive, delete, move's two ends, record's
-/// write path via [`super::store::open_store_mut`] callers) speaks
-/// through this, and the set arm wraps it (mulch-8452).
+/// The addressing table's single-domain arm (mulch-8452; the D3
+/// prologue half of mulch-0e87): resolve the address onto its
+/// canonical domain (alias chains included, ADR-0006), require
+/// membership, and render the command's failure shape. The open stays
+/// with [`open_store`]/[`open_store_mut`] (callers differ on lock and
+/// timing); order-pinned commands interleave their own checks around
+/// this. Every single-domain entry (archive, delete, move's two ends,
+/// record's write path, edit/outcome through [`locate_record`]) speaks
+/// through this, and the set arm wraps it.
 ///
 /// # Errors
 ///
@@ -356,10 +351,13 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// A miss names the address the caller typed and lists the
-    /// configured domains (the read-family shape).
+    /// A miss names the typed domain and lists the configured
+    /// domains in config order (the read-family shape). An alias can
+    /// never be a miss (it resolves to a configured canonical), so the
+    /// typed name IS the canonical here — the assertion pins the
+    /// wording and the list, not the address law.
     #[test]
-    fn resolve_domain_set_miss_names_the_address_and_lists_available() {
+    fn resolve_domain_set_miss_names_the_typed_domain_and_lists_available() {
         let (root, store) = alias_store("set-miss");
         let Err(failure) = resolve_domain_set(
             "query",

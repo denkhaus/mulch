@@ -268,6 +268,13 @@ fn edit_through_an_alias_updates_the_canonical_record() {
         "edited through the alias",
     ]);
     assert_eq!(run.code, 0, "{}", run.stderr);
+    // The success line names the CANONICAL (the alias is an address,
+    // not a domain) - the same law as the file it wrote.
+    assert!(
+        run.stdout.contains("in dev"),
+        "names the canonical: {}",
+        run.stdout
+    );
     let live = read_store_file(&dir.0, "expertise/dev.jsonl");
     assert!(live.contains("edited through the alias"), "{live}");
     assert!(
@@ -297,5 +304,46 @@ fn outcome_through_an_alias_writes_the_canonical_file() {
     assert!(
         !dir.0.join(".mulch/expertise/develop.jsonl").exists(),
         "no alias-named file appears"
+    );
+}
+
+/// `compact --apply` resolves its address ONCE and writes through the
+/// canonical (mulch-8452 review fold): the pre-fold body discarded the
+/// table's answer and rewrote the raw argument's path, so an alias
+/// input would read an empty file and archive into `develop.jsonl`.
+#[test]
+fn compact_apply_through_an_alias_writes_the_canonical_files() {
+    let dir = alias_store("alias-compact");
+    let body = "{\"type\":\"convention\",\"classification\":\"tactical\",\
+\"recorded_at\":\"2026-10-25T10:00:00.000Z\",\"content\":\"one\",\
+\"id\":\"mx-c0de01\"}\n\
+{\"type\":\"convention\",\"classification\":\"tactical\",\
+\"recorded_at\":\"2026-10-25T10:01:00.000Z\",\"content\":\"two\",\
+\"id\":\"mx-c0de02\"}\n";
+    std::fs::write(dir.0.join(".mulch/expertise/dev.jsonl"), body).expect("seed");
+    let run = run_in(&dir.0, Path::new(mulch_bin()), &[
+        "compact",
+        "develop",
+        "--apply",
+        "--records",
+        "mx-c0de01,mx-c0de02",
+        "--type",
+        "convention",
+        "--content",
+        "merged through the alias",
+        "--yes",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let live = read_store_file(&dir.0, "expertise/dev.jsonl");
+    assert!(live.contains("merged through the alias"), "{live}");
+    let archive = read_store_file(&dir.0, "archive/dev.jsonl");
+    assert!(archive.contains("mx-c0de01"), "{archive}");
+    assert!(
+        !dir.0.join(".mulch/expertise/develop.jsonl").exists(),
+        "no alias-named live file appears"
+    );
+    assert!(
+        !dir.0.join(".mulch/archive/develop.jsonl").exists(),
+        "no alias-named archive appears"
     );
 }

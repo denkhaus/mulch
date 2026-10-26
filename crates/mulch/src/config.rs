@@ -21,7 +21,9 @@ use crate::error::{Error, Result};
 /// `StoreFiles::resolve_domain` runs it over the validated map at
 /// every addressing entry. `None` means the chain exceeded the map's
 /// own size, which a validated map cannot do — a cycle is the only
-/// cause.
+/// cause. Both inputs share the return lifetime because a non-alias
+/// address comes back unchanged: the result borrows from the map OR
+/// from `from` (the same twice-bound shape as `ensure_domain`).
 pub(crate) fn walk_alias_chain<'a>(
     aliases: &'a HashMap<String, String>,
     from: &'a str,
@@ -491,6 +493,13 @@ impl Config {
     }
 
     /// Register a domain (a no-op when it already exists).
+    ///
+    /// A RAW document primitive: it does not check the alias
+    /// collision invariant — a name that is a live alias written
+    /// here fails the next open's validation. Callers go through
+    /// [`crate::StoreFiles::register_domain`] /
+    /// [`crate::StoreFiles::adopt_domain`], which own the guard
+    /// (mulch-8deb).
     pub fn add_domain(&mut self, domain: &str) {
         let Some(domains) = self
             .raw
@@ -535,6 +544,11 @@ impl Config {
     /// Remove a domain entry (a no-op when absent). The remaining
     /// domains keep their original order — `Mapping::remove` alone
     /// would swap the last entry into the hole.
+    ///
+    /// A RAW document primitive like [`Config::add_domain`]: it does
+    /// not check for live aliases, which would dangle. Callers go
+    /// through [`crate::StoreFiles::remove_domain`], which owns the
+    /// guard (mulch-8deb).
     pub fn remove_domain(&mut self, domain: &str) {
         if let Some(domains) = self
             .raw

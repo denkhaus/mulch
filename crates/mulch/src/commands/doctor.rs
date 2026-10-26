@@ -919,7 +919,8 @@ fn apply_fixes(
                     // The reference has no alias block; skipping keeps
                     // the repair useful on exactly the fragmented stores
                     // ADR-0006 targets (a read-view merge is mulch-7112).
-                    if let Some(canonical) = store.domain_alias_of(&domain) {
+                    if store.alias_target_of(&domain).is_some() {
+                        let canonical = store.resolve_domain(&domain);
                         fixes.push(format!(
                             "Skipped orphaned domain \"{domain}\": the name is an alias of \"{canonical}\""
                         ));

@@ -42,6 +42,7 @@ use crate::commands::prime::format::{
     ManifestDomain, contract_block, manifest_output, manifest_payload, prime_output, session_close,
 };
 use crate::commands::render::estimate_record_text;
+use crate::commands::store::ensure_canonical;
 use crate::output::{Failure, print_line};
 
 mod format;
@@ -119,7 +120,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
     // (mulch-8452).
     let available = store.domains();
     for domain in &requested {
-        crate::commands::store::ensure_canonical(
+        ensure_canonical(
             "prime",
             &store,
             domain,
@@ -128,7 +129,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PrimeArgs) -> Result<(), Failure> {
         )?;
     }
     for domain in &excluded {
-        crate::commands::store::ensure_canonical(
+        ensure_canonical(
             "prime",
             &store,
             domain,

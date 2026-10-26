@@ -131,7 +131,7 @@ impl DomainStatus {
             DateOf::Ms(newest_ms) => {
                 let age_days = ((now_ms - newest_ms) / 86_400_000.0).floor();
                 if age_days > shelf.observational as f64 {
-                    (true, Some(mulch::jsval::days_u64(age_days)))
+                    (true, Some(mulch::days_u64(age_days)))
                 } else {
                     (false, None)
                 }
@@ -327,7 +327,7 @@ impl StampSlot {
     fn displaced(self, candidate: Option<&Value>, direction: Ordering) -> Self {
         match self {
             Self::Won(ref winner) if truthy(winner) => match candidate {
-                Some(value) if mulch::jsval::js_rel(value, winner) == Some(direction) => {
+                Some(value) if mulch::js_rel(value, winner) == Some(direction) => {
                     Self::Won(value.clone())
                 }
                 _ => self,
