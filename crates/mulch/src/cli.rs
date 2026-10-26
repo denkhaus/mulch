@@ -260,6 +260,15 @@ pub(crate) enum Command {
     /// Prime a session with relevant expertise (mulch-16da).
     Prime(Box<PrimeArgs>),
 
+    /// Read and write .mulch/mulch.config.yaml (mulch-176f).
+    Config {
+        #[command(subcommand)]
+        command: crate::commands::config::ConfigSub,
+    },
+
+    /// Show expertise record changes since a git ref (mulch-176f).
+    Diff(crate::commands::diff_cmd::DiffArgs),
+
     /// Validate, stage, and commit .mulch/ changes (mulch-176f).
     Sync {
         /// Custom commit message.

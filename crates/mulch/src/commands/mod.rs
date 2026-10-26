@@ -9,8 +9,10 @@ mod add;
 mod archive;
 mod compact;
 mod completions;
+pub(crate) mod config;
 mod delete;
 mod delete_domain;
+pub(crate) mod diff_cmd;
 mod doctor;
 mod edit;
 mod failure;
@@ -127,6 +129,8 @@ pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failu
         } => ready::run(opts, limit.as_str(), domain.as_deref(), since.as_deref()),
         Command::Learn { since } => learn::run(opts, since),
         Command::Prime(args) => prime::run(opts, args),
+        Command::Config { command } => config::run(opts, command),
+        Command::Diff(args) => diff_cmd::run(opts, args),
         Command::Sync {
             message,
             no_validate,
