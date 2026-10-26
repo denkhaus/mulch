@@ -49,8 +49,7 @@ pub(crate) struct DiffEntry {
 
 /// Runs `diff` (plain, `--json`, `-q`).
 pub(crate) fn run(opts: &GlobalOpts, args: &DiffArgs) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("diff", format!("resolving cwd: {source}")))?;
+    let cwd = crate::commands::store::cwd("diff")?;
 
     // The registry bootstrap (every command, cli.ts:47-67): the store
     // opens for its registry; a missing/unreadable store falls back to
@@ -70,22 +69,9 @@ pub(crate) fn run(opts: &GlobalOpts, args: &DiffArgs) -> Result<(), Failure> {
     if !crate::commands::git::is_git_repo(&cwd) {
         // The two surfaces carry DIFFERENT sentences (diff.ts:114-125):
         // plain is the lowercase `Error:` line, json the remediation
-        // sentence in a stderr envelope — the same pair as `learn`
-        // (the third inline copy; a fold candidate, see the delivery
-        // note).
-        let mut failure = Failure::handled_on_stderr("diff", "Error: not in a git repository.");
-        if opts.json
-            && let Some(body) = failure.envelope.as_object_mut()
-        {
-            body.insert(
-                "error".into(),
-                Value::String(
-                    "Not in a git repository. Run this command from within a git repository."
-                        .into(),
-                ),
-            );
-        }
-        return Err(failure);
+        // sentence in a stderr envelope — the shared law
+        // ([`crate::commands::git::not_a_repo`], mulch-29af).
+        return Err(crate::commands::git::not_a_repo("diff"));
     }
 
     // The read law: `git diff <since> -- .mulch/expertise/`; ANY

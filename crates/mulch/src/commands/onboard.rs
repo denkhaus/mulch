@@ -60,8 +60,7 @@ const CANDIDATES: [&str; 3] = ["CLAUDE.md", ".claude/CLAUDE.md", "AGENTS.md"];
 
 /// Runs `onboard` (onboard.ts `runOnboard`).
 pub(super) fn run(opts: &GlobalOpts, args: &OnboardArgs) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::error_line("onboard", format!("resolving cwd: {source}")))?;
+    let cwd = crate::commands::store::cwd("onboard")?;
     // `onboard` may run before `init`; a missing or broken config
     // degrades to "no preset configured" (onboard.ts:76-85).
     let session_close = read_session_close_config(&cwd);

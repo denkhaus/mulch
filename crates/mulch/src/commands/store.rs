@@ -24,6 +24,29 @@ pub(crate) const NO_STORE_MESSAGE: &str = "No .mulch/ directory found. Run `mulc
 pub(crate) const NO_STORE_CONFIG_MESSAGE: &str =
     "Error: No .mulch/ directory found. Run `mulch init` to set up this project.";
 
+/// The same sentence without the prefix — the raw form the
+/// reference's `readConfig` throws, for the callers that wrap it in
+/// their own wording (sync's `Validation error:` prefix). ONE owner
+/// for both spellings (mulch-375f rider).
+pub(crate) const NO_STORE_PLAIN_MESSAGE: &str =
+    "No .mulch/ directory found. Run `mulch init` to set up this project.";
+
+/// The cwd resolution every command shares (mulch-375f): ONE channel
+/// decision for the environmental failure — the `Error:`-prefixed
+/// plain line on stderr, the prefix-stripped envelope beside it
+/// (the [`Failure::error_line`] idiom). The wordings were
+/// port-invented and spelled seven-plus ways with an accidental
+/// stdout/stderr drift; nothing parity-pins them.
+pub(crate) fn cwd(command: &str) -> Result<std::path::PathBuf, Failure> {
+    std::env::current_dir().map_err(|source| cwd_failure(command, &source))
+}
+
+/// The failure law of [`cwd`], pure so the table can pin its bytes
+/// without deleting the process working directory.
+fn cwd_failure(command: &str, source: &std::io::Error) -> Failure {
+    Failure::error_line(command, format!("resolving cwd: {source}"))
+}
+
 /// Locates the store for the parity commands.
 pub(crate) fn locate(root: &Path) -> Result<mulch::StoreLocation, mulch::Error> {
     mulch::StoreFiles::locate(root)
@@ -63,8 +86,7 @@ fn open_located(
     config_message: bool,
     exclusive: bool,
 ) -> Result<mulch::StoreFiles, Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled(command, format!("resolving cwd: {source}")))?;
+    let cwd = cwd(command)?;
     let located = if exclusive {
         mulch::StoreFiles::locate_exclusive(&cwd)
     } else {
@@ -302,9 +324,6 @@ pub(crate) fn read_and_resolve(
     Ok((records, position))
 }
 
-/// The full-record verdict of an UPDATED record for the write gates
-/// (`edit`, `move`): [`mulch::schema::full_verdict`] over the
-/// reference's in-memory shape. When the target's raw line carries a
 /// The single-id prologue every per-record command opens with: open
 /// the store, check the domain, strict-read the file, resolve the id
 /// (mulch-0fd8 — one seam beside [`open_store`],
@@ -362,6 +381,29 @@ pub(crate) fn persist(
 mod tests {
     use super::*;
     use crate::commands::testscratch::store_with;
+
+    /// The cwd law (mulch-375f): ONE channel decision — the plain
+    /// line carries the `Error:` prefix on stderr, the envelope the
+    /// prefix-stripped sentence beside it. Catches a drift back to
+    /// the stdout channel (the seven pre-fold spellings) and a
+    /// double-prefixing.
+    #[test]
+    fn cwd_failure_is_the_error_line_idiom_on_stderr() {
+        let source = std::io::Error::other("gone");
+        let failure = cwd_failure("sync", &source);
+        assert_eq!(failure.message, "Error: resolving cwd: gone");
+        assert_eq!(
+            failure.envelope["error"],
+            serde_json::json!("resolving cwd: gone"),
+            "the envelope carries no prefix"
+        );
+        assert_eq!(failure.envelope["command"], serde_json::json!("sync"));
+        assert!(
+            failure.envelope_to_stderr,
+            "environmental errors ride stderr"
+        );
+        assert!(!failure.rendered);
+    }
 
     /// The shared alias fixture: `dev`/`rust` domains with a chained
     /// alias (develop -> dev, devloop -> develop) and a direct one

@@ -42,8 +42,7 @@ const BUILTIN_PROVIDER_NAMES: [&str; 3] = ["claude", "codex", "cursor"];
 
 /// Runs `setup` (setup.ts 624-786).
 pub(super) fn run(opts: &GlobalOpts, args: &SetupArgs) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::error_line("setup", format!("resolving cwd: {source}")))?;
+    let cwd = crate::commands::store::cwd("setup")?;
 
     // Verify .mulch/ exists — a file counts too (existsSync law).
     if !cwd.join(".mulch").exists() {

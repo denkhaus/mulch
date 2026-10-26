@@ -9,8 +9,6 @@
 //! print a block error or a warning. Consumers then keep only their
 //! payload shape, their channel gate, and their `Failure` rendering.
 
-use std::path::PathBuf;
-
 use mulch::hooks::{HookEvent, HookExecution, HookResult, run_hooks};
 use serde_json::{Map, Value};
 
@@ -47,23 +45,6 @@ pub(crate) fn print_hook_warnings(warnings: &[String]) {
     }
 }
 
-/// The hooks' working directory: the reference spawns scripts in the
-/// CLI's cwd, which may be a project subdirectory. ONE policy across
-/// all consumers — a cwd failure is a handled error of the calling
-/// command, never an empty path (an empty `current_dir` fails at
-/// spawn, reads as a script failure, and would spuriously BLOCK a
-/// `pre-*` event).
-///
-/// # Errors
-///
-/// [`Failure`] (handled, envelope-shaped) when the process cwd is
-/// unreadable — reachable when the directory was removed under a
-/// running process.
-fn hook_cwd(command: &str) -> Result<PathBuf, Failure> {
-    std::env::current_dir()
-        .map_err(|source| Failure::handled(command, format!("resolving cwd: {source}")))
-}
-
 /// One finished hook phase: the engine's result plus the channel work
 /// (`run` already forwarded stderr). Consumers read the resolved
 /// outcome instead of re-implementing run → forward → block →
@@ -79,8 +60,9 @@ impl HookPhase {
     /// caller must not print a block error or a warning before this
     /// returns).
     ///
-    /// `command` only labels a cwd failure (each command keeps its own
-    /// handled-error shape).
+    /// `command` only labels a cwd failure (the shared
+    /// [`crate::commands::store::cwd`] law — the reference spawns
+    /// scripts in the CLI's cwd, which may be a project subdirectory).
     ///
     /// # Errors
     ///
@@ -92,7 +74,7 @@ impl HookPhase {
         store: &mulch::StoreFiles,
         command: &str,
     ) -> Result<Self, Failure> {
-        let cwd = hook_cwd(command)?;
+        let cwd = crate::commands::store::cwd(command)?;
         let result = run_hooks(event, payload, store, &cwd);
         forward_hook_stderr(&result.executions);
         Ok(Self(result))

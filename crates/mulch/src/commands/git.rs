@@ -66,6 +66,20 @@ pub(crate) fn is_git_repo(cwd: &Path) -> bool {
     run(cwd, &["rev-parse", "--is-inside-work-tree"]).is_some()
 }
 
+/// The parity-pinned two-sentence not-a-repo law (mulch-29af): plain
+/// stderr carries the lowercase `Error:` line, the json envelope the
+/// remediation sentence — DIFFERENT texts, stderr channel (the
+/// [`Failure::divergent`] law). Spelled three times before
+/// (learn.ts/sync.ts/diff.ts class); this adapter owns the shape the
+/// same way it owns [`is_git_repo`].
+pub(crate) fn not_a_repo(command: &str) -> crate::output::Failure {
+    crate::output::Failure::divergent(
+        command,
+        "Error: not in a git repository.",
+        "Not in a git repository. Run this command from within a git repository.",
+    )
+}
+
 /// `sync.ts` 29-40 `gitHasChanges`: `git status --porcelain .mulch/`
 /// — any non-empty trimmed output means changes. The pathspec is the
 /// law: dirt outside `.mulch/` does not count. A failed call reads
@@ -138,8 +152,28 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{GitError, add, commit, has_changes, is_git_repo, run};
+    use super::{GitError, add, commit, has_changes, is_git_repo, not_a_repo, run};
     use crate::commands::git_context::GitContext;
+
+    /// The two-sentence law (mulch-29af): plain and json carry their
+    /// own texts on the stderr channel — pinned bytes that three
+    /// call sites shared before the fold. Catches a future editor
+    /// converging the sentences (the pair is deliberately different)
+    /// or moving the envelope to stdout.
+    #[test]
+    fn not_a_repo_carries_the_pinned_sentence_pair() {
+        let failure = not_a_repo("learn");
+        assert_eq!(failure.message, "Error: not in a git repository.");
+        assert_eq!(
+            failure.envelope["error"],
+            serde_json::json!(
+                "Not in a git repository. Run this command from within a git repository."
+            )
+        );
+        assert_eq!(failure.envelope["command"], serde_json::json!("learn"));
+        assert!(failure.envelope_to_stderr);
+        assert!(!failure.rendered);
+    }
 
     static SERIAL: AtomicU64 = AtomicU64::new(0);
 

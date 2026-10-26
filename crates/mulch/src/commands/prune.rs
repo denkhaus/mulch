@@ -69,8 +69,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &PruneArgs) -> Result<(), Failure> {
     let rule = StaleRule::from_shelf_life(&shelf_life);
     let now = Timestamp::now();
     let now_iso = crate::commands::failure::now_iso();
-    let project_root = std::env::current_dir()
-        .map_err(|source| Failure::handled(command, format!("resolving cwd: {source}")))?;
+    let project_root = crate::commands::store::cwd(command)?;
 
     // Phase 1 — preview: every domain strict, one pass (the writer
     // lock makes this read the reference's locked phase-3 re-read).

@@ -120,8 +120,7 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     // doctor owns its no-store contract: the reference still prints the
     // report shape (header + summary on stdout, the failed config check
     // on stderr) instead of a plain handled error.
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("doctor", format!("resolving cwd: {source}")))?;
+    let cwd = crate::commands::store::cwd("doctor")?;
     // `--fix` repairs under the writer lock (the whole re-read/repair
     // cycle, mulch-228d); the report-only mode stays lock-free.
     let located = if fix {

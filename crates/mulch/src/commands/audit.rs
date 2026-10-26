@@ -34,8 +34,7 @@ pub(super) fn run(
     domain: Option<&str>,
     ignore_domains: Option<&str>,
 ) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("audit", format!("resolving cwd: {source}")))?;
+    let cwd = crate::commands::store::cwd("audit")?;
     let store = match mulch::StoreFiles::locate(&cwd) {
         Ok(StoreLocation::Open(store)) => store,
         // The reference gates on the .mulch/ DIRECTORY existing;

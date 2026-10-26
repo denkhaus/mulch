@@ -22,20 +22,13 @@ pub(crate) fn run(opts: &GlobalOpts, since: &str) -> Result<(), Failure> {
     // The registry read precedes every command's own logic (the
     // reference bootstraps the registry globally — a broken
     // custom_types block fails even before learn's git check, probed).
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("learn", format!("resolving cwd: {source}")))?;
+    let cwd = crate::commands::store::cwd("learn")?;
     let located =
         locate(&cwd).map_err(|source| crate::commands::store::locate_error("learn", &source))?;
 
     let git = GitContext::process_cwd();
     if !git.is_git_repo() {
-        // The two surfaces carry DIFFERENT sentences (not a prefix
-        // strip): plain is lowercase, json adds the remediation.
-        return Err(Failure::divergent(
-            "learn",
-            "Error: not in a git repository.",
-            "Not in a git repository. Run this command from within a git repository.",
-        ));
+        return Err(crate::commands::git::not_a_repo("learn"));
     }
 
     // No .mulch/ directory — exit cleanly (hook usage in non-mulch

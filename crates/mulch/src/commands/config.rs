@@ -183,7 +183,7 @@ fn unset(opts: &GlobalOpts, path: &str) -> Result<(), Failure> {
 /// itself already says `mulch init` here; its `ml config set` becomes
 /// `mulch config set` under the promote law).
 fn store_gate(opts: &GlobalOpts, verb: &str) -> Result<PathBuf, Failure> {
-    let config_path = current_dir_config(opts)?;
+    let config_path = current_dir_config()?;
     if config_path.is_file() {
         return Ok(config_path);
     }
@@ -196,17 +196,16 @@ fn store_gate(opts: &GlobalOpts, verb: &str) -> Result<PathBuf, Failure> {
 }
 
 /// The config path under the process cwd (the port's store law — no
-/// worktree redirection, like every other command here).
-fn current_dir_config(opts: &GlobalOpts) -> Result<PathBuf, Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| plain_failure(opts, format!("resolving cwd: {source}")))?;
+/// worktree redirection, like every other command here). A cwd
+/// failure rides the shared [`crate::commands::store::cwd`] law.
+fn current_dir_config() -> Result<PathBuf, Failure> {
+    let cwd = crate::commands::store::cwd("config")?;
     Ok(cwd.join(".mulch").join("mulch.config.yaml"))
 }
 
 /// `config show`'s config path (same law, the show error wording).
 fn config_path() -> Result<PathBuf, Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled("config", format!("resolving cwd: {source}")))?;
+    let cwd = crate::commands::store::cwd("config")?;
     Ok(cwd.join(".mulch").join("mulch.config.yaml"))
 }
 

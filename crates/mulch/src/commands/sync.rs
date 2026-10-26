@@ -30,29 +30,19 @@ use crate::output::{Failure, print_json, print_line, success_envelope};
 /// The default commit message (reference sync.ts:272).
 const DEFAULT_MESSAGE: &str = "mulch: update expertise";
 
-/// The no-store sentence the reference's config reader throws
-/// (utils/config.ts readConfig), which sync renders under its
-/// `Validation error:` prefix.
-const NO_STORE: &str = "No .mulch/ directory found. Run `mulch init` to set up this project.";
-
 /// Runs `sync` from the current directory.
 pub(super) fn run(
     opts: &GlobalOpts,
     message: Option<String>,
     no_validate: bool,
 ) -> Result<(), Failure> {
-    let cwd = std::env::current_dir()
-        .map_err(|source| Failure::handled_on_stderr("sync", format!("resolving cwd: {source}")))?;
+    let cwd = crate::commands::store::cwd("sync")?;
 
     // Repo first (sync.ts order): the no-repo error precedes every
     // store read. Plain and json texts DIFFER here — the reference's
     // plain line is the short lowercase sentence.
     if !git::is_git_repo(&cwd) {
-        return Err(Failure::divergent(
-            "sync",
-            "Error: not in a git repository.",
-            "Not in a git repository. Run this command from within a git repository.",
-        ));
+        return Err(git::not_a_repo("sync"));
     }
 
     // The validate step. A store that cannot even open is a thrown
@@ -122,7 +112,12 @@ struct ValidateResult {
 fn validate_expertise(cwd: &Path) -> Result<ValidateResult, Failure> {
     let store = match mulch::StoreFiles::locate(cwd) {
         Ok(mulch::StoreLocation::Open(store)) => store,
-        Ok(_) => return Err(validation_error("sync", NO_STORE)),
+        Ok(_) => {
+            return Err(validation_error(
+                "sync",
+                crate::commands::store::NO_STORE_PLAIN_MESSAGE,
+            ));
+        }
         Err(source) => {
             return Err(validation_error(
                 "sync",
