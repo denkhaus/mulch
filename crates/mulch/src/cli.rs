@@ -270,6 +270,26 @@ pub(crate) enum Command {
         #[arg(long = "no-validate")]
         no_validate: bool,
     },
+
+    /// Generate or update a CLAUDE.md/AGENTS.md snippet pointing to
+    /// mulch prime (mulch-176f).
+    Onboard(Box<OnboardArgs>),
+
+    /// Upgrade mulch to the latest version (mulch-176f; native
+    /// binary — see the README DEVIATIONS bullet: no registry check,
+    /// no install step).
+    Upgrade {
+        /// Check for updates without installing.
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Output shell completion script (bash, zsh, fish)
+    /// (mulch-176f).
+    Completions {
+        /// Shell to generate completions for.
+        shell: String,
+    },
 }
 
 /// Flags of `mulch record` (reference surface).
@@ -714,6 +734,24 @@ pub(crate) struct PrimeArgs {
     /// domain, tokens) without rendering content.
     #[arg(long = "dry-run")]
     pub(crate) dry_run: bool,
+}
+
+/// Flags of `mulch onboard` (reference surface, onboard.ts:354-361).
+#[derive(Debug, Args)]
+pub(crate) struct OnboardArgs {
+    /// Print the snippet to stdout instead of writing to a file.
+    #[arg(long)]
+    pub(crate) stdout: bool,
+
+    /// Customize the snippet for a specific provider (accepted and
+    /// ignored — all providers share the standardized snippet,
+    /// onboard.ts:71-74).
+    #[arg(long)]
+    pub(crate) provider: Option<String>,
+
+    /// Check if the onboarding snippet is installed and up to date.
+    #[arg(long)]
+    pub(crate) check: bool,
 }
 
 /// Outcome flags of `record --outcome-*` and the `outcome` command.

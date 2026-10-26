@@ -8,6 +8,7 @@ mod active_work;
 mod add;
 mod archive;
 mod compact;
+mod completions;
 mod delete;
 mod delete_domain;
 mod doctor;
@@ -20,6 +21,7 @@ mod init;
 mod input;
 mod learn;
 mod move_cmd;
+mod onboard;
 mod outcome;
 mod prime;
 mod prune;
@@ -33,6 +35,7 @@ mod search;
 mod status;
 mod store;
 mod sync;
+mod upgrade;
 mod validate;
 
 use crate::cli::{Command, GlobalOpts};
@@ -128,6 +131,9 @@ pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failu
             message,
             no_validate,
         } => sync::run(opts, message.clone(), *no_validate),
+        Command::Onboard(args) => onboard::run(opts, args),
+        Command::Upgrade { check } => upgrade::run(opts, *check),
+        Command::Completions { shell } => completions::run(shell),
     }
 }
 

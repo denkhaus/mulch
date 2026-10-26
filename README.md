@@ -310,6 +310,52 @@ expectation (the parity rule: never silently):
   `ready` and `rank` alike. Expectation: a domain must be a
   configured key.
 
+- **`onboard` ships this binary's snippet: promoted spellings and the
+  port's version.** The reference's snippet tells agents to run
+  `ml prime` / `ml record` / … / `ml --help`; ours says
+  `mulch prime` / `mulch record` / … / `mulch --help` (the same law
+  as the archive banner and record retry-echo — including the
+  `mulch --help` mention, which the word-level promote rewrite cannot
+  reach). The embedded version and its currency marker
+  (`<!-- mulch-onboard:v<version> -->`) are this port's, so a
+  reference-written snippet reports `outdated` and is refreshed on
+  the next `mulch onboard` — snippet currency tracks the INSTALLED
+  binary by design. Everything else (candidate order CLAUDE.md /
+  .claude/CLAUDE.md / AGENTS.md, the create/append/update/migrate/
+  up-to-date actions and messages, `--check`, `--stdout` (no trailing
+  newline, quiet- and json-immune), `--quiet`, `--provider` accepted
+  and ignored, the `prime.session_close` footer presets, the json
+  `{file, action}` envelopes, exit codes) is byte-parity.
+- **`upgrade` reports instead of self-upgrading.** This binary is
+  cargo-installed, not the npm package: the reference's registry
+  probe (`npm view @os-eco/mulch-cli version`) and its install step
+  (`bun install -g @os-eco/mulch-cli@latest`) describe a distribution
+  this port was never part of, so neither runs. `mulch upgrade`
+  (and `mulch upgrade --check` — the flag parses, there is no
+  install to skip) exits 0 with the doctor-check stub's vocabulary:
+  plain `✓ Native binary v<version> — update via cargo install
+  (registry check not applicable)`, suppressed by `--quiet`; json
+  keeps the reference's field names (`current`, `latest`,
+  `upToDate`, `updated`) with honest values — `latest` and
+  `upToDate` are `null` (unknown), `updated` is `false`, plus a
+  `note` explaining the divergence. Expectation: no network access,
+  no install, exit 0, the report above.
+- **`completions` word lists name THIS binary's implemented
+  commands.** The reference's hand-rolled scripts (not commander's
+  generator — template bytes are otherwise identical for bash, zsh,
+  fish) complete its 30-command surface; ours completes the
+  implemented subcommands in declaration order plus the global longs
+  (`--version --json --quiet --verbose --timing
+  --allow-unknown-types --allow-domain-mismatch --format` — help
+  excluded, like the reference). Both `complete` registrations ship
+  on both binaries (`complete -F _mulch mulch` AND
+  `complete -F _mulch ml`, and the fish/zsh twins) — the reference
+  deliberately registers both names. Unsupported shells match the
+  reference exactly: `✗ Unsupported shell: "<raw>". Supported:
+  bash, zsh, fish` on stderr, exit 1, identical in `--json` and
+  `--quiet`; shell names match case-insensitively; a missing
+  positional is clap's wording (the argument-parse deviation family).
+
 ## Status
 
 Bootstrap. The work is tracked in this repo's own `.seeds/` tracker
