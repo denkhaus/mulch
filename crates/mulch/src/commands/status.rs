@@ -131,7 +131,7 @@ impl DomainStatus {
             DateOf::Ms(newest_ms) => {
                 let age_days = ((now_ms - newest_ms) / 86_400_000.0).floor();
                 if age_days > shelf.observational as f64 {
-                    (true, Some(days_u64(age_days)))
+                    (true, Some(mulch::jsval::days_u64(age_days)))
                 } else {
                     (false, None)
                 }
@@ -327,7 +327,9 @@ impl StampSlot {
     fn displaced(self, candidate: Option<&Value>, direction: Ordering) -> Self {
         match self {
             Self::Won(ref winner) if truthy(winner) => match candidate {
-                Some(value) if js_rel(value, winner) == Some(direction) => Self::Won(value.clone()),
+                Some(value) if mulch::jsval::js_rel(value, winner) == Some(direction) => {
+                    Self::Won(value.clone())
+                }
                 _ => self,
             },
             _ => candidate.map_or(Self::Missing, |value| Self::Won(value.clone())),
@@ -372,124 +374,6 @@ enum DateOf {
     Invalid,
     /// The coerced epoch milliseconds.
     Ms(f64),
-}
-
-/// The JS abstract relational comparison over two raw values: both
-/// ToPrimitive sides strings -> lexicographic; otherwise ToNumber
-/// both, where a NaN on either side makes EVERY comparison false.
-/// The recorded_at selection runs through this (a number recorded_at
-/// therefore pins both slots against every date string, probed
-/// mulch-4d25).
-fn js_rel(candidate: &Value, winner: &Value) -> Option<Ordering> {
-    match (to_primitive(candidate), to_primitive(winner)) {
-        (Primitive::Str(a), Primitive::Str(b)) => Some(a.cmp(&b)),
-        (a, b) => {
-            let (a, b) = (to_number(&a), to_number(&b));
-            if a.is_nan() || b.is_nan() {
-                None
-            } else {
-                // partial_cmp is total once NaN is excluded
-                Some(a.partial_cmp(&b).unwrap_or(Ordering::Equal))
-            }
-        }
-    }
-}
-
-/// ToPrimitive (no hint) of a JSON value: strings stay strings;
-/// null/booleans/numbers contribute their ToNumber side; arrays and
-/// objects fall to their JS toString (`[]` is the empty string —
-/// which BEATS every date string lexicographically as a candidate).
-enum Primitive {
-    Str(String),
-    Num(f64),
-}
-
-fn to_primitive(value: &Value) -> Primitive {
-    match value {
-        Value::String(text) => Primitive::Str(text.clone()),
-        Value::Number(number) => Primitive::Num(number.as_f64().unwrap_or(f64::NAN)),
-        Value::Bool(flag) => Primitive::Num(f64::from(u8::from(*flag))),
-        Value::Null => Primitive::Num(0.0),
-        Value::Array(items) => Primitive::Str(array_to_string(items)),
-        Value::Object(_) => Primitive::Str("[object Object]".into()),
-    }
-}
-
-/// ToNumber of a primitive: numbers pass through; strings take the JS
-/// numeric-literal grammar (a trimmed empty string is 0, Infinity/NaN
-/// only by their exact spellings, `0x` hex, decimal otherwise; every
-/// other shape is NaN — date strings always are, which is what makes
-/// mixed-type comparisons false).
-fn to_number(primitive: &Primitive) -> f64 {
-    match primitive {
-        Primitive::Num(number) => *number,
-        Primitive::Str(text) => js_to_number(text),
-    }
-}
-
-fn js_to_number(text: &str) -> f64 {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return 0.0;
-    }
-    match trimmed {
-        "Infinity" | "+Infinity" => return f64::INFINITY,
-        "-Infinity" => return f64::NEG_INFINITY,
-        // ToNumber resolves NaN's sign away; JS accepts the signed
-        // spellings as the same NaN
-        "NaN" | "+NaN" | "-NaN" => return f64::NAN,
-        _ => {}
-    }
-    if let Some(hex) = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-    {
-        return u128::from_str_radix(hex, 16).map_or(f64::NAN, |value| value as f64);
-    }
-    // JS numeric literals start with a digit, sign, or decimal point —
-    // the guard rejects Rust's case-insensitive "inf"/"nan" parses.
-    let first = trimmed.as_bytes()[0];
-    if !(first.is_ascii_digit() || matches!(first, b'+' | b'-' | b'.')) {
-        return f64::NAN;
-    }
-    trimmed.parse::<f64>().unwrap_or(f64::NAN)
-}
-
-/// Array.prototype.toString: elements joined by `,` with nested
-/// arrays flattened and null rendering empty. Number elements render
-/// Rust-style — a bounded approximation (the JS decimal
-/// stringification agrees on every integral value; recorded_at is
-/// schema-required to be a string, so arrays only reach the
-/// comparison as a hostile store's oddity).
-fn array_to_string(items: &[Value]) -> String {
-    items
-        .iter()
-        .map(|item| match item {
-            Value::Null => String::new(),
-            Value::String(text) => text.clone(),
-            Value::Bool(flag) => flag.to_string(),
-            Value::Number(number) => number
-                .as_f64()
-                .map_or_else(String::new, |value| format!("{value}")),
-            Value::Array(nested) => array_to_string(nested),
-            Value::Object(_) => "[object Object]".into(),
-        })
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-/// The rotting day count as the rendered u64 shape: the comparison
-/// above already established the value strictly above the (u64)
-/// shelf, hence positive, and the TimeClip-bounded span keeps the
-/// quotient under 2^53.
-fn days_u64(age_days: f64) -> u64 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "positive by the > shelf comparison and far below 2^53"
-    )]
-    let days = age_days as u64;
-    days
 }
 
 /// `new Date(winner)?.toISOString() ?? null` — the body block's ISO

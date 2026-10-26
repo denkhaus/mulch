@@ -5,12 +5,17 @@
 //! ([`js_length`]), JSON.stringify string encoding ([`js_string`]),
 //! UTF-16 truncation ([`js_truncate`]), JS object property-key
 //! enumeration order ([`js_key_sorted`]),
-//! Math.round's non-negative clamp ([`js_round_u64`]), the strict
-//! numeric-flag parse with Number canonicalization
-//! ([`parse_non_negative_number`]), and the strict-equality comparison
-//! the reference's dedup uses ([`js_dedup_eq`]). Command modules
-//! import from here; private per-command copies and inline matches
-//! delete (mulch-ec71; one quirk test surface, `js_quirk_tests`).
+//! Math.round's non-negative clamp ([`js_round_u64`]), the day
+//! truncation of an age quotient ([`days_u64`]), the abstract
+//! relational comparison (`<`/`>` with ToPrimitive + ToNumber,
+//! [`js_rel`]), the strict numeric-flag parse with Number
+//! canonicalization ([`parse_non_negative_number`]), and the
+//! strict-equality comparison the reference's dedup uses
+//! ([`js_dedup_eq`]). Command modules import from here; private
+//! per-command copies and inline matches delete (mulch-ec71; one quirk
+//! test surface, `js_quirk_tests`).
+
+use std::cmp::Ordering;
 
 use serde_json::Value;
 
@@ -93,6 +98,123 @@ pub fn js_dedup_eq(a: Option<&Value>, b: Option<&Value>) -> bool {
         | (Some(_), None) => false,
         (Some(a), Some(b)) => a == b,
     }
+}
+
+/// The JS abstract relational comparison (`<` / `>`) over two raw JSON
+/// values — the law behind `status`'s oldest/newest `recorded_at`
+/// selection: with BOTH ToPrimitive sides strings the comparison is
+/// lexicographic; otherwise both sides go through ToNumber, where a
+/// NaN on either side makes EVERY comparison false ([`None`] rather
+/// than a fourth ordering).
+///
+/// Consequences pinned by probe (mulch-4d25): a numeric `recorded_at`
+/// is never displaced by a date string (string-vs-number coerces the
+/// date to NaN, so neither `<` nor `>` fires), and an empty array —
+/// ToPrimitive yields the empty string — BEATS every date string
+/// lexicographically as a candidate.
+pub fn js_rel(left: &Value, right: &Value) -> Option<Ordering> {
+    match (to_primitive(left), to_primitive(right)) {
+        (Primitive::Str(a), Primitive::Str(b)) => Some(a.cmp(&b)),
+        (a, b) => {
+            let (a, b) = (to_number(&a), to_number(&b));
+            if a.is_nan() || b.is_nan() {
+                None
+            } else {
+                // partial_cmp is total once NaN is excluded
+                Some(a.partial_cmp(&b).unwrap_or(Ordering::Equal))
+            }
+        }
+    }
+}
+
+/// ToPrimitive (no hint) of a JSON value: strings stay strings;
+/// null/booleans/numbers contribute their ToNumber side; arrays and
+/// objects fall to their JS toString (`[]` is the empty string —
+/// which BEATS every date string lexicographically as a candidate).
+enum Primitive {
+    Str(String),
+    Num(f64),
+}
+
+fn to_primitive(value: &Value) -> Primitive {
+    match value {
+        Value::String(text) => Primitive::Str(text.clone()),
+        Value::Number(number) => Primitive::Num(number.as_f64().unwrap_or(f64::NAN)),
+        Value::Bool(flag) => Primitive::Num(f64::from(u8::from(*flag))),
+        Value::Null => Primitive::Num(0.0),
+        Value::Array(items) => Primitive::Str(array_to_string(items)),
+        Value::Object(_) => Primitive::Str("[object Object]".into()),
+    }
+}
+
+/// ToNumber of a primitive: numbers pass through; strings take the JS
+/// numeric-literal grammar (a trimmed empty string is 0, Infinity/NaN
+/// only by their exact spellings, `0x` hex, decimal otherwise; every
+/// other shape is NaN — date strings always are, which is what makes
+/// mixed-type comparisons false).
+fn to_number(primitive: &Primitive) -> f64 {
+    match primitive {
+        Primitive::Num(number) => *number,
+        Primitive::Str(text) => js_to_number(text),
+    }
+}
+
+fn js_to_number(text: &str) -> f64 {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    match trimmed {
+        "Infinity" | "+Infinity" => return f64::INFINITY,
+        "-Infinity" => return f64::NEG_INFINITY,
+        // ToNumber resolves NaN's sign away; JS accepts the signed
+        // spellings as the same NaN
+        "NaN" | "+NaN" | "-NaN" => return f64::NAN,
+        _ => {}
+    }
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return u128::from_str_radix(hex, 16).map_or(f64::NAN, |value| value as f64);
+    }
+    // JS numeric literals start with a digit, sign, or decimal point —
+    // the guard rejects Rust's case-insensitive "inf"/"nan" parses.
+    let first = trimmed.as_bytes()[0];
+    if !(first.is_ascii_digit() || matches!(first, b'+' | b'-' | b'.')) {
+        return f64::NAN;
+    }
+    trimmed.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+/// Array.prototype.toString: elements joined by `,` with nested
+/// arrays flattened and null rendering empty. Number elements render
+/// Rust-style — a bounded approximation (the JS decimal
+/// stringification agrees on every integral value; recorded_at is
+/// schema-required to be a string, so arrays only reach the
+/// comparison as a hostile store's oddity).
+///
+/// This is deliberately NOT [`value_text`]: both join arrays the same
+/// way, but the number spellings diverge. `value_text` keeps serde's
+/// JSON form — a float-typed `1.0` stays `1.0` — while this law is JS
+/// Array.prototype.toString, which renders that same number `1`; a
+/// genuine fraction (`1.5`) agrees on both. Merging the two would
+/// silently move one caller's quirk.
+fn array_to_string(items: &[Value]) -> String {
+    items
+        .iter()
+        .map(|item| match item {
+            Value::Null => String::new(),
+            Value::String(text) => text.clone(),
+            Value::Bool(flag) => flag.to_string(),
+            Value::Number(number) => number
+                .as_f64()
+                .map_or_else(String::new, |value| format!("{value}")),
+            Value::Array(nested) => array_to_string(nested),
+            Value::Object(_) => "[object Object]".into(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The reference's strict numeric-flag parse
@@ -219,6 +341,24 @@ pub fn js_round_u64(value: f64) -> u64 {
     } else {
         0
     }
+}
+
+/// The rotting day count as the rendered u64 shape. The caller
+/// (`status`) has already applied `Math.floor` and established the
+/// value strictly above the (u64) shelf, hence positive, and the
+/// TimeClip-bounded span (|ms| <= 8.64e15) keeps the day quotient
+/// under 2^53 — so the float-to-int cast is exact for every reachable
+/// input. Exotic inputs saturate instead of wrapping (Rust's `as`
+/// semantics): a negative or NaN quotient becomes 0, which the
+/// caller's guard already excludes.
+pub fn days_u64(age_days: f64) -> u64 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "positive by the > shelf comparison and far below 2^53"
+    )]
+    let days = age_days as u64;
+    days
 }
 
 /// The reference's `truncate` (utils/format-helpers.ts): UTF-16 code
@@ -568,5 +708,129 @@ mod js_quirk_tests {
         // no sentence end: the hard cut keeps 12 units — the period
         // IS the 12th — then the ellipsis
         assert_eq!(js_truncate(nel, 12), "Not a break....");
+    }
+
+    /// ToNumber's grammar (mulch-d5c3, moved from status): a trimmed
+    /// empty string is 0, the signed Infinity/NaN spellings are what
+    /// they say, hex literals parse, and the Rust-parse guard keeps
+    /// identifiers (`inf`, `nan`) NaN where Rust's parser would
+    /// accept them. Date strings are always NaN — the reason mixed
+    /// recorded_at comparisons never fire.
+    #[test]
+    fn to_number_follows_the_js_numeric_literal_grammar() {
+        assert_eq!(js_to_number(""), 0.0);
+        assert_eq!(js_to_number("   "), 0.0);
+        assert_eq!(js_to_number("Infinity"), f64::INFINITY);
+        assert_eq!(js_to_number("+Infinity"), f64::INFINITY);
+        assert_eq!(js_to_number("-Infinity"), f64::NEG_INFINITY);
+        for spelling in ["NaN", "+NaN", "-NaN"] {
+            assert!(js_to_number(spelling).is_nan(), "{spelling} is NaN");
+        }
+        assert_eq!(js_to_number("0x1F"), 31.0);
+        assert_eq!(js_to_number("0X1f"), 31.0);
+        assert!(js_to_number("0x").is_nan(), "an empty hex body is NaN");
+        assert_eq!(js_to_number("  42  "), 42.0);
+        assert_eq!(js_to_number("-1.5"), -1.5);
+        assert_eq!(js_to_number(".5"), 0.5);
+        assert_eq!(js_to_number("+7"), 7.0);
+        // JS numeric literals start with a digit, sign, or dot: any
+        // other first byte is NaN even where Rust would parse it
+        for rejected in ["inf", "nan", "Infinityx", "1e", "true"] {
+            assert!(js_to_number(rejected).is_nan(), "{rejected} is NaN");
+        }
+        assert!(
+            js_to_number("2026-10-25T10:00:00.000Z").is_nan(),
+            "a date string is NaN"
+        );
+    }
+
+    /// ToPrimitive: strings stay strings; numbers/null/booleans are
+    /// numeric; arrays join through Array.prototype.toString; objects
+    /// stringify to "[object Object]".
+    #[test]
+    fn to_primitive_maps_each_json_shape() {
+        match to_primitive(&json!("text")) {
+            Primitive::Str(text) => assert_eq!(text, "text"),
+            Primitive::Num(_) => panic!("a string stays a string"),
+        }
+        match to_primitive(&json!(42)) {
+            Primitive::Num(number) => assert_eq!(number, 42.0),
+            Primitive::Str(_) => panic!("a number is numeric"),
+        }
+        match to_primitive(&json!(null)) {
+            Primitive::Num(number) => assert_eq!(number, 0.0),
+            Primitive::Str(_) => panic!("null is numeric 0"),
+        }
+        for (flag, expected) in [(true, 1.0), (false, 0.0)] {
+            match to_primitive(&json!(flag)) {
+                Primitive::Num(number) => assert_eq!(number, expected),
+                Primitive::Str(_) => panic!("a boolean is numeric"),
+            }
+        }
+        // [] is the empty string — the candidate that beats every date
+        match to_primitive(&json!([])) {
+            Primitive::Str(text) => assert_eq!(text, ""),
+            Primitive::Num(_) => panic!("an array is a string"),
+        }
+        match to_primitive(&json!({})) {
+            Primitive::Str(text) => assert_eq!(text, "[object Object]"),
+            Primitive::Num(_) => panic!("an object is a string"),
+        }
+    }
+
+    /// Array.prototype.toString: `,`-joined with nested arrays
+    /// flattened and null empty; number spellings are JS's (an
+    /// integral float renders `1`, unlike [`value_text`]'s serde
+    /// spelling) — the divergence documented on the function.
+    #[test]
+    fn array_to_string_joins_flattens_and_spells_numbers_like_js() {
+        assert_eq!(array_to_string(&[json!(1), json!(null)]), "1,");
+        assert_eq!(array_to_string(&[json!("a"), json!(["b", "c"])]), "a,b,c");
+        assert_eq!(array_to_string(&[json!(true), json!(false)]), "true,false");
+        assert_eq!(array_to_string(&[json!(1.0)]), "1");
+        assert_eq!(array_to_string(&[json!(1.5)]), "1.5");
+        assert_eq!(array_to_string(&[json!({})]), "[object Object]");
+        // the deliberate contrast: value_text keeps serde's `1.0`
+        assert_eq!(value_text(&json!([1.0])), "1.0");
+    }
+
+    /// The abstract relational comparison: string/string is
+    /// lexicographic, mixed types coerce through ToNumber, and a NaN
+    /// on either side yields NO ordering (both `<` and `>` false) —
+    /// the law behind the oldest/newest recorded_at selection.
+    #[test]
+    fn js_rel_is_lexicographic_for_strings_and_nan_false_otherwise() {
+        assert_eq!(js_rel(&json!("a"), &json!("b")), Some(Ordering::Less));
+        assert_eq!(js_rel(&json!("b"), &json!("a")), Some(Ordering::Greater));
+        assert_eq!(js_rel(&json!("a"), &json!("a")), Some(Ordering::Equal));
+        // the empty string beats every date string lexicographically
+        assert_eq!(
+            js_rel(&json!(""), &json!("2026-10-25T10:00:00.000Z")),
+            Some(Ordering::Less)
+        );
+        // string/number coerce numerically
+        assert_eq!(js_rel(&json!("42"), &json!(100)), Some(Ordering::Less));
+        assert_eq!(js_rel(&json!("42"), &json!(42)), Some(Ordering::Equal));
+        // a date string against a number is NaN on one side: no order
+        assert_eq!(js_rel(&json!("2026-10-25T10:00:00.000Z"), &json!(5)), None);
+        // a NaN on either numeric side: null is 0, the date string NaN
+        assert_eq!(
+            js_rel(&json!(null), &json!("2026-10-25T10:00:00.000Z")),
+            None
+        );
+        assert_eq!(js_rel(&json!("not-a-date"), &json!(5)), None);
+        // arrays/objects coerce via toString before comparing
+        assert_eq!(js_rel(&json!([]), &json!("x")), Some(Ordering::Less));
+        assert_eq!(js_rel(&json!({}), &json!("x")), Some(Ordering::Less));
+    }
+
+    /// The rotting day truncation: Math.floor already ran, so only
+    /// the cast's truncation is pinned.
+    #[test]
+    fn days_u64_truncates_a_floor_quotient() {
+        assert_eq!(days_u64(0.0), 0);
+        assert_eq!(days_u64(1.9), 1);
+        assert_eq!(days_u64(2.0), 2);
+        assert_eq!(days_u64(1_000_000.0), 1_000_000);
     }
 }
