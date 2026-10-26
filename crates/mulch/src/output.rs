@@ -79,6 +79,42 @@ impl Failure {
         failure
     }
 
+    /// The rendered-exit law (mulch-230f): the command already
+    /// printed its full output — report, envelope, details — on the
+    /// right channels; the failure carries ONLY the exit contract.
+    /// `render_failure` prints nothing for it (the envelope built
+    /// here never renders; it stays for diagnostics).
+    pub(crate) fn rendered_exit(command: &str) -> Self {
+        let mut failure = Self::handled(command, "");
+        failure.rendered = true;
+        failure
+    }
+
+    /// The divergent-channel law (mulch-230f): plain stderr and the
+    /// JSON error envelope carry deliberately DIFFERENT sentences —
+    /// never a prefix strip of each other (the no-repo pair, or
+    /// plain's `Retry:` hint where json says `Example:`). `plain` is
+    /// the full stderr line (with its `Error: ` prefix when the site
+    /// uses the idiom), `json` the envelope's error field verbatim;
+    /// the envelope rides the stderr channel.
+    pub(crate) fn divergent(
+        command: &str,
+        plain: impl Into<String>,
+        json: impl Into<String>,
+    ) -> Self {
+        let mut body = Map::new();
+        body.insert("success".into(), Value::Bool(false));
+        body.insert("command".into(), Value::String(command.into()));
+        body.insert("error".into(), Value::String(json.into()));
+        Self {
+            message:            plain.into(),
+            code:               EXIT_ERROR,
+            envelope:           Value::Object(body),
+            envelope_to_stderr: true,
+            rendered:           false,
+        }
+    }
+
     /// Builds a handled error with the reference envelope shape.
     pub(crate) fn handled(command: &str, error: impl Into<String>) -> Self {
         let error = error.into();
@@ -214,5 +250,68 @@ mod error_line_tests {
         );
         assert_eq!(failure.envelope["command"], serde_json::json!("cmd"));
         assert!(failure.envelope_to_stderr);
+    }
+}
+
+#[cfg(test)]
+mod rendered_exit_tests {
+    use super::{EXIT_ERROR, Failure};
+
+    /// The rendered-exit law (mulch-230f): everything is already
+    /// printed; only the exit contract remains. Catches a ctor that
+    /// leaves `rendered` false — the dispatcher would print an empty
+    /// line on plain channels — and one that leaves a message or a
+    /// non-`EXIT_ERROR` code behind.
+    #[test]
+    fn rendered_exit_prints_nothing_and_carries_only_the_code() {
+        let failure = Failure::rendered_exit("validate");
+        assert!(failure.rendered, "the dispatcher must print nothing");
+        assert_eq!(failure.message, "");
+        assert_eq!(failure.code, EXIT_ERROR);
+    }
+}
+
+#[cfg(test)]
+mod divergent_tests {
+    use super::Failure;
+
+    /// The divergent law (mulch-230f): plain and json carry TWO
+    /// sentences — the envelope error is the given json text, never
+    /// a prefix strip of plain — on the stderr channel. Catches a
+    /// ctor built on `handled` alone (its strip would leak
+    /// plain-minus-prefix into the envelope) and one forgetting the
+    /// stderr channel.
+    #[test]
+    fn divergent_carries_two_sentences_on_stderr() {
+        let failure = Failure::divergent(
+            "sync",
+            "Error: not in a git repository.",
+            "Not in a git repository. Run this command from within a git repository.",
+        );
+        assert_eq!(failure.message, "Error: not in a git repository.");
+        assert_eq!(
+            failure.envelope["error"],
+            serde_json::json!(
+                "Not in a git repository. Run this command from within a git repository."
+            ),
+            "the json error is its own sentence, not a strip of plain"
+        );
+        assert_eq!(failure.envelope["command"], serde_json::json!("sync"));
+        assert!(failure.envelope_to_stderr);
+        assert!(!failure.rendered);
+        assert_eq!(failure.code, super::EXIT_ERROR);
+    }
+
+    /// The two laws compose (mulch-230f): a pre-rendered command may
+    /// still carry divergent texts for diagnostics — `rendered`
+    /// short-circuits the print, so neither sentence reaches a
+    /// channel. Catches a ctor pair that excludes each other.
+    #[test]
+    fn divergent_composes_with_rendered_exit() {
+        let mut failure = Failure::divergent("record", "Error: a", "B");
+        failure.rendered = true;
+        assert!(failure.rendered);
+        assert_eq!(failure.envelope["error"], serde_json::json!("B"));
+        assert_eq!(failure.message, "Error: a");
     }
 }

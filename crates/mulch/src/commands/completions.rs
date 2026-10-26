@@ -61,11 +61,7 @@ fn unsupported(shell: &str) -> Failure {
     {
         eprintln!("✗ {detail}");
     }
-    let mut failure = Failure::handled("completions", detail);
-    failure.message = format!("✗ {}", failure.message);
-    failure.envelope_to_stderr = true;
-    failure.rendered = true;
-    failure
+    Failure::rendered_exit("completions")
 }
 
 /// This binary's visible subcommands in declaration order — the
@@ -252,16 +248,14 @@ complete -c ml -n '__fish_use_subcommand' -a 'add' -d 'add command'
 
     /// The unsupported-shell law: the raw (un-lowercased) argument is
     /// quoted, the failure carries exit 1, and it returns pre-rendered
-    /// (the command already printed the line both modes share).
+    /// (the command already printed the line both modes share — the
+    /// struct itself carries nothing but the exit contract).
     #[test]
     fn unsupported_shell_fails_pre_rendered_with_the_plain_line() {
         let failure = unsupported("PowerShell");
         assert_eq!(failure.code, EXIT_ERROR);
         assert!(failure.rendered, "the line is printed by the command");
-        assert_eq!(
-            failure.message,
-            "✗ Unsupported shell: \"PowerShell\". Supported: bash, zsh, fish"
-        );
+        assert_eq!(failure.message, "");
     }
 
     /// Shell matching is case-insensitive and the empty string is
@@ -270,10 +264,7 @@ complete -c ml -n '__fish_use_subcommand' -a 'add' -d 'add command'
     #[test]
     fn empty_shell_is_unsupported() {
         let failure = unsupported("");
-        assert_eq!(
-            failure.message,
-            "✗ Unsupported shell: \"\". Supported: bash, zsh, fish"
-        );
+        assert!(failure.rendered);
         assert_eq!(failure.code, EXIT_ERROR);
     }
 }

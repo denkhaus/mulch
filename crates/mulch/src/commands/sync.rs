@@ -47,11 +47,11 @@ pub(super) fn run(
     // store read. Plain and json texts DIFFER here — the reference's
     // plain line is the short lowercase sentence.
     if !git::is_git_repo(&cwd) {
-        let mut failure = Failure::error_line("sync", "not in a git repository.");
-        failure.envelope["error"] = Value::String(
-            "Not in a git repository. Run this command from within a git repository.".into(),
-        );
-        return Err(failure);
+        return Err(Failure::divergent(
+            "sync",
+            "Error: not in a git repository.",
+            "Not in a git repository. Run this command from within a git repository.",
+        ));
     }
 
     // The validate step. A store that cannot even open is a thrown
@@ -326,9 +326,7 @@ fn validation_failure(opts: &GlobalOpts, result: &ValidateResult) -> Failure {
             eprintln!("\nFix errors and retry, or use --no-validate to skip.");
         }
     }
-    let mut failure = Failure::handled("sync", "");
-    failure.rendered = true;
-    failure
+    Failure::rendered_exit("sync")
 }
 
 /// The `Validation error: <message>` surface (a THROWN error, not a

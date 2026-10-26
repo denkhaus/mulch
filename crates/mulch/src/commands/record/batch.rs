@@ -454,11 +454,7 @@ pub(super) fn stdin_batch(
         // `errors.length > 0 && created + updated === 0`). Plain: the
         // block already printed above (both modes); only the exit
         // code remains.
-        let mut failure = Failure::handled("record", "");
-        failure.envelope["error"] = Value::String(format!("Validation errors: {summary}"));
-        failure.envelope_to_stderr = true;
-        failure.rendered = true;
-        return Err(failure);
+        return Err(Failure::rendered_exit("record"));
     }
     Ok(())
 }

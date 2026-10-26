@@ -154,16 +154,17 @@ pub(super) fn build_record(
 /// envelope says `Schema validation failed: <joined>. <hint>`.
 fn ref_validation_failure(subs: &[schema::SubError], hint: &str) -> Failure {
     let rendered = schema::render_subs(subs);
-    let mut message = String::from("Error: record failed schema validation:");
+    let mut plain = String::from("Error: record failed schema validation:");
     for sub in &rendered {
-        let _ = write!(message, "\n  {sub}");
+        let _ = write!(plain, "\n  {sub}");
     }
-    let _ = write!(message, "\n{hint}");
-    let mut failure = Failure::handled("record", message);
+    let _ = write!(plain, "\n{hint}");
     let joined = rendered.join(schema::SUB_SEP);
-    failure.envelope["error"] =
-        Value::String(format!("{}{joined}. {hint}", schema::VALIDATION_PREFIX));
-    failure
+    Failure::divergent(
+        "record",
+        plain,
+        format!("{}{joined}. {hint}", schema::VALIDATION_PREFIX),
+    )
 }
 
 /// The missing-required-flag failure with the reference's Retry hint
@@ -247,14 +248,19 @@ fn missing_flags_failure(
     for (flag, field) in missing_flags.iter().zip(missing) {
         let _ = write!(echo, " {flag} \"<{field}>\"");
     }
-    Failure::handled(
-        "record",
-        format!(
-            "Error: {} records are missing required flag(s): {}.\n  Retry: {echo}",
-            record_type,
-            missing_flags.join(", ")
-        ),
-    )
+    let plain = format!(
+        "Error: {} records are missing required flag(s): {}.\n  Retry: {echo}",
+        record_type,
+        missing_flags.join(", ")
+    );
+    // The json rewrite (probe 2, §3d; mulch-230f): no `Error: `
+    // prefix, and the plain `Retry:` hint becomes `Example:` — only
+    // this failure, never the schema-validation one (its ctor keeps
+    // its own sentence pair).
+    let json_text = plain
+        .replacen("Error: ", "", 1)
+        .replace("\n  Retry: ", " Example: ");
+    Failure::divergent("record", plain, json_text)
 }
 
 /// Comma list split (raw): `""` and comma-only values split to an

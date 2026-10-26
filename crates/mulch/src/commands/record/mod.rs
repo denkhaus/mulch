@@ -47,13 +47,11 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     if let Some(path) = batch
         && !path.exists()
     {
-        let mut failure = Failure::error_line(
+        return Err(Failure::divergent(
             "record",
-            format!("batch file not found: {}", path.display()),
-        );
-        failure.envelope["error"] =
-            Value::String(format!("Batch file not found: {}", path.display()));
-        return Err(failure);
+            format!("Error: batch file not found: {}", path.display()),
+            format!("Batch file not found: {}", path.display()),
+        ));
     }
 
     // The batch READ also precedes every store side effect (the
@@ -114,25 +112,11 @@ pub(super) fn run(opts: &GlobalOpts, args: &RecordArgs) -> Result<(), Failure> {
     }
 
     let recorded_at = now_iso();
-    let record = match build_record(store.registry(), args, &recorded_at, evidence_map(args)) {
-        Ok(built) => built,
-        Err(mut failure) => {
-            // Parity contract: the --json error drops the `Error: `
-            // prefix and says `Example:` where plain stderr says
-            // `Retry:` (probe 2, §3d; spec review round 2). Only the
-            // missing-flags failure gets that rewrite — schema
-            // validation failures carry their own envelope text.
-            failure.envelope_to_stderr = true;
-            if opts.json && failure.message.contains("\n  Retry: ") {
-                let json_text = failure
-                    .message
-                    .replacen("Error: ", "", 1)
-                    .replace("\n  Retry: ", " Example: ");
-                failure.envelope["error"] = Value::String(json_text);
-            }
-            return Err(failure);
-        }
-    };
+    // Both builder failures are divergent by construction: the schema
+    // failure carries its own envelope sentence, the missing-flags
+    // failure the `Example:` rewrite of its `Retry:` hint (probe 2,
+    // §3d; folded into the ctor, mulch-230f) — both on stderr.
+    let record = build_record(store.registry(), args, &recorded_at, evidence_map(args))?;
 
     // The pre-record lifecycle hook (mulch-7f49): fires after the
     // record is built and validated but before any file read —
@@ -303,9 +287,7 @@ const BLOCK_DEFAULT: &str = "pre-record hook blocked the write";
 /// says `Error: {reason}` on stderr, the json envelope carries the
 /// bare reason (probe-pinned).
 fn hook_failure(reason: String) -> Failure {
-    let mut failure = Failure::error_line("record", &reason);
-    failure.envelope["error"] = Value::String(reason);
-    failure
+    Failure::divergent("record", format!("Error: {reason}"), reason)
 }
 
 /// The flag path's pre-record phase: runs the hook family outside

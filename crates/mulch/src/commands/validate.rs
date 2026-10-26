@@ -186,8 +186,6 @@ pub(super) fn run(opts: &GlobalOpts) -> Result<(), Failure> {
         // Plain mode already printed summary + details; the failure
         // carries only the exit code (the JSON envelope printed above
         // came from the command itself).
-        let mut failure = Failure::handled("validate", "");
-        failure.rendered = true;
-        Err(failure)
+        Err(Failure::rendered_exit("validate"))
     }
 }

@@ -223,9 +223,9 @@ pub(super) fn run(opts: &GlobalOpts, fix: bool) -> Result<(), Failure> {
     if fail == 0 {
         Ok(())
     } else {
-        let mut failure = Failure::handled("doctor", "health checks failed");
-        failure.rendered = true;
-        Err(failure)
+        // The report block already printed (both modes carry it on
+        // their own channels); only the exit code remains.
+        Err(Failure::rendered_exit("doctor"))
     }
 }
 
@@ -1187,11 +1187,7 @@ fn no_store_report(opts: &GlobalOpts) -> Failure {
             println!("Mulch Doctor\n\n0 passed, 0 warnings, 1 failed");
             eprintln!("  ✗ No .mulch/ directory found");
         }
-        let mut failure = Failure::handled("doctor", "");
-        failure.message.clear();
-        failure.rendered = true;
-        failure.code = 1;
-        failure
+        Failure::rendered_exit("doctor")
     }
 }
 

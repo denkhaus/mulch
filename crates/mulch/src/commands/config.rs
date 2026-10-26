@@ -79,21 +79,20 @@ pub(crate) fn run(opts: &GlobalOpts, sub: &ConfigSub) -> Result<(), Failure> {
 /// rendered here and `rendered` silences the dispatcher.
 fn plain_failure(opts: &GlobalOpts, message: impl Into<String>) -> Failure {
     let message = message.into();
-    let mut failure = Failure {
-        message:            message.clone(),
-        code:               EXIT_ERROR,
-        envelope:           serde_json::Value::Null,
-        envelope_to_stderr: true,
-        rendered:           false,
-    };
     if opts.json {
         #[allow(clippy::print_stderr, reason = "error rendering is the CLI boundary")]
         {
             eprintln!("{message}");
         }
-        failure.rendered = true;
+        return Failure::rendered_exit("config");
     }
-    failure
+    Failure {
+        message,
+        code: EXIT_ERROR,
+        envelope: serde_json::Value::Null,
+        envelope_to_stderr: true,
+        rendered: false,
+    }
 }
 
 // ---- config show ----

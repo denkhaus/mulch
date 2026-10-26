@@ -92,7 +92,7 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
     if let mulch::schema::FullVerdict::Invalid { subs, .. } =
         store.updated_line_verdict(&domain, records[position].line, &updated)
     {
-        return Err(updated_record_failed(&subs, opts.json));
+        return Err(updated_record_failed(&subs));
     }
 
     records[position].record = updated;
@@ -119,26 +119,23 @@ pub(super) fn run(opts: &GlobalOpts, args: &EditArgs) -> Result<(), Failure> {
 /// header then one `  `-prefixed ajv line per sub-error on stderr;
 /// json mode carries the `; `-joined sub-errors behind a capital-U
 /// wrapper in the error envelope (also stderr); exit 1 either way and
-/// nothing is written.
-fn updated_record_failed(subs: &[mulch::schema::SubError], json: bool) -> Failure {
+/// nothing is written. Mode-dependence lives in the divergent pair —
+/// the dispatcher picks the channel text (mulch-230f).
+fn updated_record_failed(subs: &[mulch::schema::SubError]) -> Failure {
     let rendered = mulch::schema::render_subs(subs);
-    if json {
-        return Failure::handled_on_stderr(
-            "edit",
-            format!(
-                "Updated record failed schema validation: {}",
-                rendered.join(mulch::schema::SUB_SEP)
-            ),
-        );
-    }
-    let mut message = String::from("Error: updated record failed schema validation:");
+    let mut plain = String::from("Error: updated record failed schema validation:");
     for sub in &rendered {
-        message.push_str("\n  ");
-        message.push_str(sub);
+        plain.push_str("\n  ");
+        plain.push_str(sub);
     }
-    let mut failure = Failure::handled_on_stderr("edit", "");
-    failure.message = message;
-    failure
+    Failure::divergent(
+        "edit",
+        plain,
+        format!(
+            "Updated record failed schema validation: {}",
+            rendered.join(mulch::schema::SUB_SEP)
+        ),
+    )
 }
 
 /// Appends an edit-time outcome object (no recorded_at). The entry
@@ -201,14 +198,11 @@ mod gate_tests {
     /// line per sub-error (probe-pinned 2026-10-11, ml 0.10.7).
     #[test]
     fn plain_gate_renders_header_and_indented_subs() {
-        let failure = updated_record_failed(
-            &[
-                SubError::Missing("content".into()),
-                SubError::TypeConst,
-                SubError::OneOfTail,
-            ],
-            false,
-        );
+        let failure = updated_record_failed(&[
+            SubError::Missing("content".into()),
+            SubError::TypeConst,
+            SubError::OneOfTail,
+        ]);
         assert_eq!(
             failure.message,
             "Error: updated record failed schema validation:\n   must have required property 'content'\n  /type must be equal to constant\n   must match exactly one schema in oneOf"
@@ -220,10 +214,11 @@ mod gate_tests {
     /// stderr, pinned by the battery).
     #[test]
     fn json_gate_joins_subs_behind_the_wrapper() {
-        let failure = updated_record_failed(&[SubError::Missing("content".into())], true);
+        let failure = updated_record_failed(&[SubError::Missing("content".into())]);
         assert_eq!(
             failure.envelope["error"],
             "Updated record failed schema validation:  must have required property 'content'"
         );
+        assert!(failure.envelope_to_stderr, "the envelope rides stderr");
     }
 }

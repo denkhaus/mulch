@@ -31,19 +31,11 @@ pub(crate) fn run(opts: &GlobalOpts, since: &str) -> Result<(), Failure> {
     if !git.is_git_repo() {
         // The two surfaces carry DIFFERENT sentences (not a prefix
         // strip): plain is lowercase, json adds the remediation.
-        let mut failure = Failure::handled_on_stderr("learn", "Error: not in a git repository.");
-        if opts.json
-            && let Some(body) = failure.envelope.as_object_mut()
-        {
-            body.insert(
-                "error".into(),
-                Value::String(
-                    "Not in a git repository. Run this command from within a git repository."
-                        .into(),
-                ),
-            );
-        }
-        return Err(failure);
+        return Err(Failure::divergent(
+            "learn",
+            "Error: not in a git repository.",
+            "Not in a git repository. Run this command from within a git repository.",
+        ));
     }
 
     // No .mulch/ directory — exit cleanly (hook usage in non-mulch
