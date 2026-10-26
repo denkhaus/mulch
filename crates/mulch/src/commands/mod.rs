@@ -13,6 +13,7 @@ mod delete_domain;
 mod doctor;
 mod edit;
 mod failure;
+mod git;
 mod git_context;
 mod hooks_surface;
 mod init;

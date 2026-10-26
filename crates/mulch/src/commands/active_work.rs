@@ -98,8 +98,12 @@ fn issue_file_ids(path: &Path) -> Option<Vec<String>> {
     (!ids.is_empty()).then_some(ids)
 }
 
-/// `ghResolver`'s `gh pr view` probe: only a digits-only answer
-/// resolves; any failure falls through to the branch.
+/// `ghResolver`'s `gh pr view` probe (active-work.ts:113): only a
+/// digits-only answer resolves; any failure falls through to the
+/// branch. Deliberately NOT behind the git process adapter
+/// (mulch-cc7a): `gh` is a network API-client probe, not a VCS
+/// call — the reference keeps it in `utils/active-work.ts` too,
+/// off its `utils/git.ts` seam.
 fn resolve_gh(branch: &str, cwd: &Path) -> Option<String> {
     if branch.is_empty() {
         return None;

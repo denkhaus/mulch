@@ -1,11 +1,12 @@
-//! The git PROCESS adapter (mulch-21d9): the subprocess side of the
-//! git-context seam. The pure matching laws live in the library
-//! (`mulch::git_context` — `normalize_dir_anchor`, `file_matches_any`,
-//! `filter_by_context`, `match_files_to_domains`); this CLI-side
-//! module owns the three changed-file laws and the environment facts
-//! the read commands share, each with the reference's
+//! The git-context READ laws (mulch-21d9): the changed-file
+//! compositions the read commands share, each with the reference's
 //! empty-on-failure fallback (no repo, no git, failed call → no
-//! files / no sha / empty branch):
+//! files / no sha / empty branch). The pure matching laws live in
+//! the library (`mulch::git_context` — `normalize_dir_anchor`,
+//! `file_matches_any`, `filter_by_context`,
+//! `match_files_to_domains`); since mulch-cc7a the subprocess
+//! itself lives one floor down, in [`super::git`] (the process
+//! adapter shared with the sync write laws):
 //!
 //! - [`GitContext::context_files`] — `utils/git-context.ts` `getContextFiles`:
 //!   staged plus unstaged changes, deduped, sorted (`record`'s auto-populated
@@ -55,24 +56,25 @@ impl GitContext {
     }
 
     /// `utils/git.ts` `isGitRepo`: `rev-parse --is-inside-work-tree`
-    /// succeeding is the whole law.
+    /// succeeding is the whole law (the adapter's own
+    /// [`super::git::is_git_repo`] — one owner).
     pub(crate) fn is_git_repo(&self) -> bool {
-        self.run(["rev-parse", "--is-inside-work-tree"]).is_some()
+        super::git::is_git_repo(&self.cwd)
     }
 
     /// Auto-populated git evidence: the full HEAD sha when cwd is a
     /// git repository (reference probe: full 40-char sha; absent
     /// outside git).
     pub(crate) fn head_sha(&self) -> Option<String> {
-        self.run(["rev-parse", "HEAD"])
-            .map(|sha| sha.trim().to_string())
+        super::git::run(&self.cwd, &["rev-parse", "HEAD"]).map(|sha| sha.trim().to_string())
     }
 
     /// `utils/active-work.ts` `getCurrentBranch`: the branch name,
     /// empty on failure AND on a detached HEAD (the reference maps
     /// the literal `HEAD` to `""`).
     pub(crate) fn current_branch(&self) -> String {
-        let Some(branch) = self.run(["rev-parse", "--abbrev-ref", "HEAD"]) else {
+        let Some(branch) = super::git::run(&self.cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
+        else {
             return String::new();
         };
         let branch = branch.trim();
@@ -98,7 +100,7 @@ impl GitContext {
             if staged {
                 args.push("--cached");
             }
-            let Some(text) = self.run(args) else {
+            let Some(text) = super::git::run(&self.cwd, &args) else {
                 continue;
             };
             for file in text.lines().filter(|line| !line.is_empty()) {
@@ -122,7 +124,7 @@ impl GitContext {
             vec!["diff", "--name-only", "--cached"],
             vec!["diff", "--name-only"],
         ] {
-            let Some(text) = self.run(args) else {
+            let Some(text) = super::git::run(&self.cwd, &args) else {
                 continue;
             };
             for file in text.lines().filter(|line| !line.is_empty()) {
@@ -140,33 +142,10 @@ impl GitContext {
     /// untracked files, rename destinations kept — parsed by
     /// [`parse_porcelain`].
     pub(crate) fn active_files(&self) -> Vec<String> {
-        match self.run(["status", "--porcelain", "-uall"]) {
+        match super::git::run(&self.cwd, &["status", "--porcelain", "-uall"]) {
             Some(text) => parse_porcelain(&text),
             None => Vec::new(),
         }
-    }
-
-    /// Runs git with `args` in the captured cwd; `None` on any
-    /// failure (spawn, non-zero exit, non-UTF-8 output) — the
-    /// shared empty-on-failure law.
-    fn run<I, S>(&self, args: I) -> Option<String>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let output = std::process::Command::new("git")
-            .args(
-                args.into_iter()
-                    .map(|arg| arg.as_ref().to_string())
-                    .collect::<Vec<_>>(),
-            )
-            .current_dir(&self.cwd)
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8(output.stdout).ok()
     }
 }
 
