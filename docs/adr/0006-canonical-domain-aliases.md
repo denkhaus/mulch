@@ -27,6 +27,14 @@ domain_aliases:
   a configured domain or another alias; no alias collides with a
   configured domain or itself; the graph is acyclic. A malformed
   block fails loudly — never silently dropped.
+- **The same invariant at WRITE** (mulch-8deb): the config-write seam
+  refuses to introduce a state the open would reject — registering or
+  adopting a name that is a live alias, or removing a canonical that
+  live aliases still resolve to (the typed error lists the dependent
+  names). `doctor --fix` skips an alias-named orphan with a fix line
+  instead of adopting it. `Config::add_domain`/`remove_domain` remain
+  documented raw primitives; `StoreFiles` owns the guard, so no
+  command can brick its own store.
 - **Resolution** (`StoreFiles::resolve_domain`, transitive, acyclic by
   construction) at every domain-ADDRESSING entry: the
   `ensure_domain` seam (move source+target with a canonical
@@ -74,6 +82,8 @@ domain_aliases:
 - `move` gains a canonical same-domain guard AFTER resolution (two
   aliases of one domain are the same target — nothing to move); the
   raw-argument check keeps its parity-first position.
-- Five ungated batteries pin the port law (write redirect, prime
-  equality, same-domain refusal, query addressing, loud invalid
-  block); the config and store tables pin validation and resolution.
+- Thirteen ungated batteries pin the port law (write redirect, prime
+  equality, same-domain refusal, query addressing, loud invalid block,
+  add/delete-domain refusals, doctor's orphan skip, and archive/
+  delete/edit/outcome/compact-apply entry writes); the config and store
+  tables pin validation, resolution and the write guards.
