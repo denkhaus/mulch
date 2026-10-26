@@ -85,6 +85,128 @@ pub(crate) enum Command {
     /// Edit an existing expertise record.
     Edit(Box<EditArgs>),
 
+    /// Query records across domains (mulch-16da).
+    Query(Box<QueryArgs>),
+
+    /// Set up mulch integration for a specific agent provider.
+    Setup(Box<SetupArgs>),
+
+    /// Prime a session with relevant expertise (mulch-16da).
+    Prime(Box<PrimeArgs>),
+
+    /// Generate or update a CLAUDE.md/AGENTS.md snippet pointing to
+    /// mulch prime (mulch-176f).
+    Onboard(Box<OnboardArgs>),
+
+    /// Show status of expertise records.
+    Status,
+
+    /// Validate expertise records against schemas.
+    Validate,
+
+    /// Soft-archive or hard-delete stale records, plus tier-demote
+    /// superseded ones (mulch-7c55).
+    Prune(PruneArgs),
+
+    /// Soft-archive one or more live records (mulch-7c55).
+    Archive {
+        /// Expertise domain.
+        domain: String,
+
+        /// Record ID (exact, bare hash, or unique prefix).
+        id: Option<String>,
+
+        /// Comma-separated list of record IDs to archive.
+        #[arg(long)]
+        records: Option<String>,
+
+        /// Why this record is being archived (required, free-text).
+        #[arg(long)]
+        reason: String,
+
+        /// Preview without making changes.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Revive an archived record (mulch-7c55).
+    Restore {
+        /// Archived record ID (exact, bare hash, or unique prefix).
+        id: String,
+    },
+
+    /// Search expertise records across domains (mulch-16da).
+    Search(Box<SearchArgs>),
+
+    /// Rank records by confirmation-frequency score (highest first)
+    /// (mulch-16da).
+    Rank {
+        /// Limit ranking to a specific domain.
+        domain: Option<String>,
+
+        /// Record type (the choice set is the store's registry —
+        /// filled in by [`augment`], rank.ts).
+        #[arg(long = "type")]
+        record_type: Option<String>,
+
+        /// Return at most N records.
+        // allow_hyphen_values: commander passes `-1` to the command's
+        // own parse (probed); clap would abort pre-dispatch.
+        #[arg(long, default_value = "10", allow_hyphen_values = true)]
+        limit: String,
+
+        /// Exclude records whose confirmation score is below N.
+        #[arg(long = "min-score", default_value = "0", allow_hyphen_values = true)]
+        min_score: String,
+    },
+
+    /// Append an outcome to an existing record.
+    Outcome {
+        /// Domain of the record.
+        domain: String,
+
+        /// Record id (`mx-…`).
+        id: String,
+
+        #[command(flatten)]
+        outcome: OutcomeFlags,
+    },
+
+    /// Run health checks on expertise records.
+    Doctor {
+        /// Apply repairs where the reference supports it.
+        #[arg(long)]
+        fix: bool,
+    },
+
+    /// Show recently added or updated expertise records (mulch-16da).
+    Ready {
+        /// Maximum number of records to show.
+        // allow_hyphen_values: commander hands `-1` to the command's
+        // own parse (probed); clap would abort pre-dispatch.
+        #[arg(long, default_value = "10", allow_hyphen_values = true)]
+        limit: String,
+
+        /// Limit to a specific domain.
+        #[arg(long, allow_hyphen_values = true)]
+        domain: Option<String>,
+
+        /// Show records from the last duration (e.g. 24h, 7d, 2w).
+        #[arg(long, allow_hyphen_values = true)]
+        since: Option<String>,
+    },
+
+    /// Validate, stage, and commit .mulch/ changes (mulch-176f).
+    Sync {
+        /// Custom commit message.
+        #[arg(long)]
+        message: Option<String>,
+
+        /// Skip validation step.
+        #[arg(long = "no-validate")]
+        no_validate: bool,
+    },
+
     /// Delete an expertise record (or several).
     Delete {
         /// Domain to delete from.
@@ -142,111 +264,6 @@ pub(crate) enum Command {
         force: bool,
     },
 
-    /// Append an outcome to an existing record.
-    Outcome {
-        /// Domain of the record.
-        domain: String,
-
-        /// Record id (`mx-…`).
-        id: String,
-
-        #[command(flatten)]
-        outcome: OutcomeFlags,
-    },
-
-    /// Show status of expertise records.
-    Status,
-
-    /// Validate expertise records against schemas.
-    Validate,
-
-    /// Run health checks on expertise records.
-    Doctor {
-        /// Apply repairs where the reference supports it.
-        #[arg(long)]
-        fix: bool,
-    },
-
-    /// Soft-archive or hard-delete stale records, plus tier-demote
-    /// superseded ones (mulch-7c55).
-    Prune(PruneArgs),
-
-    /// Soft-archive one or more live records (mulch-7c55).
-    Archive {
-        /// Expertise domain.
-        domain: String,
-
-        /// Record ID (exact, bare hash, or unique prefix).
-        id: Option<String>,
-
-        /// Comma-separated list of record IDs to archive.
-        #[arg(long)]
-        records: Option<String>,
-
-        /// Why this record is being archived (required, free-text).
-        #[arg(long)]
-        reason: String,
-
-        /// Preview without making changes.
-        #[arg(long = "dry-run")]
-        dry_run: bool,
-    },
-
-    /// Revive an archived record (mulch-7c55).
-    Restore {
-        /// Archived record ID (exact, bare hash, or unique prefix).
-        id: String,
-    },
-
-    /// Compact records: analyze candidates or apply a compaction
-    /// (mulch-8a1b).
-    Compact(CompactArgs),
-
-    /// Query records across domains (mulch-16da).
-    Query(Box<QueryArgs>),
-
-    /// Search expertise records across domains (mulch-16da).
-    Search(Box<SearchArgs>),
-
-    /// Rank records by confirmation-frequency score (highest first)
-    /// (mulch-16da).
-    Rank {
-        /// Limit ranking to a specific domain.
-        domain: Option<String>,
-
-        /// Record type (the choice set is the store's registry —
-        /// filled in by [`augment`], rank.ts).
-        #[arg(long = "type")]
-        record_type: Option<String>,
-
-        /// Return at most N records.
-        // allow_hyphen_values: commander passes `-1` to the command's
-        // own parse (probed); clap would abort pre-dispatch.
-        #[arg(long, default_value = "10", allow_hyphen_values = true)]
-        limit: String,
-
-        /// Exclude records whose confirmation score is below N.
-        #[arg(long = "min-score", default_value = "0", allow_hyphen_values = true)]
-        min_score: String,
-    },
-
-    /// Show recently added or updated expertise records (mulch-16da).
-    Ready {
-        /// Maximum number of records to show.
-        // allow_hyphen_values: commander hands `-1` to the command's
-        // own parse (probed); clap would abort pre-dispatch.
-        #[arg(long, default_value = "10", allow_hyphen_values = true)]
-        limit: String,
-
-        /// Limit to a specific domain.
-        #[arg(long, allow_hyphen_values = true)]
-        domain: Option<String>,
-
-        /// Show records from the last duration (e.g. 24h, 7d, 2w).
-        #[arg(long, allow_hyphen_values = true)]
-        since: Option<String>,
-    },
-
     /// Show changed files and suggest domains for recording
     /// learnings (mulch-16da).
     Learn {
@@ -257,8 +274,9 @@ pub(crate) enum Command {
         since: String,
     },
 
-    /// Prime a session with relevant expertise (mulch-16da).
-    Prime(Box<PrimeArgs>),
+    /// Compact records: analyze candidates or apply a compaction
+    /// (mulch-8a1b).
+    Compact(CompactArgs),
 
     /// Read and write .mulch/mulch.config.yaml (mulch-176f).
     Config {
@@ -269,23 +287,14 @@ pub(crate) enum Command {
     /// Show expertise record changes since a git ref (mulch-176f).
     Diff(DiffArgs),
 
-    /// Validate, stage, and commit .mulch/ changes (mulch-176f).
-    Sync {
-        /// Custom commit message.
+    /// Deprecated: use 'upgrade' instead (hidden stub, update.ts).
+    #[command(hide = true)]
+    Update {
+        /// Accepted and ignored (keeps old invocations past flag
+        /// validation).
         #[arg(long)]
-        message: Option<String>,
-
-        /// Skip validation step.
-        #[arg(long = "no-validate")]
-        no_validate: bool,
+        check: bool,
     },
-
-    /// Generate or update a CLAUDE.md/AGENTS.md snippet pointing to
-    /// mulch prime (mulch-176f).
-    Onboard(Box<OnboardArgs>),
-
-    /// Set up mulch integration for a specific agent provider.
-    Setup(Box<SetupArgs>),
 
     /// Upgrade mulch to the latest version (mulch-176f; native
     /// binary — see the README DEVIATIONS bullet: no registry check,

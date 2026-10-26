@@ -381,7 +381,11 @@ expectation (the parity rule: never silently):
   commands.** The reference's hand-rolled scripts (not commander's
   generator — template bytes are otherwise identical for bash, zsh,
   fish) complete its 30-command surface; ours completes the
-  implemented subcommands in declaration order plus the global longs
+  implemented subcommands in the reference's registration order
+  (cli.ts:186-215 — the Command enum mirrors it, so --help's command
+  rows and every word list match the reference name-for-name and
+  position-for-position; the hidden deprecated `update` stub stays
+  out of both surfaces on both binaries) plus the global longs
   (`--version --json --quiet --verbose --timing
   --allow-unknown-types --allow-domain-mismatch --format` — help
   excluded, like the reference). Both `complete` registrations ship

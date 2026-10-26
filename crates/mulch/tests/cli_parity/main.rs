@@ -35,5 +35,6 @@ mod setup;
 mod status;
 mod support;
 mod sync;
+mod update;
 mod upgrade;
 mod validate;

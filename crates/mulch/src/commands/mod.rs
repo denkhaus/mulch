@@ -41,6 +41,7 @@ mod setup_recipes;
 mod status;
 mod store;
 mod sync;
+mod update;
 mod upgrade;
 mod validate;
 
@@ -142,6 +143,7 @@ pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failu
         Command::Onboard(args) => onboard::run(opts, args),
         Command::Setup(args) => setup::run(opts, args),
         Command::Upgrade { check } => upgrade::run(opts, *check),
+        Command::Update { check } => update::run(opts, *check),
         Command::Completions { shell } => completions::run(shell),
         Command::Audit {
             ci,
