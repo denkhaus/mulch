@@ -326,6 +326,34 @@ expectation (the parity rule: never silently):
   newline, quiet- and json-immune), `--quiet`, `--provider` accepted
   and ignored, the `prime.session_close` footer presets, the json
   `{file, action}` envelopes, exit codes) is byte-parity.
+- **`setup` ships promoted integrations and a native-honest recipe
+  subset.** The generated content names THIS binary everywhere the
+  reference writes `ml`: the Claude `settings.json` hook command
+  (`"mulch prime"`), the Cursor rule's prose and fenced command
+  (`mulch prime`, `mulch prime --files …`), the Codex AGENTS.md
+  section prose, the Codex `.codex/config.toml` hook command, the
+  Codex toml fence marker (`# mulch:start — managed by `mulch setup
+  codex`` — the marker names the invocation, so a reference-written
+  toml block is not detected by this port and vice versa), and the
+  unknown-provider hint (`mulch setup --list`). The git-hook section
+  bytes already say `mulch` in the reference and are byte-identical.
+  Recipe discovery resolves filesystem `.sh` scripts (spawned with
+  the action as argv and `MULCH_RECIPE_NAME`/`MULCH_RECIPE_ACTION`
+  in the env) and the built-ins only: a `.mulch/recipes/<name>.ts`
+  recipe resolves to a one-line error (`Recipe "<name>" at <path> is
+  a TypeScript recipe — this native build cannot import TypeScript
+  recipes; …`), a locally installed `mulch-recipe-<name>` npm
+  package likewise (`… cannot load npm recipes; …`), and `--list`
+  neither probes nor reports npm shadows — its plain footer states
+  our actual order (`filesystem (.mulch/recipes/<name>.sh) →
+  built-in`) instead of the reference's npm-inclusive sentence, and
+  the provider-argument help drops the npm mention. Everything else
+  (the three provider lifecycles with their exact messages, the
+  git-hook install/check/remove cycle including the chmod and the
+  only-shebang file deletion, the ✔/✖ channel laws with the yellow
+  stdout `--check` arm, the sticky exit when a failing `--hooks`
+  pass precedes a succeeding provider, the json envelopes with
+  absolute recipe paths, exit codes) is byte-parity.
 - **`upgrade` reports instead of self-upgrading.** This binary is
   cargo-installed, not the npm package: the reference's registry
   probe (`npm view @os-eco/mulch-cli version`) and its install step

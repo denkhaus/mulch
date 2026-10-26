@@ -36,6 +36,8 @@ mod record;
 mod render;
 mod restore;
 mod search;
+mod setup;
+mod setup_recipes;
 mod status;
 mod store;
 mod sync;
@@ -138,6 +140,7 @@ pub(crate) fn dispatch(opts: &GlobalOpts, command: &Command) -> Result<(), Failu
             no_validate,
         } => sync::run(opts, message.clone(), *no_validate),
         Command::Onboard(args) => onboard::run(opts, args),
+        Command::Setup(args) => setup::run(opts, args),
         Command::Upgrade { check } => upgrade::run(opts, *check),
         Command::Completions { shell } => completions::run(shell),
         Command::Audit {

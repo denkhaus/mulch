@@ -45,8 +45,10 @@ use crate::commands::render::promote_mulch;
 use crate::output::{Failure, print_json, print_line, success_envelope};
 
 /// The marker pair wrapping every managed snippet (markers.ts:1-2).
-const MARKER_START: &str = "<!-- mulch:start -->";
-const MARKER_END: &str = "<!-- mulch:end -->";
+/// `pub(super)`: `setup`'s codex recipe builds its AGENTS.md section
+/// on the same marker law (setup.ts buildCodexSection).
+pub(super) const MARKER_START: &str = "<!-- mulch:start -->";
+pub(super) const MARKER_END: &str = "<!-- mulch:end -->";
 
 /// The legacy (pre-marker) snippet's anchors (onboard.ts:68-69).
 const LEGACY_HEADER: &str = "## Project Expertise (Mulch)";
@@ -171,7 +173,9 @@ fn version_marker() -> String {
 /// Reads `prime.session_close` from the cwd's config; ANY failure
 /// (missing store, missing config, bad YAML, bad block) degrades to
 /// `None` (the reference wraps readConfig in try/catch).
-fn read_session_close_config(cwd: &Path) -> Option<mulch::SessionClose> {
+/// `pub(super)`: `setup`'s cursor/codex recipes read the same knob
+/// for their embedded footers (setup.ts readSessionCloseConfig).
+pub(super) fn read_session_close_config(cwd: &Path) -> Option<mulch::SessionClose> {
     let text = std::fs::read_to_string(cwd.join(".mulch").join("mulch.config.yaml")).ok()?;
     let config = mulch::Config::parse(&text).ok()?;
     config
@@ -238,7 +242,9 @@ context, run `mulch search --archived <query>`.
 /// wins verbatim, then the style preset with `conditional` for
 /// absent/unknown styles — everything promoted to this binary's name
 /// (the same law prime's `session_close` applies).
-fn embedded_session_close(config: Option<&mulch::SessionClose>) -> String {
+/// `pub(super)`: `setup`'s cursor rule and codex section embed the
+/// same footer (setup.ts buildCursorRuleContent/buildCodexSection).
+pub(super) fn embedded_session_close(config: Option<&mulch::SessionClose>) -> String {
     if let Some(custom) = config.and_then(|config| config.custom.as_deref())
         && !custom.is_empty()
     {
@@ -313,9 +319,49 @@ fn wrap_in_markers(snippet: &str) -> String {
     format!("{MARKER_START}\n{snippet}{MARKER_END}")
 }
 
-/// `hasMarkerSection` (markers.ts:9-11).
-fn has_marker_section(content: &str) -> bool {
+/// `hasMarkerSection` (markers.ts:9-11). `pub(super)`: setup's codex
+/// recipe detects its AGENTS.md section through the same law.
+pub(super) fn has_marker_section(content: &str) -> bool {
     content.contains(MARKER_START)
+}
+
+/// `removeMarkerSection` (markers.ts:32-41): cut the marker-bounded
+/// section, collapse 3+ newline runs into one blank line, trim, and
+/// end with exactly one newline (empty result stays a single
+/// newline — the file is never deleted here). Content without
+/// markers returns unchanged. `pub(super)`: setup's codex remove is
+/// the second consumer (setup.ts codexRecipe.remove).
+pub(super) fn remove_marker_section(content: &str) -> String {
+    let (Some(start), Some(end)) = (content.find(MARKER_START), content.find(MARKER_END)) else {
+        return content.to_string();
+    };
+    let before = &content[..start];
+    let after = &content[end + MARKER_END.len()..];
+    format!(
+        "{}\n",
+        collapse_blank_runs(&format!("{before}{after}")).trim()
+    )
+}
+
+/// The `replace(/\n{3,}/g, "\n\n")` cleanup every marker cut shares
+/// (markers.ts:40, setup.ts removeGitHook/removeCodexTomlBlock) —
+/// hand-rolled: this crate carries no regex dependency. `pub(super)`
+/// for the setup seam.
+pub(super) fn collapse_blank_runs(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut newlines = 0usize;
+    for byte in text.chars() {
+        if byte == '\n' {
+            newlines += 1;
+            if newlines <= 2 {
+                out.push('\n');
+            }
+        } else {
+            newlines = 0;
+            out.push(byte);
+        }
+    }
+    out
 }
 
 /// `replaceMarkerSection` (markers.ts:17-26): splice the new section

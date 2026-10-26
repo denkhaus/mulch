@@ -31,6 +31,7 @@ mod ready;
 mod record;
 mod restore;
 mod search;
+mod setup;
 mod status;
 mod support;
 mod sync;

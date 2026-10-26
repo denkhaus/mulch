@@ -80,9 +80,11 @@ fn completions_templates_match_and_word_lists_follow_their_binaries() {
                 their.stdout.contains("'setup'"),
                 "fish: the reference lists its full surface"
             );
+            // setup landed with the setup slice (sprint 55): ours
+            // lists it too now — honest help follows the enum.
             assert!(
-                !our.stdout.contains("'setup'"),
-                "fish: ours lists only implemented commands (deviation)"
+                our.stdout.contains("'setup'"),
+                "fish: ours lists the implemented setup command"
             );
             assert!(
                 !our.stdout.contains("--json"),
@@ -102,12 +104,12 @@ fn completions_templates_match_and_word_lists_follow_their_binaries() {
             }
         }
         // ours never names a reference command this port has not
-        // implemented (setup — config/diff are sibling slices and
-        // may legitimately appear once wired; audit landed with its
-        // own parity battery)
+        // implemented (update — config/diff are sibling slices and
+        // may legitimately appear once wired; setup/audit landed
+        // with their slices, sprint 55)
         assert!(
-            !our.stdout.contains(" setup ") && !our.stdout.contains("'setup'"),
-            "{shell}: setup must not be in our list (honest help)"
+            !our.stdout.contains(" update ") && !our.stdout.contains("'update'"),
+            "{shell}: update must not be in our list (honest help)"
         );
         if shell != "fish" {
             assert!(

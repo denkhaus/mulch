@@ -284,6 +284,9 @@ pub(crate) enum Command {
     /// mulch prime (mulch-176f).
     Onboard(Box<OnboardArgs>),
 
+    /// Set up mulch integration for a specific agent provider.
+    Setup(Box<SetupArgs>),
+
     /// Upgrade mulch to the latest version (mulch-176f; native
     /// binary — see the README DEVIATIONS bullet: no registry check,
     /// no install step).
@@ -782,6 +785,32 @@ pub(crate) struct OnboardArgs {
     /// Check if the onboarding snippet is installed and up to date.
     #[arg(long)]
     pub(crate) check: bool,
+}
+
+/// Flags of `mulch setup` (reference surface, setup.ts:626-635; the
+/// provider help keeps the reference's informative shape minus the
+/// npm arm — native-honest, see README DEVIATIONS).
+#[derive(Debug, Args)]
+pub(crate) struct SetupArgs {
+    /// Agent provider (built-in: claude, cursor, codex; or any name
+    /// resolvable from .mulch/recipes/).
+    pub(crate) provider: Option<String>,
+
+    /// Verify provider integration is installed.
+    #[arg(long)]
+    pub(crate) check: bool,
+
+    /// Remove provider integration.
+    #[arg(long)]
+    pub(crate) remove: bool,
+
+    /// Install a pre-commit git hook running mulch validate.
+    #[arg(long)]
+    pub(crate) hooks: bool,
+
+    /// List discovered providers (built-in and .mulch/recipes/).
+    #[arg(long)]
+    pub(crate) list: bool,
 }
 
 /// Flags of `mulch diff` (reference surface, diff.ts:109).
