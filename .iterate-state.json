@@ -1,17 +1,11 @@
 {
-  "sprints_completed": 56,
-  "sprints_reflected": 56,
-  "last_arch_review_at_sprint": 54,
-  "last_reflection": "2026-10-26",
-  "last_code_review_at_sprint": 56,
+  "sprints_completed": 57,
+  "sprints_reflected": 57,
+  "last_arch_review_at_sprint": 57,
+  "last_reflection": "2026-10-29",
+  "last_code_review_at_sprint": 57,
   "last_rust_security_review_at_sprint": 55,
   "sprints": [
-    {
-      "sprint": 47,
-      "notes": [
-        "sprint 47 closed 2026-10-25 (d343 + cde9 + d9b2; 3 seeds closed, 0 filed): C2, the gate's second Strong. d343: doctor's repairs gate by VALUE (Repair enum owns the check name - builders mint from it, gate matches it; FixGates' string protocol dead; pin covers all six builders after the review caught 2-of-6), four loops -> two runners, repair.rs one write shape (value_line_pass pure, caller writes), locate_error shared by open_located/doctor/learn (init/cli deliberately different - creation/builtins-fallback), item-4's JSON half folded onto check_json, plain half documented as its own parity byte law. cde9: premises probed - seed partly stale (no move rename, delete already seamed); landed has_domain_file + delete-domain read fold; doctor's pre-alias raw read documented as the deliberate boundary. d9b2: gate sentinel additive - sprint-42 repro now RED. REVIEW PROCESS CORRECTED THIS SPRINT (user directive, twice sharpened): the post-sprint review is the code-review SKILL - ONE invocation, its two built-in subagents (standards+spec axes), NOTHING additional; my three-agent reading was wrong and is amended in the skill + dev-loop record. Arch gate: next after sprint 48 (last at 45). Gates: 477/477, clippy/fmt clean, cargo doc 0, qualitygate GREEN. NEXT: sprint 48 closes the cycle - work remaining gate candidates (C5 verdict-message family is CLOSED via 9e28; next in order: C4 mulch-1c32 format dispatch) + riders, then the ARCH GATE at 48 close (improve-codebase-architecture, localhost report, Strong -> seed, Worth-exploring -> loop's call)."
-      ]
-    },
     {
       "sprint": 48,
       "notes": [
@@ -65,7 +59,13 @@
       "notes": [
         "sprint 56 closed 2026-10-26 (0e39 + 375f + 29af; 3 closed, 0 filed): THE PARITY CHAIN'S UMBRELLA CLOSE - all six slices closed, the command surface is complete. Riders first (afcddb1): store::cwd owns the environmental cwd failure (error_line/stderr, TWELVE sites - the seed's seven had grown with setup/audit/diff/onboard/config x2; hooks_surface's one-caller hook_cwd middle man deleted) and git::not_a_repo owns the two-sentence law (learn/sync/diff folded onto divergent, bytes unchanged); both riders landed (dangling doc fragment gone, NO_STORE_PLAIN_MESSAGE beside its prefixed sibling); two tables verified red. Umbrella sweep (7d6e361): (1) the reference's HIDDEN deprecated update stub ported (19 lines - plain `!` warning stdout, json envelope stderr, exit 1, --check ignored, hidden; 4 differential batteries, probe-pinned); (2) the help-honesty audit found a REAL drift - command lists name-equal but ORDER-different - the Command enum now mirrors the reference's registration order (cli.ts:186-215); `mulch --help` and `ml --help` command columns byte-identical (live-diffed + reviewer re-verified; the python block-mover briefly orphaned update's #[command(hide=true)] - caught by the edit-verification grep-read, the existing rule held, no skill change needed); (3) battery inventur: every command has a differential surface (add in record.rs:259, delete-domain/move/diff in their modules, update new); 34 DEVIATIONS bullets spot-checked (config-set serde_yaml indentation + mutating-strict reads confirmed live), the completions bullet now states the registration-order law. REVIEW (both axes PASS; fold 154e171): standards clean - judgement calls only (NO_STORE const pair mitigated by doc cross-link); the error_line doc gained the compose-vs-double-interpolate boundary clarification. Tests 673 -> 677 (ledger exact). Gates GREEN at every boundary. NEXT: sprint 57 = mulch-96ed self-hosting cutover (0e39 closed = unblocked; grilling first: the cutover order - just install, .mise.toml bootstrap removal, seeds-toolchain image additive, ml-ref rename for the batteries, AGENTS.md wording; cross-repo piece through denkhaus/seeds) - and the ARCH GATE falls at 57 close (last @54)."
       ]
+    },
+    {
+      "sprint": 57,
+      "notes": [
+        "sprint 57 closed 2026-10-29 (96ed + ed39 + 933b; 3 closed, 8 filed: 222d-wontfix, 76c5, d4ae-prev, then 7 gate filings): THE SELf-HOSTING CUTOVER BECAME THE PARITY DISSOLUTION. Grilling confirmed the cutover (all three recommendations); mid-sprint the user went FURTHER: 'Genau jetzt ist der Zeitpunkt' - parity against the ml EXECUTABLE ends, mulch replaces ml, fabro-embedding undecided, schema tests anchor the format contract (.mulch/ stays ml-readable, additive only). ADR-0007 (cutover mechanics) + ADR-0008 (dissolution) landed same-session. REPO-SIDE: .mise.toml npm pin removed (ALSO correctness - the package's own mulch shims shadowed ours; global mise 0.11.0 pin removed with /tmp backup), AGENTS.md + iterate-skill + CONTEXT.md vocabulary on mulch/self-hosting, ml TS source historical, 222d wontfix (image rebuilt with NUSHELL scripts when needed - fabro's standard). THE SWEEP (ed39, two parallel children, both clean): support.rs lost the whole reference machinery; 30 battery modules rewritten - every reference run and ours-vs-theirs assert deleted, EVERY our-side byte pin frozen live from our binary (discoveries now OUR law: doctor --fix exits 1 on findings, config show prints pretty JSON, edit files-order outcomes-before-relates_to, prune 'demoted 1 of 4'); 7 mirror tests deleted (announced, ledger 677->674); reference_roundtrip.rs replaced by format_contract.rs (schema-level pins, REAL lib-test citations); suite ~10x faster (674 green in 12s, no subprocess oracle). RELEASE (user order): crates.io 0.1.0 prepared (metadata, dry-run green) + the seeds-pattern deployment - ci.yml (self-contained battery), publish.yml (strict tag==version, CARGO_REGISTRY_SECRET), release.yml (4-target musl/darwin, rust-lld, no C deps); tag v0.1.0 on the workflow commit, push fires publish+release. Host incidents: the enum-reorder python mover briefly orphaned update's hide attribute (grep-read caught it); a doc-swap edit duplicated a ctor block immediately reverted; one array-unaware cut ate error_envelope (restored from git). REVIEW both axes APPROVE; folds: parity-era wordings dissolved everywhere (main.rs/support headers, AGENTS toolchain paragraph, CONTEXT vocabulary, README DEVIATIONS historical, ADR-0008 voids ADR-0007 pt2, dead helpers private/deleted, format_contract citations greppable); git-helper duplicates filed 76c5. ARCH GATE @57 (report http://localhost:8794/architecture-review-57.html): 4 STRONG filed (e218 JSC emulator deletion, fb63 DomainFailure collapse, ccf9 atomic-write fold, 1a64 staging allows) + 3 WORTH-EXPLORING (f43b render-mass-to-lib, 973e Failure channel law, 5525 battery maintainability+rename) + 1 speculative behind d4ae; the gate's verdict: law-owning seams healthy, parity-only artifacts become deliberate simplification backlog. NEXT: sprint 58 = the gate's recommended order - 1a64 (minutes) + e218 + fb63 (the flagship post-parity deepenings) with 5525 before or alongside; rust-security next at 60."
+      ]
     }
   ],
-  "last_test_count": 677
+  "last_test_count": 674
 }
