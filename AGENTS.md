@@ -16,10 +16,10 @@ from the seeds pattern).
   --profile minimal --component clippy,rustfmt`)
 - `cargo +nightly-2026-09-22 clippy --workspace --all-targets -- -D warnings`
 - `just qualitygate` — the develop loop's touched-crates gate
-- Reference `ml` TS source (read before implementing any parity
-  surface): `mise where npm:@os-eco/mulch-cli` →
-  `<root>/node_modules/@os-eco/mulch-cli/src` (fallback:
-  `readlink -f $(command -v ml)`)
+- Reference `ml` TS source — HISTORICAL (ADR-0008 dissolved parity;
+  read it for format questions only, no tool runs it):
+  `~/.local/share/mise/installs/npm-os-eco-mulch-cli/0.10.7/
+  node_modules/@os-eco/mulch-cli/src` while an install remains
 - No toolchain image recipe here: runs use the SHARED
   `ghcr.io/denkhaus/seeds-toolchain` image (owned by denkhaus/seeds)
   through the server-managed `mulch-toolchain` environment. Environment-
@@ -52,14 +52,19 @@ not GitHub Issues. Seed ids carry the prefix `mulch-`.
 
 ## Expertise (Mulch)
 
-- **Session start:** run `ml prime`.
-- Before finishing a task, record durable insights (`ml record <domain>
+- **Self-hosting (ADR-0007/0008): this repo runs on ITS OWN `mulch`
+  binary** (`just install` puts it on PATH); the retired `ml` CLI has
+  no role — parity with it is dissolved, the format contract (ml-
+  readable stores, additive changes only) is pinned by our own
+  schema tests.
+- **Session start:** run `mulch prime`.
+- Before finishing a task, record durable insights (`mulch record <domain>
   --type <convention|pattern|failure|decision|reference|guide>
   --description "..."`); skip when nothing surfaced. Upserts by `--name`
   merge outcomes — amend the existing record instead of filing a second
   one for the same lesson.
 - **Commit `.mulch/` (and `.seeds/`) together with the change they
-  document** — `ml sync` / `seeds sync` open their own commits, so stage
+  document** — `mulch sync` / `seeds sync` open their own commits, so stage
   the tracker + expertise paths explicitly in the same `git add` /
   `git commit` batch (`seeds sync --status` / `--dry-run` remains the
   pending-change check).
@@ -169,7 +174,7 @@ Sprint counter: `.iterate-state.json`. This loop is INDEPENDENT of the fabro
 develop line (user directive 2026-10-03, branch shape amended
 2026-10-17): it runs DIRECTLY ON `main` — no loop-lane branch, no PRs of
 its own, no `--assignee fabro`; all commits via `git`, with `.seeds/` +
-`.mulch/` staged in the same commit (never `ml sync`), pushed to
+`.mulch/` staged in the same commit (never `mulch sync`), pushed to
 `origin/main` through the push gate at every sprint close. Local-loop
 skills live under
 `.agents/skills/` (iterate + repo-local rust-style-guide copy); the loop

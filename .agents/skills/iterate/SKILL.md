@@ -33,7 +33,7 @@ policy, per AGENTS.md) governs all Rust code here — planning, writing, testing
 
 ```
         ┌────────────────────────────────────────────────────────┐
-        │ 1. ORIENT      ml prime + seeds prime + seeds ready      │
+        │ 1. ORIENT      mulch prime + seeds prime + seeds ready      │
         │                (state lives in mulch + seeds)            │
         ▼                                                       │
         │ 2. DECIDE      decision point? -> GRILLING + DOCS       │
@@ -57,7 +57,7 @@ policy, per AGENTS.md) governs all Rust code here — planning, writing, testing
 
 ## 1. Orient
 
-- `ml prime` + `seeds prime`
+- `mulch prime` + `seeds prime` (self-hosting, ADR-0007/0008: the repo's own binary)
 - Start from a clean tree (`git status`): leftover changes from earlier
   sessions leak into sprint diffs and reviews — commit or discard them on
   their own branch first. Never pull/rebase/switch branches while a
@@ -171,17 +171,17 @@ architecture direction, milestone content, go/no-go):
 - **Commit regularly** — after each coherent unit, never large WIP. All
   writes via plain git: `git add <explicit paths>` (never a repo-wide
   `-A`) + `git commit -m "<msg>"`, batching `.seeds/` + `.mulch/` into
-  the same commit per AGENTS.md (never `ml sync`; `seeds sync --status`
+  the same commit per AGENTS.md (never `mulch sync`; `seeds sync --status`
   / `--dry-run` is the pending-change check).
   **Long or quoted arguments go through a FILE, never inline**: commit
   with `git commit -F /tmp/msg.txt`, and pass `seeds close --reason` /
-  `ml record --description` / `ml record --rationale` as
+  `mulch record --description` / `mulch record --rationale` as
   `"$(cat /tmp/x.txt)"` (one expansion, the content is never
   re-evaluated). An inline double-quoted string runs every backtick it
   contains AS A COMMAND (sprint 25: a commit message lost its quoted
-  parts; 2026-10-17 close: backticked words inside an `ml record
+  parts; 2026-10-17 close: backticked words inside a `mulch record
   --rationale` executed a foreign CLI, corrupted both records, and
-  fired an UNGATED push; sprint 52: an `ml record --description` in
+  fired an UNGATED push; sprint 52: a `mulch record --description` in
   double quotes ran a backticked example as a mailcap command and the
   stored text lost that clause — re-record with the same `--name` to
   repair, since upsert rewrites the record). Single-quoted arguments
@@ -194,7 +194,7 @@ architecture direction, milestone content, go/no-go):
   commit verify the real file list with `git show --stat <hash>`. Never
   write counts into a message ("7 sites collapsed") without counting the
   COMMITTED diff — spec reviewers check exactly that claim.
-- **Mulch is the domain brain**: `ml record <domain> --type
+- **Mulch is the domain brain**: `mulch record <domain> --type
   <convention|pattern|failure|decision|reference|guide>` for every learning
   (API dead-ends, format quirks, gate outcomes). Evidence:
   `--evidence-commit`, `--evidence-seeds`.
@@ -375,7 +375,7 @@ the next ORIENT blocks until it runs.
 
 Procedure (driven by Mulch; do not bloat the skill):
 
-1. `ml search` this session's learnings (patterns/failures with
+1. `mulch search` this session's learnings (patterns/failures with
    `--evidence-commit`s).
 2. Ask per finding: does the LOOP need to change (ordering, gates,
    triggers), or is the learning already captured in mulch/seeds (then no
@@ -383,7 +383,7 @@ Procedure (driven by Mulch; do not bloat the skill):
 3. Apply only surgical changes to this file: adjust triggers/gates, fix a
    step that repeatedly caused friction. Everything else stays referenced,
    not inlined.
-4. Record the skill change itself in mulch (`ml record dev-loop --type
+4. Record the skill change itself in mulch (`mulch record dev-loop --type
    decision`, evidence = the commit touching this skill) so future sessions
    see WHY the loop looks like this.
 5. Update the sprint counter and last-reflection pointer in the state file.
@@ -414,7 +414,7 @@ multi-seed sprint's chain links run as SIMULTANEOUS subagents in this
 one worktree. Binding protocol: DISJOINT file ownership per child —
 shared files (`tests/`, `README.md`, `.seeds/`, `.mulch/`) are
 host-folded from child deliveries under `/tmp/sprintNN/<child>/`;
-children NEVER touch git (no add/commit/pull/push/`ml sync`, no branch of
+children NEVER touch git (no add/commit/pull/push/`mulch sync`, no branch of
 their own): each child writes only its OWNED files, delivers the rest to
 its /tmp dir — INCLUDING shared-file changes as PATCH TEXT with quoted
 anchors (cli.rs arms, mod wiring, README bullets), so the host applies
@@ -525,7 +525,7 @@ procedure: it changes the file, not the loop.
 - Format contract + product direction: `README.md`; basis ADR-0023 in
   denkhaus/fabro
 - Process decisions + milestones: seeds tickets (`seeds show`)
-- Domain expertise: `.mulch/expertise/` (`ml prime`, `ml search`) — domains:
+- Domain expertise: `.mulch/expertise/` (`mulch prime`, `mulch search`) — domains:
   rust, tooling, nushell, dev-loop, mulch-compat, testing
 - Working-mode details: AGENTS.md, this skill, memories
 - Code policy (Rust): `.agents/skills/rust-style-guide/SKILL.md` — binding

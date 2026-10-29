@@ -17,10 +17,11 @@ bun = "1.4.0"
 # The binary alone installs no hooks; the operator opt-in stays the
 # bootstrap recipe, and runs never call it (see lefthook.yml).
 lefthook = "2.1.14"
-# Bootstrap phase remainder (ADR-0023 in denkhaus/fabro): the jayminwest
-# mulch CLI, the read+write compatible expertise target, until this
-# repo's own `mulch` binary replaces it at the self-hosting cutover.
-"npm:@os-eco/mulch-cli" = "0.10.7"
+# The npm mulch CLI pin was REMOVED at the self-hosting cutover
+# (ADR-0007) — and parity itself dissolved shortly after (ADR-0008):
+# no tool in this repo runs the old binary any more. The pin also
+# shadowed ours: the npm package ships its own `mulch` and mise's
+# shims precede ~/.cargo/bin on PATH. `mulch` = `just install`.
 
 # The GitButler CLI (`but`) pin lived here until the experiment was
 # retired (2026-10-17, mulch-6817) — the checkout runs plain git now.
