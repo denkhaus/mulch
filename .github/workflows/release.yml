@@ -1,0 +1,160 @@
+name: release
+
+# Tag-driven binary release (seeds-d54c/seeds-6475 pattern): on a v*
+# tag - under the same strict tag == Cargo.toml guard as publish.yml -
+# build the 4-target catalog and publish a GitHub Release with
+# per-target tar.gz artifacts plus SHASUMS.txt. workflow_dispatch is
+# the test mode: it builds a GIVEN existing tag and leaves a DRAFT
+# release, so the pipeline is verifiable without burning a version.
+# mulch is pure Rust (libc is FFI declarations only, unsafe-libyaml
+# is a Rust transpilation) - no cross C toolchain, no ring: the musl
+# legs link self-contained with rust-lld.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing v* tag to build a DRAFT release for (test mode)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  TOOLCHAIN: nightly-2026-09-22
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      draft: ${{ steps.resolve.outputs.draft }}
+    steps:
+      - name: Resolve tag (dispatch input or pushed ref)
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          case "$tag" in
+            v*) ;;
+            *) echo "FAIL: not a v* tag: $tag"; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+      - name: "Strict guard: tag matches workspace version"
+        id: resolve
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          cargo_version="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          if [ "${tag#v}" != "$cargo_version" ]; then
+            echo "FAIL: tag $tag != Cargo.toml $cargo_version (tag == crate version, strictly)"
+            exit 1
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            draft=true
+          else
+            draft=false
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            native: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            native: true
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            native: true
+            musl: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            native: false
+            musl: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - name: Build (release, locked, target)
+        # musl legs link with the self-contained rust-lld — no cross
+        # gcc needed (mulch has no C dependencies).
+        env:
+          RUSTFLAGS: ${{ matrix.musl && '-C linker=rust-lld' || '' }}
+        run: cargo build --release --locked -p mulch --target "${{ matrix.target }}"
+      - name: Smoke-run the binary when the runner can execute it
+        if: ${{ matrix.native }}
+        run: |
+          bin="target/${{ matrix.target }}/release/mulch"
+          file "$bin" || true
+          "$bin" --version
+      - name: Smoke-verify static linking (musl contract)
+        if: ${{ runner.os == 'Linux' }}
+        run: file "target/${{ matrix.target }}/release/mulch" | tee /dev/stderr | grep -Eq 'static[a-z-]* linked'
+      - name: Package tar.gz (binary at archive root)
+        run: |
+          name="mulch-${{ needs.resolve.outputs.version }}-${{ matrix.target }}.tar.gz"
+          tar -czf "$name" -C "target/${{ matrix.target }}/release" mulch
+          shasum -a 256 "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: mulch-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: SHASUMS.txt (deterministic order)
+        working-directory: dist
+        run: |
+          ls -1 mulch-*.tar.gz | LC_ALL=C sort | xargs shasum -a 256 > SHASUMS.txt
+          cat SHASUMS.txt
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          DRAFT: ${{ needs.resolve.outputs.draft }}
+        run: |
+          args=(--title "mulch v$VERSION" --generate-notes)
+          if [ "$DRAFT" = "true" ]; then args+=(--draft); fi
+          assets=(dist/mulch-*.tar.gz dist/SHASUMS.txt)
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" "${args[@]}"
+          fi

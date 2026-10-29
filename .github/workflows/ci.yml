@@ -17,6 +17,8 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # No reference provisioning (ADR-0008): the behavior battery
+      # runs our binary only — the suite is self-contained.
       - run: cargo +nightly-2026-09-22 fmt --check --all
       - run: cargo +nightly-2026-09-22 clippy --workspace --all-targets -- -D warnings
       - run: cargo nextest run --workspace
