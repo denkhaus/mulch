@@ -18,9 +18,9 @@ bootstrap:
 build:
     cargo build --workspace
 
-# Build and install the mulch CLI globally (self-hosting cutover target;
-# until then the bootstrap `ml` CLI stays the expertise surface). cargo's
-# bin dir is on PATH via rustup.
+# Build and install THIS repo's mulch CLI globally (the self-hosting
+# install path, ADR-0007; the crates.io release feeds mise pins).
+# cargo's bin dir is on PATH via rustup.
 install: build
     cargo install --path crates/mulch --locked --force
 

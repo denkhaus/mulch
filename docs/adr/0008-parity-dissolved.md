@@ -21,6 +21,10 @@ byte-level behavior parity either.
 
 **The parity regime against the ml EXECUTABLE ends now.**
 
+(This also voids ADR-0007 point 2 — the ml-ref discovery never
+shipped; the battery releases the executable outright instead of
+resolving it more carefully.)
+
 1. The differential battery releases the ml executable: no test
    spawns `ml`/`ml-ref`, the reference discovery and version guard
    are removed, and the npm CLI has no role in this repo's tooling.

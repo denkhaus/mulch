@@ -1,9 +1,8 @@
-//! The battery's shared harness (mulch-3e7c): temp dirs, twin-store
-//! runs, reference discovery, the cross-surface assertion and
-//! normalization helpers, the shared twin-store fixtures, and the
-//! record-line constants the fixtures reference (ALPHA_ONE & friends)
-//! — every helper lived in one flat file before; they moved here
-//! once, verbatim, with `pub(crate)` visibility.
+//! The battery's shared harness (mulch-3e7c): temp dirs, store runs,
+//! normalization helpers, the store fixtures, and the record-line
+//! constants the fixtures use (ALPHA_ONE & friends) — every helper
+//! lived in one flat file before; they moved here once, verbatim,
+//! with `pub(crate)` visibility. ADR-0008: our binary, our pins.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -44,7 +43,7 @@ pub(crate) fn normalize(text: &str) -> String {
     regex_free_iso(text)
 }
 
-pub(crate) fn regex_free_iso(text: &str) -> String {
+fn regex_free_iso(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -65,7 +64,7 @@ pub(crate) fn regex_free_iso(text: &str) -> String {
 }
 
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ` shape check.
-pub(crate) fn looks_like_iso(window: &str) -> bool {
+fn looks_like_iso(window: &str) -> bool {
     let b = window.as_bytes();
     b[4] == b'-'
         && b[7] == b'-'
@@ -97,7 +96,7 @@ pub(crate) fn recent_timestamp(file: &Path) -> String {
 
 // ---- sprint 15 (mulch-7ac9): doctor duplicates + divergent ids ----
 
-/// Shared twin-store fixture: `ml init` + one base pattern p1.
+/// Shared store fixture: our `mulch init` + one base pattern p1.
 pub(crate) fn duration_fixture(dir: &Path) {
     let bin = Path::new(mulch_bin());
     let _ = run_in(dir, bin, &["init"]);
@@ -113,7 +112,7 @@ pub(crate) fn duration_fixture(dir: &Path) {
     ]);
 }
 
-/// The reference record id of pattern name "p" (sha256 rule).
+/// The record id of pattern name "p" (the format contract's sha256 rule).
 pub(crate) fn pattern_p_id() -> String {
     use std::fmt::Write as _;
 
@@ -174,7 +173,7 @@ pub(crate) const ALPHA_ONE: &str = "{\"type\":\"pattern\",\"classification\":\"t
 
 pub(crate) const ALPHA_TWO: &str = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T20:47:58.050Z\",\"name\":\"Alpha Two\",\"description\":\"second alpha pattern\",\"id\":\"mx-c7129f\"}";
 
-/// The reference's canonical config tail (governance + shelf life).
+/// The canonical config tail (governance + shelf life — format contract).
 /// Every mutating config rewrite backfills it, in this byte order.
 pub(crate) const CONFIG_TAIL: &str = "governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\nclassification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30\n";
 
@@ -527,7 +526,7 @@ pub(crate) fn hook_stdin(dir: &Path) -> Option<String> {
 }
 
 /// The config file's text, for domain side-effect pins.
-pub(crate) fn config_text(dir: &Path) -> String {
+fn config_text(dir: &Path) -> String {
     std::fs::read_to_string(dir.join(".mulch").join("mulch.config.yaml"))
         .expect("init wrote a config")
 }
@@ -538,7 +537,7 @@ pub(crate) fn has_domain(dir: &Path, domain: &str) -> bool {
     config_text(dir).contains(&format!("\n  {domain}: {{}}"))
 }
 
-/// One captured run with piped stdin (the reference's `--stdin`
+/// One captured run with piped stdin (the `--stdin`
 /// surface).
 pub(crate) fn run_stdin(dir: &Path, program: &Path, args: &[&str], input: &str) -> Run {
     use std::io::Write as _;

@@ -77,9 +77,9 @@ policy, per AGENTS.md) governs all Rust code here — planning, writing, testing
 - **INFRASTRUCTURE ESCALATION (ask EARLY, not after sprints of working
   around it)**: at ORIENT (and again whenever a sprint's value depends on
   it), check whether the work depends on missing external resources —
-  registry access, toolchains, the reference `ml` CLI, binaries, hardware.
-  If something is missing or suboptimal, surface the request to the user
-  IMMEDIATELY with options; do NOT silently script around it for sprints.
+  registry access, toolchains, binaries, hardware. If something is
+  missing or suboptimal, surface the request to the user IMMEDIATELY
+  with options; do NOT silently script around it for sprints.
 - Run `seeds ready` (it lists assigned tickets too) and pick the
   highest-priority unblocked ticket from the UNASSIGNED ones.
   **Ownership rule**: seeds assigned to `fabro` belong
@@ -404,7 +404,8 @@ everything in the host session: the post-sprint code-review skill (its
 own two built-in subagents — one skill invocation, user directive
 2026-10-25),
 the arch-gate explorer, mechanical workspace-wide sweeps (renames, doc
-consistency greps), research (reference `ml` behaviour probes), and
+consistency greps), research (format-contract questions against the
+HISTORICAL ml TS source), and
 independent implementation chunks. Spawn children in parallel, collect
 their replies, fold results in one pass.
 
@@ -457,8 +458,9 @@ the delivery and records the deviation in the sprint note. Best practice
 COPY under /tmp (host WIP + its patch text applied) and runs the
 ENTIRE suite there — verification moves into the child and the host's
 integration step shrinks to wiring + gate; out-of-repo copies lose the
-.mise.toml pins, so a reference-gated child pins PATH explicitly (see
-the tooling failure record on the ml 0.11.0 hazard).
+.mise.toml pins (historical note: reference-gated children once had to
+pin PATH around the ml 0.11.0 hazard — ADR-0008 removed that whole
+class).
 
 ## State file (sprint counter)
 

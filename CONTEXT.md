@@ -52,24 +52,29 @@ summary law, compaction strategy. Registry-named laws get lib bodies
 (ADR-0005).
 _Avoid_: type definition, spec
 
-**Parity battery**:
-A reference-gated test suite comparing our bytes against the reference
-binary run on a twin store.
-_Avoid_: integration tests, e2e tests
+**Behavior battery**:
+The test suite pinning OUR bytes — exit codes, channel-split output,
+on-disk state. Born as the parity battery (differential against the
+reference binary on twin stores); ADR-0008 froze every surviving
+expectation into our own pins.
+_Avoid_: integration tests, e2e tests, parity battery (historical)
 
-**Twin store**:
-The battery fixture: two identical throwaway stores, ours and the
-reference's, seeded once and compared byte-for-byte.
-_Avoid_: fixture pair
+**Format contract**:
+The `.mulch/` store stays ml-0.10.7-readable; changes are additive
+only (ADR-0008). Pinned by our schema tests (`tests/format_contract.rs`
+plus the lib tables), not by running the old binary.
+_Avoid_: format compatibility (vague)
 
 **Promote**:
 The law that shipped strings name this binary (`mulch`), never the
-reference's name — banners, retry echoes, session-close commands.
+retired reference's name — banners, retry echoes, session-close
+commands. Historical origin: the parity era; still our voice.
 _Avoid_: rename, rebrand
 
 **Deviation**:
-A documented divergence from the reference (README DEVIATIONS), each
-with its expectation — never silent.
+A documented divergence from the reference (README DEVIATIONS) —
+HISTORICAL RECORD since ADR-0008: the parity duty ended, the section
+documents the era's decisions and their expectations.
 _Avoid_: difference, gap
 
 **Scratch store**:

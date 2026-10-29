@@ -26,8 +26,9 @@ from the seeds pattern).
   level changes land in the seeds repo, never here.
 
 The Rust toolchain is owned by rustup (pinned `nightly-2026-09-22`);
-mise owns just/bun/nushell/ripgrep and the bootstrap-phase jayminwest
-ml CLI. The tracker is the EXTERNAL `seeds` binary (denkhaus/seeds,
+mise owns just/bun/nushell/ripgrep; this repo's OWN `mulch` binary
+(`just install`, crates.io release 0.1.0) is the expertise surface
+(ADR-0007/0008). The tracker is the EXTERNAL `seeds` binary (denkhaus/seeds,
 installed via its GitHub Releases install script or
 `cargo install --locked seeds`) — this repo does not build it.
 

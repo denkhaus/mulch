@@ -1,11 +1,10 @@
-#![allow(clippy::print_stderr, reason = "skip notices print to stderr")]
-
-//! Differential battery: our binary vs the reference `ml` 0.10.7
-//! (mulch-da8b). Runs the same commands in twin temp stores and
-//! compares exit codes, channel-split output, and on-disk state.
-//! Skipped with a note when no `ml` is on PATH. ONE test binary via
-//! the module layout (mulch-3e7c): per-surface modules plus the
-//! shared `support` harness.
+//! The behavior battery (ADR-0008): OUR binary, OUR byte pins. The
+//! differential regime against the reference `ml` 0.10.7 is history
+//! (mulch-da8b started it; the sweep of mulch-ed39 froze every
+//! surviving expectation into these modules); the format contract
+//! lives in `tests/format_contract.rs`. ONE test binary via the
+//! module layout (mulch-3e7c): per-surface modules plus the shared
+//! `support` harness.
 
 mod aliases;
 mod archive;

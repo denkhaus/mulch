@@ -11,10 +11,10 @@
 //!   → rewrite_domain → read back; append → read) — `additive_fields_survive_…`
 //!   below.
 //! - The config rewrite preserving unknown keys: already fully pinned in the
-//!   lib as `config::tests::unknown_keys_and_knobs_ survive_round_trip`
-//!   (unknown top-level keys, `custom_types`, `prime`/`search` knobs through
-//!   parse → to_yaml → reparse) and
-//!   `store_files::tests::alias_block_round_trips_through_ write_config` (the
+//!   lib as `config::tests::unknown_keys_and_knobs_survive_round_trip` (unknown
+//!   top-level keys, `custom_types`, `prime`/`search` knobs through parse →
+//!   to_yaml → reparse) and
+//!   `store_files::tests::alias_block_round_trips_through_write_config` (the
 //!   alias block survives write_config's canonical rewrite). CITED, not
 //!   duplicated; the gap those leave — `register_domain`, the path
 //!   `add`/`record` take, rewriting the config while unknown keys ride along —

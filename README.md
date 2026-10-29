@@ -47,8 +47,10 @@ fork. The rewrite target's CLI is published as `@os-eco/mulch-cli`
 
 ## DEVIATIONS
 
-Deliberate divergences from the reference `ml` 0.10.7, each with its own
-expectation (the parity rule: never silently):
+Deliberate divergences from the reference `ml` 0.10.7 — HISTORICAL
+RECORD since ADR-0008 dissolved the parity duty: these bullets
+document the parity era's decisions and their expectations (the
+behavior battery froze the resulting bytes as our own pins):
 
 - **Archive banner promotes this binary.** The reference's
   `ARCHIVE_BANNER` (src/utils/archive.ts) reads
