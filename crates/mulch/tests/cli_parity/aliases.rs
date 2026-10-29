@@ -1,16 +1,15 @@
 //! Canonical-domain alias resolution (ADR-0006, mulch-b0f7) — a
-//! port-first extension: the reference has NO alias mechanism and
-//! IGNORES the config block (probed: `ml status` and `ml prime` exit 0
-//! with `domain_aliases:` present), so every test here is ungated and
-//! pins OUR law.
+//! port-first extension: the config block is OURS alone (there never
+//! was a reference mechanism to mirror), so every test here is
+//! ungated and pins OUR law (ADR-0008: the battery runs our binary
+//! only).
 
 use std::path::Path;
 
 use super::support::*;
 
-/// A twin-less store (no reference side) with `dev`/`rust` domains
-/// and the canonical alias fixture: develop -> dev, devloop ->
-/// develop (chain), rs -> rust.
+/// A store with `dev`/`rust` domains and the canonical alias fixture:
+/// develop -> dev, devloop -> develop (chain), rs -> rust.
 fn alias_store(tag: &str) -> TempDir {
     let dir = TempDir::new(tag);
     let config = "version: '1'\n\

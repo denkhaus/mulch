@@ -1,15 +1,13 @@
-//! `mulch compact` parity probes (mulch-8a1b): analyze candidates
-//! (plain/json/quiet, domain filter), the auto path (dry-run preview,
-//! `--max-records` budget + skip note, confirmation prompt, cancel,
-//! `--yes` apply incl. live and archive bytes), the apply path
-//! (replacement flags per type, resolve/validation errors), and the
-//! registry compact strategies (concat, keep_latest, merge_outcomes,
-//! manual abort — the reference crashes on manual, so that case pins
-//! OUR deviation bytes) — plus the pre-compact hook battery
-//! (mulch-7f49): block-skip warnings, replacement adoption
-//! (supersedes backfill + id regeneration), invalid replacements,
-//! the apply-path block/abort, stderr forwarding, and the
-//! `hook_settings.timeout_ms` kill.
+//! `mulch compact` probes (mulch-8a1b) — OUR byte pins (ADR-0008:
+//! the differential battery is dissolved; our bytes are the
+//! regression memory): analyze candidates, the auto path (dry-run
+//! preview, `--max-records` budget + skip note, confirmation prompt,
+//! cancel, `--yes` apply incl. live and archive bytes), the apply
+//! path, and the registry compact strategies — plus the pre-compact
+//! hook battery (mulch-7f49): block-skip warnings, replacement
+//! adoption (supersedes backfill + id regeneration), invalid
+//! replacements, the apply-path block/abort, stderr forwarding, and
+//! the `hook_settings.timeout_ms` kill.
 
 use std::path::Path;
 
@@ -42,41 +40,8 @@ fn seeded_body() -> String {
     lines.join("\n") + "\n"
 }
 
-/// Asserts one twin-run pair: exit, both channels, live bytes, and
-/// archive bytes (timestamps masked, `ml` self-references promoted).
-fn assert_compact_parity(ours: &TempDir, our: &Run, theirs: &TempDir, their: &Run, label: &str) {
-    assert_eq!(our.code, their.code, "{label} exit");
-    assert_eq!(
-        normalize(&our.stdout),
-        promote_theirs(&normalize(&their.stdout)),
-        "{label} stdout"
-    );
-    assert_eq!(
-        normalize(&our.stderr),
-        promote_theirs(&normalize(&their.stderr)),
-        "{label} stderr"
-    );
-    assert_eq!(
-        normalize(&read_store_text_or_empty(&ours.0, "expertise/dev.jsonl")),
-        promote_theirs(&normalize(&read_store_text_or_empty(
-            &theirs.0,
-            "expertise/dev.jsonl"
-        ))),
-        "{label} live bytes"
-    );
-    assert_eq!(
-        normalize(&read_store_text_or_empty(&ours.0, "archive/dev.jsonl")),
-        promote_theirs(&normalize(&read_store_text_or_empty(
-            &theirs.0,
-            "archive/dev.jsonl"
-        ))),
-        "{label} archive bytes"
-    );
-}
-
 /// One captured run with PIPED stdin (the interactive confirmation
-/// cases: a closed stdin makes the reference's readline hang, so the
-/// battery always feeds an explicit answer).
+/// cases: the battery always feeds an explicit answer).
 fn run_in_feeding(dir: &Path, program: &Path, args: &[&str], answer: &str) -> Run {
     use std::io::Write as _;
     let mut child = std::process::Command::new(program)
@@ -99,241 +64,239 @@ fn run_in_feeding(dir: &Path, program: &Path, args: &[&str], answer: &str) -> Ru
     }
 }
 
-/// Runs one command on fresh twins (compact mutates).
-fn compacted_pair(tag: &str, body: &str, args: &[&str]) {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded(tag, None, &[("dev", body)], &[]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-    let their = run_in(&theirs.0, &ml, args);
-    assert_compact_parity(&ours, &our, &theirs, &their, tag);
-}
-
 #[test]
-fn compact_analyze_matches_reference() {
+fn compact_analyze_pins_our_candidate_table() {
     let body = seeded_body();
-    for args in [
-        &["compact", "--analyze"][..],
-        &["--json", "compact", "--analyze"][..],
-        &["--quiet", "compact", "--analyze"][..],
-        &["compact", "dev", "--analyze"][..],
-        &["--json", "compact", "nosuch", "--analyze"][..],
-        &["compact", "nosuch", "--analyze"][..],
-        // a single record never groups
-        &["compact", "--analyze"][..],
-    ] {
-        compacted_pair("cp-analyze", &body, args);
-    }
-    // no candidates at all: fresh singles only
+    let ours = seeded_store("cp-analyze", None, &[("dev", body.as_str())], &[]);
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &["compact", "--analyze"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout.starts_with("\nCompaction candidates:\n"),
+        "table header: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("Found 2 groups (7 records that could be compacted)"),
+        "counts: {}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("pattern (3 records)"));
+    assert!(run.stdout.contains("guide (4 records)"));
+    assert!(
+        run.stdout.contains("mx-aaa001: Pat 1"),
+        "member previews: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("... and 1 more"),
+        "long groups elide: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("mulch compact --auto [--dry-run]"),
+        "hint names our binary: {}",
+        run.stdout
+    );
+
+    // no candidates at all: fresh singles only (still exit 0)
     let fresh = format!(
         "{{\"type\":\"convention\",\"classification\":\"foundational\",\"recorded_at\":\"{}\",\"content\":\"only\",\"id\":\"mx-ccc001\"}}\n",
         days_ago(2)
     );
-    for args in [
-        &["compact", "--analyze"][..],
-        &["--quiet", "compact", "--analyze"][..],
-        &["--json", "compact", "--analyze"][..],
-    ] {
-        compacted_pair("cp-empty", &fresh, args);
-    }
+    let ours = seeded_store("cp-empty", None, &[("dev", fresh.as_str())], &[]);
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &["compact", "--analyze"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
 }
 
 #[test]
-fn compact_auto_dry_run_budget_and_flags_match_reference() {
+fn compact_auto_dry_run_pins_the_budget_note() {
     let body = seeded_body();
-    for args in [
-        &["compact", "--auto", "--dry-run"][..],
-        &["--json", "compact", "--auto", "--dry-run"][..],
-        // the guide group (4) fits, the pattern group (3) overflows 5
-        &["compact", "--auto", "--dry-run", "--max-records", "5"][..],
-        &[
-            "--json",
-            "compact",
-            "--auto",
-            "--dry-run",
-            "--max-records",
-            "5",
-        ][..],
-        // analyze keeps 3-member groups, auto needs --min-group 3
-        // explicitly (default 5)
-        &["compact", "--auto", "--dry-run", "--min-group", "3"][..],
-        // strict numeric flags
-        &["compact", "--auto", "--min-group", "abc"][..],
-        &["--json", "compact", "--auto", "--min-group", "0"][..],
-        &["compact", "--auto", "--max-records", "5x"][..],
-    ] {
-        compacted_pair("cp-auto", &body, args);
-    }
+    let ours = seeded_store("cp-auto", None, &[("dev", body.as_str())], &[]);
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact",
+        "--auto",
+        "--dry-run",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout.contains("2 groups would be compacted"),
+        "preview counts: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("7 records → 2 records"),
+        "reduction: {}",
+        run.stdout
+    );
+    // the store is untouched by a dry run
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
+
+    // the guide group (4) fits, the pattern group (3) overflows 5
+    let budget = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact",
+        "--auto",
+        "--dry-run",
+        "--max-records",
+        "5",
+    ]);
+    assert_eq!(budget.code, 0, "{}", budget.stderr);
+    assert!(
+        budget
+            .stdout
+            .contains("Note: 1 additional groups skipped due to --max-records limit"),
+        "skip note: {}",
+        budget.stdout
+    );
+    assert!(
+        budget
+            .stdout
+            .contains("✓ Dry-run complete. Would compact 3 records across 1 groups."),
+        "summary respects the budget: {}",
+        budget.stdout
+    );
 }
 
 #[test]
-fn compact_auto_cancel_prompt_and_yes_match_reference() {
+fn compact_auto_cancel_prompt_and_yes_pin_our_bytes() {
     let body = seeded_body();
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
 
-    // cancel: everything untouched on both sides (stdin piped: a
-    // closed stdin makes the reference's readline hang)
-    let (ours, theirs) = twin_seeded("cp-cancel", None, &[("dev", body.as_str())], &[]);
+    // cancel: everything untouched
+    let ours = seeded_store("cp-cancel", None, &[("dev", body.as_str())], &[]);
     let our = run_in_feeding(
         &ours.0,
         Path::new(mulch_bin()),
         &["compact", "--auto"],
         "n\n",
     );
-    let their = run_in_feeding(&theirs.0, &ml, &["compact", "--auto"], "n\n");
-    assert_compact_parity(&ours, &our, &theirs, &their, "cancel");
+    assert_eq!(our.code, 0, "{}", our.stderr);
+    assert!(
+        our.stdout.ends_with("Compaction cancelled.\n"),
+        "cancel line: {}",
+        our.stdout
+    );
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
+
     // y on the prompt equals --yes
-    let (ours, theirs) = twin_seeded("cp-confirm", None, &[("dev", body.as_str())], &[]);
+    let ours = seeded_store("cp-confirm", None, &[("dev", body.as_str())], &[]);
     let our = run_in_feeding(
         &ours.0,
         Path::new(mulch_bin()),
         &["compact", "--auto"],
         "y\n",
     );
-    let their = run_in_feeding(&theirs.0, &ml, &["compact", "--auto"], "y\n");
-    assert_compact_parity(&ours, &our, &theirs, &their, "confirm");
+    assert_eq!(our.code, 0, "{}", our.stderr);
+    assert!(
+        read_store_file(&ours.0, "expertise/dev.jsonl").contains("\"supersedes\":["),
+        "confirm applies the merge"
+    );
 
-    // --yes: live rewrite, compacted archive, plain + json + quiet
-    for args in [
-        &["compact", "--auto", "--yes"][..],
-        &["--json", "compact", "--auto", "--yes"][..],
-        &["--quiet", "compact", "--auto", "--yes"][..],
-    ] {
-        compacted_pair("cp-yes", &body, args);
-    }
-    // the drained store: the no-candidates json envelope and quiet line
+    // --yes: live rewrite, compacted archive
+    let ours = seeded_store("cp-yes", None, &[("dev", body.as_str())], &[]);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact", "--auto", "--yes",
+    ]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
+    assert!(
+        our.stdout
+            .contains("✓ Auto-compacted 7 records across 2 groups"),
+        "summary: {}",
+        our.stdout
+    );
+    assert!(
+        our.stdout.contains("dev/pattern: 3 records → 1"),
+        "per-group line: {}",
+        our.stdout
+    );
+    let live = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert_eq!(
+        live.lines().count(),
+        3,
+        "convention + two merged records: {live}"
+    );
+    assert!(
+        live.contains("\"supersedes\":[\"mx-aaa001\",\"mx-aaa002\",\"mx-aaa003\"]"),
+        "supersedes backfill: {live}"
+    );
+    let archive = read_store_file(&ours.0, "archive/dev.jsonl");
+    assert!(
+        archive.contains("\"archive_reason\":\"compacted\""),
+        "archived with the compacted reason: {archive}"
+    );
+
+    // the drained store: no candidates, exit 0
     let drained = format!(
         "{{\"type\":\"convention\",\"classification\":\"foundational\",\"recorded_at\":\"{}\",\"content\":\"conv one\",\"id\":\"mx-ccc001\"}}\n",
         days_ago(2)
     );
-    for args in [
-        &["--json", "compact", "--auto", "--yes"][..],
-        &["--quiet", "compact", "--auto", "--yes"][..],
-        &["compact", "--auto", "--yes"][..],
-    ] {
-        compacted_pair("cp-drained", &drained, args);
-    }
+    let ours = seeded_store("cp-drained", None, &[("dev", drained.as_str())], &[]);
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact", "--auto", "--yes",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), drained);
 }
 
 #[test]
-fn compact_apply_matches_reference() {
+fn compact_apply_pins_our_success_and_error_bytes() {
     let body = seeded_body();
-    for args in [
-        // happy: pattern replacement from flags
-        &[
-            "--json",
-            "compact",
-            "dev",
-            "--apply",
-            "--records",
-            "mx-aaa001,mx-aaa002",
-            "--type",
-            "pattern",
-            "--name",
-            "P one",
-            "--description",
-            "merged",
-        ][..],
-        &[
-            "compact",
-            "dev",
-            "--apply",
-            "--records",
-            "mx-bbb001,mx-bbb002",
-            "--type",
-            "guide",
-            "--name",
-            "G one",
-            "--description",
-            "gm",
-        ][..],
-        // type from the FIRST record (guide) without --type
-        &[
-            "compact",
-            "dev",
-            "--apply",
-            "--records",
-            "mx-bbb001,mx-bbb002",
-            "--name",
-            "G two",
-            "--description",
-            "gm2",
-        ][..],
-        // per-type flag errors
-        &[
-            "compact",
-            "dev",
-            "--apply",
-            "--records",
-            "mx-aaa001,mx-aaa002",
-            "--type",
-            "pattern",
-            "--name",
-            "only",
-        ][..],
-        &[
-            "compact",
-            "dev",
-            "--apply",
-            "--records",
-            "mx-aaa001,mx-aaa002",
-            "--type",
-            "failure",
-            "--description",
-            "d",
-        ][..],
-        &[
-            "compact",
-            "dev",
-            "--apply",
-            "--records",
-            "mx-aaa001,mx-aaa002",
-            "--type",
-            "decision",
-            "--title",
-            "t",
-        ][..],
-        &[
-            "compact",
-            "dev",
-            "--apply",
-            "--records",
-            "mx-aaa001,mx-aaa002",
-            "--type",
-            "convention",
-        ][..],
-        // structural errors
-        &["compact", "dev", "--apply", "--records", "mx-aaa001"][..],
-        &[
-            "compact",
-            "dev",
-            "--apply",
-            "--records",
-            "mx-zzz999,mx-aaa001",
-        ][..],
-        &["compact", "--apply"][..],
-        &["compact", "dev", "--apply"][..],
-        &["compact"][..],
-    ] {
-        compacted_pair("cp-apply", &body, args);
-    }
+    // happy: pattern replacement from flags
+    let ours = seeded_store("cp-apply", None, &[("dev", body.as_str())], &[]);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact",
+        "dev",
+        "--apply",
+        "--records",
+        "mx-aaa001,mx-aaa002",
+        "--type",
+        "pattern",
+        "--name",
+        "P one",
+        "--description",
+        "merged",
+    ]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
+    assert_eq!(our.stdout, "✓ Compacted 2 pattern records into 1 in dev\n");
+    let live = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert!(
+        live.contains("\"name\":\"P one\",\"description\":\"merged\""),
+        "flag-built replacement: {live}"
+    );
+
+    // a single record never groups
+    let ours = seeded_store("cp-apply-single", None, &[("dev", body.as_str())], &[]);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact",
+        "dev",
+        "--apply",
+        "--records",
+        "mx-aaa001",
+        "--type",
+        "pattern",
+        "--name",
+        "N",
+        "--description",
+        "D",
+    ]);
+    assert_eq!(our.code, 1);
+    assert_eq!(
+        our.stderr,
+        "Error: Compaction requires at least 2 records.\n"
+    );
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
 }
 
 #[test]
-fn compact_apply_validation_failure_bytes_match_reference() {
+fn compact_apply_validation_failure_pins_the_prefix() {
     // NON-HEX source ids: the replacement's supersedes links violate
     // the id pattern, so --apply fails the unified-schema validation
-    // with the reference's AJV cascade.
+    // with the oneOf cascade.
     let stale = days_ago(40);
     let body = format!(
         "{{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":\"P one\",\"description\":\"d1\",\"id\":\"mx-g00111\"}}\n{{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":\"P two\",\"description\":\"d2\",\"id\":\"mx-g00211\"}}\n"
     );
-    compacted_pair("cp-validate", &body, &[
+    let ours = seeded_store("cp-validate", None, &[("dev", body.as_str())], &[]);
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact",
         "dev",
         "--apply",
@@ -346,24 +309,24 @@ fn compact_apply_validation_failure_bytes_match_reference() {
         "--description",
         "m",
     ]);
-    compacted_pair("cp-validate-json", &body, &[
-        "--json",
-        "compact",
-        "dev",
-        "--apply",
-        "--records",
-        "mx-g00111,mx-g00211",
-        "--type",
-        "pattern",
-        "--name",
-        "P one",
-        "--description",
-        "m",
-    ]);
+    assert_eq!(run.code, 1);
+    assert_eq!(run.stdout, "");
+    assert!(
+        run.stderr
+            .starts_with("Error: Replacement record failed validation: "),
+        "our cascade: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("/supersedes/0 must match pattern"),
+        "the id-pattern violation is named: {}",
+        run.stderr
+    );
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
 }
 
 #[test]
-fn compact_strategies_and_idless_groups_match_reference() {
+fn compact_strategies_pin_the_analyze_table() {
     let config = "version: '1'\n\
 domains:\n  dev: {}\n\
 custom_types:\n  note:\n    required: [text]\n    dedup_key: text\n    summary: \"{text}\"\n    compact: keep_latest\n  journal:\n    required: [entry]\n    dedup_key: entry\n    summary: \"{entry}\"\n    compact: merge_outcomes\n\
@@ -382,37 +345,33 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
 {{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":\"NP one\",\"description\":\"d1\"}}\n\
 {{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":\"NP two\",\"description\":\"d2\"}}\n"
     );
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    for args in [
-        &["compact", "--analyze"][..],
-        &["--json", "compact", "--analyze"][..],
-        &["compact", "--auto", "--yes"][..],
-        &["--json", "compact", "--auto", "--yes"][..],
-    ] {
-        let (ours, theirs) =
-            twin_seeded("cp-strategy", Some(config), &[("dev", body.as_str())], &[]);
-        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_compact_parity(&ours, &our, &theirs, &their, "strategy");
-    }
+    let ours = seeded_store("cp-strategy", Some(config), &[("dev", body.as_str())], &[]);
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &["compact", "--analyze"]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stdout
+            .contains("Found 3 groups (6 records that could be compacted)"),
+        "custom groups surface: {}",
+        run.stdout
+    );
+    assert!(run.stdout.contains("note (2 records)"));
+    assert!(run.stdout.contains("journal (2 records)"));
+    assert!(
+        run.stdout.contains("(no id): old note"),
+        "id-less customs render their summary: {}",
+        run.stdout
+    );
 }
 
 #[test]
 fn compact_auto_unknown_type_group_is_a_clean_error() {
     // mulch-2809: with --allow-unknown-types the read KEEPS records of
     // unregistered types, they form a candidate group, and the
-    // reference dies during candidate COLLECTION — getRecordSummary
-    // (format.ts) throws `Unknown record type: <type>` uncaught, a Bun
-    // stack-dump crash with EMPTY stdout, in every mode. This port
-    // renders the thrown message as a clean Error line at the same
-    // point, so nothing prints and nothing writes (README DEVIATIONS).
-    // Ungated on purpose: the reference's own bytes ARE a stack trace.
-    // The alpha domain carries a CLEAN compactable group: the error
-    // must fire before any write, so alpha stays two records and no
-    // archive appears (no partially compacted store).
+    // collector renders the unknown-type throw as a clean Error line
+    // at the same point, so nothing prints and nothing writes (README
+    // DEVIATIONS). The alpha domain carries a CLEAN compactable
+    // group: the error must fire before any write, so alpha stays two
+    // records and no archive appears (no partially compacted store).
     let config = "version: '1'\n\
 domains:\n  dev: {}\n  alpha: {}\n\
 governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\n\
@@ -426,7 +385,7 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
         "{{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":\"a1\",\"description\":\"d1\"}}\n\
 {{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"name\":\"a2\",\"description\":\"d2\"}}\n"
     );
-    let (ours, _theirs) = twin_seeded(
+    let ours = seeded_store(
         "cp-unknown",
         Some(config),
         &[("dev", body.as_str()), ("alpha", alpha.as_str())],
@@ -441,7 +400,6 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
         "--allow-unknown-types",
     ]);
     assert_eq!(run.code, 1);
-    // The reference dies before ANY output; so does the port.
     assert_eq!(run.stdout, "");
     assert_eq!(run.stderr, "Error: Unknown record type: weird\n");
     assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), dev_before);
@@ -458,10 +416,10 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
 
 #[test]
 fn compact_analyze_unknown_type_group_is_a_clean_error() {
-    // The revisor's mode probe: the reference's collection crash hits
-    // --analyze (and --auto --dry-run) exactly like --auto — same
-    // empty stdout, same stack dump. Pin the analyze mode so a later
-    // fix cannot re-open the divergence for the read-only modes.
+    // The collector's unknown-type crash hits --analyze (and
+    // --auto --dry-run) exactly like --auto — same empty stdout, same
+    // clean Error line. Pin the analyze mode so a later fix cannot
+    // re-open the divergence for the read-only modes.
     let config = "version: '1'\n\
 domains:\n  dev: {}\n\
 governance:\n  max_entries: 100\n  warn_entries: 150\n  hard_limit: 200\n\
@@ -471,7 +429,7 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
         "{{\"type\":\"weird\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"content\":\"w1\"}}\n\
 {{\"type\":\"weird\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"content\":\"w2\"}}\n"
     );
-    let (ours, _theirs) = twin_seeded("cp-unknown-an", Some(config), &[("dev", body.as_str())], &[
+    let ours = seeded_store("cp-unknown-an", Some(config), &[("dev", body.as_str())], &[
     ]);
     let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact",
@@ -485,10 +443,9 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
 
 #[test]
 fn compact_manual_strategy_is_a_clean_abort() {
-    // The reference CRASHES on a manual-strategy group in --auto (an
-    // uncaught throw from mergeRecords dumps a Bun stack trace); this
-    // port renders the thrown message as a clean Error line and
-    // leaves the store untouched (README DEVIATIONS).
+    // A manual-strategy group in --auto renders the thrown message as
+    // a clean Error line and leaves the store untouched (README
+    // DEVIATIONS).
     let config = "version: '1'\n\
 domains:\n  dev: {}\n\
 custom_types:\n  hypo:\n    required: [statement, prediction]\n    dedup_key: statement\n    summary: \"{statement}\"\n\
@@ -499,14 +456,14 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
         "{{\"type\":\"hypo\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"statement\":\"h1\",\"prediction\":\"p1\"}}\n\
 {{\"type\":\"hypo\",\"classification\":\"tactical\",\"recorded_at\":\"{stale}\",\"statement\":\"h2\",\"prediction\":\"p2\"}}\n"
     );
-    let (ours, _theirs) = twin_seeded("cp-manual", Some(config), &[("dev", body.as_str())], &[]);
+    let ours = seeded_store("cp-manual", Some(config), &[("dev", body.as_str())], &[]);
     let before = read_store_file(&ours.0, "expertise/dev.jsonl");
     let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact", "--auto", "--yes",
     ]);
     assert_eq!(run.code, 1);
     // The summary block prints before the apply phase reaches the
-    // merge (the reference prints it too, then crashes).
+    // merge.
     assert!(run.stdout.starts_with("\nCompaction summary:\n"));
     assert_eq!(
         run.stderr,
@@ -519,8 +476,7 @@ classification_defaults:\n  shelf_life:\n    tactical: 14\n    observational: 30
 
 /// A config whose `hooks:`/`hook_settings:` blocks carry `hook_config`
 /// (single-quoted YAML entries, plain sh, stdin always drained first
-/// so the reference's async EPIPE-on-stdin-write bug cannot fire
-/// mid-run and pollute the compared bytes).
+/// so the hook's stdin write cannot stall mid-run).
 fn hooks_config(hook_config: &str) -> String {
     format!("version: '1'\ndomains:\n  dev: {{}}\n{hook_config}{CONFIG_TAIL}")
 }
@@ -540,56 +496,6 @@ fn draining_hook(command: &str) -> String {
     format!("cat > /dev/null; {command}")
 }
 
-/// [`assert_compact_parity`] with the reference's pino warn lines
-/// folded out of both stderr streams (hook-configured stores).
-fn assert_compact_hook_parity(
-    ours: &TempDir,
-    our: &Run,
-    theirs: &TempDir,
-    their: &Run,
-    label: &str,
-) {
-    assert_eq!(our.code, their.code, "{label} exit");
-    assert_eq!(
-        normalize(&our.stdout),
-        promote_theirs(&normalize(&their.stdout)),
-        "{label} stdout"
-    );
-    assert_eq!(
-        normalize(&strip_reference_hook_noise(&our.stderr)),
-        promote_theirs(&normalize(&strip_reference_hook_noise(&their.stderr))),
-        "{label} stderr"
-    );
-    assert_eq!(
-        normalize(&read_store_text_or_empty(&ours.0, "expertise/dev.jsonl")),
-        promote_theirs(&normalize(&read_store_text_or_empty(
-            &theirs.0,
-            "expertise/dev.jsonl"
-        ))),
-        "{label} live bytes"
-    );
-    assert_eq!(
-        normalize(&read_store_text_or_empty(&ours.0, "archive/dev.jsonl")),
-        promote_theirs(&normalize(&read_store_text_or_empty(
-            &theirs.0,
-            "archive/dev.jsonl"
-        ))),
-        "{label} archive bytes"
-    );
-}
-
-/// Twin hook-configured stores, one run each (compact mutates).
-fn hooked_pair(tag: &str, body: &str, config: &str, args: &[&str]) {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded(tag, Some(config), &[("dev", body)], &[]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-    let their = run_in(&theirs.0, &ml, args);
-    assert_compact_hook_parity(&ours, &our, &theirs, &their, tag);
-}
-
 /// One valid pattern replacement body (fixed stamp; the id is
 /// regenerated deterministically from `pattern:Hooked one`).
 const HOOKED_PATTERN: &str = "{\"type\":\"pattern\",\"name\":\"Hooked one\",\
@@ -600,20 +506,47 @@ const HOOKED_PATTERN: &str = "{\"type\":\"pattern\",\"name\":\"Hooked one\",\
 fn compact_auto_hook_block_skips_group_with_warning() {
     // The hook blocks ONLY the guide group (grep drains stdin); the
     // unrelated pattern group still compacts. Plain: per-group
-    // `Warning:` lines on stderr; json: the envelope's `warnings`
-    // array; quiet: the warning lines suppress.
+    // `Warning:` lines on stderr naming the hook and its exit code.
     let body = seeded_body();
     let config = hooks_config(
         "hooks:\n  pre-compact:\n    - 'grep -q guide && exit 3 || \
               exit 0'\n",
     );
-    hooked_pair("cph-block", &body, &config, &["compact", "--auto", "--yes"]);
-    hooked_pair("cph-block-json", &body, &config, &[
+    let ours = seeded_store(
+        "cph-block",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact", "--auto", "--yes",
+    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr.contains(
+            "Warning: dev/guide: hook `grep -q guide && exit 3 || exit 0` exited with code 3"
+        ),
+        "skip warning: {}",
+        run.stderr
+    );
+    assert!(
+        run.stdout
+            .contains("✓ Auto-compacted 3 records across 1 groups"),
+        "the unblocked group still compacts: {}",
+        run.stdout
+    );
+
+    // json mode stays exit 0 with the same block/skip outcome
+    let ours = seeded_store(
+        "cph-block-json",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &[
         "--json", "compact", "--auto", "--yes",
     ]);
-    hooked_pair("cph-block-quiet", &body, &config, &[
-        "--quiet", "compact", "--auto", "--yes",
-    ]);
+    assert_eq!(json.code, 0, "{}", json.stderr);
 }
 
 #[test]
@@ -621,18 +554,36 @@ fn compact_auto_hook_replacement_is_adopted() {
     // A truthy `payload.replacement` overrides the mechanical merge:
     // copied verbatim, `supersedes` backfilled from the group's ids,
     // the id regenerated from the body. The guide group (the hook
-    // stays silent for it) merges mechanically. The second config
-    // pins the explicit-supersedes-kept + incoming-id-dropped law.
+    // stays silent for it) merges mechanically.
     let body = seeded_body();
     let config = hooks_config(&format!(
         "hooks:\n  pre-compact:\n    - 'grep -q pattern && printf %s \"{}\" || true'\n",
         hook_replacement_stdout(HOOKED_PATTERN)
     ));
-    hooked_pair("cph-adopt", &body, &config, &["compact", "--auto", "--yes"]);
-    hooked_pair("cph-adopt-json", &body, &config, &[
-        "--json", "compact", "--auto", "--yes",
+    let ours = seeded_store(
+        "cph-adopt",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "compact", "--auto", "--yes",
     ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let live = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert!(live.contains("Hooked one"), "adopted verbatim: {live}");
+    assert!(
+        live.contains("\"supersedes\":[\"mx-aaa001\",\"mx-aaa002\",\"mx-aaa003\"]"),
+        "supersedes backfilled from the group: {live}"
+    );
+    assert!(
+        live.contains("gd 1"),
+        "the silent guide group merges mechanically: {live}"
+    );
 
+    // The explicit-supersedes-kept + incoming-id-dropped law: a
+    // replacement that carries its own supersedes list keeps it, and
+    // a bogus incoming id is regenerated.
     let explicit = "{\"type\":\"pattern\",\"name\":\"Keep sup\",\
 \"description\":\"d\",\"classification\":\"foundational\",\
 \"recorded_at\":\"2026-10-01T00:00:00.000Z\",\
@@ -641,17 +592,33 @@ fn compact_auto_hook_replacement_is_adopted() {
         "hooks:\n  pre-compact:\n    - 'cat > /dev/null; printf %s \"{}\"'\n",
         hook_replacement_stdout(explicit)
     ));
-    hooked_pair("cph-adopt-explicit", &body, &kept, &[
+    let ours = seeded_store(
+        "cph-adopt-explicit",
+        Some(kept.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact", "--auto", "--yes",
     ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let live = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert!(live.contains("Keep sup"), "adopted: {live}");
+    assert!(
+        live.contains("\"supersedes\":[\"mx-9ea5ff\",\"mx-9ea5fe\"]"),
+        "explicit supersedes kept: {live}"
+    );
+    assert!(
+        !live.contains("\"id\":\"bogus\""),
+        "incoming id dropped: {live}"
+    );
 }
 
 #[test]
 fn compact_auto_hook_invalid_replacement_skips_group() {
-    // An invalid replacement skips the group with the AJV cascade
-    // warning (leading space per `${instancePath} ${message}`, joined
-    // `; `); the second config spreads `{}` — supersedes backfills,
-    // then every branch misses `type`.
+    // An invalid replacement skips the group with the validation
+    // cascade warning (leading space per `${instancePath}
+    // ${message}`, joined `; `); nothing is written for the group.
     let body = seeded_body();
     let missing = hooks_config(&format!(
         "hooks:\n  pre-compact:\n    - 'cat > /dev/null; printf %s \"{}\"'\n",
@@ -660,36 +627,41 @@ fn compact_auto_hook_invalid_replacement_skips_group() {
 \"recorded_at\":\"2026-10-01T00:00:00.000Z\"}"
         )
     ));
-    hooked_pair("cph-invalid", &body, &missing, &[
+    let ours = seeded_store(
+        "cph-invalid",
+        Some(missing.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact", "--auto", "--yes",
     ]);
-    hooked_pair("cph-invalid-json", &body, &missing, &[
-        "--json", "compact", "--auto", "--yes",
-    ]);
-
-    let empty = hooks_config(&format!(
-        "hooks:\n  pre-compact:\n    - 'cat > /dev/null; printf %s \"{}\"'\n",
-        hook_replacement_stdout("{}")
-    ));
-    hooked_pair("cph-empty-repl", &body, &empty, &[
-        "compact", "--auto", "--yes",
-    ]);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr
+            .contains("Warning: dev/pattern: pre-compact hook produced an invalid record: "),
+        "cascade warning: {}",
+        run.stderr
+    );
+    assert!(
+        run.stderr
+            .contains("must match exactly one schema in oneOf"),
+        "oneOf tail: {}",
+        run.stderr
+    );
+    // the group is skipped, the store keeps every original record
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
 }
 
 #[test]
 fn compact_apply_hook_block_aborts_before_write() {
     // A blocked hook aborts --apply with exit 1 before any write:
-    // plain `Error: {reason}` / the json error envelope, store bytes
-    // identical to the seed on both sides.
+    // store bytes identical to the seed.
     let body = seeded_body();
     let config = hooks_config(&format!(
         "hooks:\n  pre-compact:\n    - '{}'\n",
         draining_hook("exit 3")
     ));
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
     for args in [
         &[
             "compact",
@@ -719,26 +691,22 @@ fn compact_apply_hook_block_aborts_before_write() {
             "D",
         ][..],
     ] {
-        let (ours, theirs) = twin_seeded(
+        let ours = seeded_store(
             "cph-apply-block",
             Some(config.as_str()),
             &[("dev", body.as_str())],
             &[],
         );
-        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_compact_hook_parity(&ours, &our, &theirs, &their, "apply-block");
-        assert_eq!(our.code, 1);
+        let run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        assert_eq!(run.code, 1);
         assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
-        assert_eq!(read_store_file(&theirs.0, "expertise/dev.jsonl"), body);
     }
 }
 
 #[test]
 fn compact_apply_hook_replacement_overrides_flags() {
-    // The hook's guide-typed replacement wins over the pattern flags;
-    // the success line still names the RESOLVED type ("pattern"). The
-    // invalid variant aborts with exit 1 before any write.
+    // The hook's guide-typed replacement wins over the pattern flags.
+    // The invalid variant aborts with exit 1 before any write.
     let body = seeded_body();
     let apply = &[
         "compact",
@@ -763,21 +731,20 @@ fn compact_apply_hook_replacement_overrides_flags() {
             )
         ))
     ));
-    hooked_pair("cph-apply-adopt", &body, &config, apply);
-    hooked_pair("cph-apply-adopt-json", &body, &config, &[
-        "--json",
-        "compact",
-        "dev",
-        "--apply",
-        "--records",
-        "mx-aaa001,mx-aaa002",
-        "--type",
-        "pattern",
-        "--name",
-        "N",
-        "--description",
-        "D",
-    ]);
+    let ours = seeded_store(
+        "cph-apply-adopt",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), apply);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let live = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert!(live.contains("Applied hook"), "hook body wins: {live}");
+    assert!(
+        !live.contains("\"name\":\"N\""),
+        "flag body never lands: {live}"
+    );
 
     let invalid = hooks_config(&format!(
         "hooks:\n  pre-compact:\n    - '{}'\n",
@@ -786,27 +753,21 @@ fn compact_apply_hook_replacement_overrides_flags() {
             hook_replacement_stdout("{\"type\":\"pattern\",\"name\":\"X\"}")
         ))
     ));
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded(
+    let ours = seeded_store(
         "cph-apply-invalid",
         Some(invalid.as_str()),
         &[("dev", body.as_str())],
         &[],
     );
-    let our = run_in(&ours.0, Path::new(mulch_bin()), apply);
-    let their = run_in(&theirs.0, &ml, apply);
-    assert_compact_hook_parity(&ours, &our, &theirs, &their, "apply-invalid");
-    assert_eq!(our.code, 1);
+    let run = run_in(&ours.0, Path::new(mulch_bin()), apply);
+    assert_eq!(run.code, 1);
     assert!(
-        strip_reference_hook_noise(&our.stderr).starts_with(
+        run.stderr.starts_with(
             "Error: pre-compact hook produced an invalid record:  must have required property \
              'content'"
         ),
         "stderr was: {}",
-        our.stderr
+        run.stderr
     );
     assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
 }
@@ -814,7 +775,7 @@ fn compact_apply_hook_replacement_overrides_flags() {
 #[test]
 fn compact_hook_stderr_is_forwarded() {
     // Captured hook stderr forwards right after each run, before any
-    // product bytes — success and block paths, plain and json alike.
+    // product bytes — success and block paths alike.
     let body = seeded_body();
     let apply = &[
         "compact",
@@ -836,46 +797,39 @@ fn compact_hook_stderr_is_forwarded() {
             hook_replacement_stdout(HOOKED_PATTERN)
         ))
     ));
-    hooked_pair("cph-stderr", &body, &noisy, apply);
-    hooked_pair("cph-stderr-json", &body, &noisy, &[
-        "--json",
-        "compact",
-        "dev",
-        "--apply",
-        "--records",
-        "mx-aaa001,mx-aaa002",
-        "--type",
-        "pattern",
-        "--name",
-        "N",
-        "--description",
-        "D",
-    ]);
+    let ours = seeded_store(
+        "cph-stderr",
+        Some(noisy.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), apply);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr.starts_with("hook-boom\n"),
+        "forwarded first: {}",
+        run.stderr
+    );
 
     // Block path: the forwarded bytes precede the Warning lines.
     let blocking = hooks_config(&format!(
         "hooks:\n  pre-compact:\n    - '{}'\n",
         draining_hook("printf hook-boom >&2; exit 3")
     ));
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded(
+    let ours = seeded_store(
         "cph-stderr-block",
         Some(blocking.as_str()),
         &[("dev", body.as_str())],
         &[],
     );
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact", "--auto", "--yes",
     ]);
-    let their = run_in(&theirs.0, &ml, &["compact", "--auto", "--yes"]);
-    assert_compact_hook_parity(&ours, &our, &theirs, &their, "stderr-block");
+    assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(
-        strip_reference_hook_noise(&our.stderr).starts_with("hook-boom\nhook-boom\nWarning: "),
+        run.stderr.starts_with("hook-boom\nhook-boom\nWarning: "),
         "stderr was: {}",
-        our.stderr
+        run.stderr
     );
 }
 
@@ -889,13 +843,36 @@ fn compact_hook_timeout_blocks_the_group() {
         "hooks:\n  pre-compact:\n    - '{}'\nhook_settings:\n  timeout_ms: 150\n",
         draining_hook("sleep 30 & wait")
     ));
-    hooked_pair("cph-timeout", &body, &config, &[
+    let ours = seeded_store(
+        "cph-timeout",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact", "--auto", "--yes",
     ]);
-    hooked_pair("cph-timeout-json", &body, &config, &[
-        "--json", "compact", "--auto", "--yes",
-    ]);
-    hooked_pair("cph-timeout-apply", &body, &config, &[
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert!(
+        run.stderr.contains("timed out after 150ms"),
+        "timeout warning: {}",
+        run.stderr
+    );
+    assert_eq!(
+        run.stderr.lines().count(),
+        2,
+        "one warning per group: {}",
+        run.stderr
+    );
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
+
+    let ours = seeded_store(
+        "cph-timeout-apply",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact",
         "dev",
         "--apply",
@@ -908,37 +885,33 @@ fn compact_hook_timeout_blocks_the_group() {
         "--description",
         "D",
     ]);
+    assert_eq!(run.code, 1);
+    assert_eq!(read_store_file(&ours.0, "expertise/dev.jsonl"), body);
 }
 
 #[test]
 fn compact_auto_dry_run_fires_no_hooks() {
-    // The reference returns from --dry-run before the apply loop, so
-    // pre-compact never fires (marker file absent on both sides even
-    // though the hook would block).
+    // The engine returns from --dry-run before the apply loop, so
+    // pre-compact never fires (marker file absent even though the
+    // hook would block).
     let body = seeded_body();
     let config = hooks_config(&format!(
         "hooks:\n  pre-compact:\n    - '{}'\n",
         draining_hook("printf ran > hook-ran.txt; exit 3")
     ));
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded(
+    let ours = seeded_store(
         "cph-dryrun",
         Some(config.as_str()),
         &[("dev", body.as_str())],
         &[],
     );
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact",
         "--auto",
         "--dry-run",
     ]);
-    let their = run_in(&theirs.0, &ml, &["compact", "--auto", "--dry-run"]);
-    assert_compact_hook_parity(&ours, &our, &theirs, &their, "dry-run");
+    assert_eq!(run.code, 0, "{}", run.stderr);
     assert!(!ours.0.join("hook-ran.txt").exists());
-    assert!(!theirs.0.join("hook-ran.txt").exists());
 }
 
 #[test]
@@ -947,14 +920,14 @@ fn compact_hook_engine_warnings_surface() {
     // --apply plain prints `Warning: …` on stderr (not quiet-gated)
     // and the compaction proceeds via the user flags; --json and
     // --auto drop them entirely (resolveReplacement ignores them).
-    // The reason's wording past the prefix is serde-vs-V8 and NOT
-    // pinned (README DEVIATIONS), so the plain case pins OUR bytes.
+    // The reason's wording past the prefix is runtime vocabulary and
+    // NOT pinned (README DEVIATIONS).
     let body = seeded_body();
     let config = hooks_config(&format!(
         "hooks:\n  pre-compact:\n    - '{}'\n",
         draining_hook("printf %s not-json")
     ));
-    let (ours, _theirs) = twin_seeded(
+    let ours = seeded_store(
         "cph-engine-warn",
         Some(config.as_str()),
         &[("dev", body.as_str())],
@@ -976,20 +949,39 @@ fn compact_hook_engine_warnings_surface() {
     assert_eq!(run.code, 0);
     assert_eq!(run.stdout, "✓ Compacted 2 pattern records into 1 in dev\n");
     assert!(
-        strip_reference_hook_noise(&run.stderr).starts_with(
+        normalize_hook_parse_warning(&run.stderr).starts_with(
             "Warning: hook `cat > /dev/null; printf %s not-json` printed non-JSON on stdout \
-             (mutation ignored): "
+             (mutation ignored): <parser text>"
         ),
         "engine warning was: {}",
         run.stderr
     );
 
-    // --auto and --json stay byte-identical to the reference (both
-    // drop the engine warnings; the mechanical merge runs).
-    hooked_pair("cph-engine-warn-auto", &body, &config, &[
+    // --auto and --json drop the engine warnings; the mechanical
+    // merge runs.
+    let ours = seeded_store(
+        "cph-engine-warn-auto",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let auto = run_in(&ours.0, Path::new(mulch_bin()), &[
         "compact", "--auto", "--yes",
     ]);
-    hooked_pair("cph-engine-warn-json", &body, &config, &[
+    assert_eq!(auto.code, 0, "{}", auto.stderr);
+    assert!(
+        !auto.stderr.contains("printed non-JSON"),
+        "--auto drops engine warnings: {}",
+        auto.stderr
+    );
+
+    let ours = seeded_store(
+        "cph-engine-warn-json",
+        Some(config.as_str()),
+        &[("dev", body.as_str())],
+        &[],
+    );
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &[
         "--json",
         "compact",
         "dev",
@@ -1003,4 +995,16 @@ fn compact_hook_engine_warnings_surface() {
         "--description",
         "D",
     ]);
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    assert!(
+        !json.stderr.contains("printed non-JSON"),
+        "--json drops engine warnings: {}",
+        json.stderr
+    );
+    // the compaction ran despite the ignored mutation
+    assert!(
+        read_store_file(&ours.0, "expertise/dev.jsonl").contains("\"supersedes\":["),
+        "mechanical merge ran: {}",
+        read_store_file(&ours.0, "expertise/dev.jsonl")
+    );
 }

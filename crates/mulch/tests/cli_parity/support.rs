@@ -5,20 +5,12 @@
 //! — every helper lived in one flat file before; they moved here
 //! once, verbatim, with `pub(crate)` visibility.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 /// Our binary under test.
 pub(crate) fn mulch_bin() -> &'static str {
     env!("CARGO_BIN_EXE_mulch")
-}
-
-/// The reference CLI, when installed.
-pub(crate) fn reference_ml() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("ml"))
-        .find(|ml| ml.is_file())
 }
 
 /// One captured run.
@@ -52,16 +44,6 @@ pub(crate) fn normalize(text: &str) -> String {
     regex_free_iso(text)
 }
 
-/// The Retry/Example echo promotes THIS binary (user directive
-/// 2026-10-13: no ml references in the shipped binary — README
-/// DEVIATIONS): ours says `mulch record` where the reference echoes
-/// its own name. Byte comparisons normalize the binary name; the
-/// deviation itself is pinned by `record_echo_promotes_mulch`.
-pub(crate) fn echo_ours_to_reference(text: &str) -> String {
-    text.replace("mulch record", "ml record")
-}
-
-/// ISO-8601 timestamps -> `<TS>` without a regex dependency.
 pub(crate) fn regex_free_iso(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -102,27 +84,6 @@ pub(crate) fn read_store_file(dir: &Path, relative: &str) -> String {
     .into_owned()
 }
 
-/// Parses a doctor JSON report, neutralizes the environment-dependent
-/// upgrade check and the summary counts, and re-serializes
-/// deterministically for comparison.
-pub(crate) fn normalize_doctor_json(text: &str) -> String {
-    let mut value: serde_json::Value = serde_json::from_str(text).expect("doctor json parses");
-    let Some(checks) = value.get_mut("checks").and_then(|c| c.as_array_mut()) else {
-        return text.into();
-    };
-    for check in checks {
-        if check.get("name").and_then(|n| n.as_str()) == Some("upgrade") {
-            check["message"] = serde_json::Value::String("<UPGRADE>".into());
-            check["details"] = serde_json::Value::Array(Vec::new());
-            check["status"] = serde_json::Value::String("<STATUS>".into());
-        }
-    }
-    if let Some(object) = value.as_object_mut() {
-        object.remove("summary");
-    }
-    serde_json::to_string(&value).expect("doctor json serializes")
-}
-
 /// The `recorded_at` value inside a freshly written domain file.
 pub(crate) fn recent_timestamp(file: &Path) -> String {
     let text = std::fs::read_to_string(file).expect("domain file");
@@ -137,9 +98,10 @@ pub(crate) fn recent_timestamp(file: &Path) -> String {
 // ---- sprint 15 (mulch-7ac9): doctor duplicates + divergent ids ----
 
 /// Shared twin-store fixture: `ml init` + one base pattern p1.
-pub(crate) fn duration_fixture(dir: &Path, ml: &Path) {
-    let _ = run_in(dir, ml, &["init"]);
-    let _ = run_in(dir, ml, &[
+pub(crate) fn duration_fixture(dir: &Path) {
+    let bin = Path::new(mulch_bin());
+    let _ = run_in(dir, bin, &["init"]);
+    let _ = run_in(dir, bin, &[
         "record",
         "dev",
         "--type",
@@ -269,24 +231,24 @@ pub(crate) fn write_orphan(dir: &Path, name: &str, body: &str) {
 }
 
 /// Twin stores seeded identically (`None` = the default seed config).
-pub(crate) fn twin_seeded(
+/// The seeded store fixture (ADR-0008: the battery runs OUR binary
+/// only — the twin/reference side is gone; the old `twin_seeded`
+/// built both via plain file writes).
+pub(crate) fn seeded_store(
     tag: &str,
     config: Option<&str>,
     domains: &[(&str, &str)],
     orphans: &[(&str, &str)],
-) -> (TempDir, TempDir) {
-    let ours = TempDir::new(format!("{tag}-o").as_str());
-    let theirs = TempDir::new(format!("{tag}-t").as_str());
-    for dir in [&ours.0, &theirs.0] {
-        match config {
-            Some(config) => write_seed_with_config(dir, config, domains),
-            None => write_seed(dir, domains),
-        }
-        for (name, body) in orphans {
-            write_orphan(dir, name, body);
-        }
+) -> TempDir {
+    let ours = TempDir::new(tag);
+    match config {
+        Some(config) => write_seed_with_config(&ours.0, config, domains),
+        None => write_seed(&ours.0, domains),
     }
-    (ours, theirs)
+    for (name, body) in orphans {
+        write_orphan(&ours.0, name, body);
+    }
+    ours
 }
 
 /// Folds the temp root so messages carrying absolute paths compare.
@@ -294,104 +256,8 @@ pub(crate) fn normalize_dir(text: &str, dir: &Path) -> String {
     text.replace(&dir.display().to_string(), "<DIR>")
 }
 
-/// The promote law's command list (render.rs `promote_mulch`).
-const PROMOTED_COMMANDS: [&str; 27] = [
-    "init",
-    "add",
-    "record",
-    "edit",
-    "query",
-    "setup",
-    "prime",
-    "onboard",
-    "status",
-    "validate",
-    "prune",
-    "archive",
-    "restore",
-    "search",
-    "rank",
-    "outcome",
-    "doctor",
-    "ready",
-    "sync",
-    "delete",
-    "delete-domain",
-    "move",
-    "learn",
-    "compact",
-    "config",
-    "diff",
-    "upgrade",
-];
-
-/// Applies the promote law to the REFERENCE's output for byte
-/// comparisons (user directive 2026-10-13: our binary says
-/// `mulch <cmd>` wherever the reference's text says `ml <cmd>`; where
-/// the reference itself already prints `mulch <cmd>` both sides
-/// agree, so promoting their side is the safe direction). The
-/// deviation itself is pinned per battery.
-pub(crate) fn promote_theirs(text: &str) -> String {
-    let mut out = text.to_string();
-    for command in PROMOTED_COMMANDS {
-        let from = format!("ml {command}");
-        let to = format!("mulch {command}");
-        // replace on word boundaries only (`html record` stays):
-        // split, swap the exact-token parts, rejoin.
-        let mut result = String::with_capacity(out.len());
-        let mut rest = out.as_str();
-        while let Some(hit) = rest.find(&from) {
-            let before_ok = rest[..hit]
-                .chars()
-                .next_back()
-                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
-            let after = &rest[hit + from.len()..];
-            let after_ok = after
-                .chars()
-                .next()
-                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
-            if before_ok && after_ok {
-                result.push_str(&rest[..hit]);
-                result.push_str(&to);
-            } else {
-                result.push_str(&rest[..hit + from.len()]);
-            }
-            rest = &rest[hit + from.len()..];
-        }
-        result.push_str(rest);
-        out = result;
-    }
-    out
-}
-
-/// Asserts both stderr streams equal the expected text. `expected`
-/// is OUR wording; the reference's `ml <cmd>` self-references are
-/// promoted before comparing (user directive 2026-10-13).
-pub(crate) fn assert_same_stderr(
-    ours: &TempDir,
-    our: &Run,
-    theirs: &TempDir,
-    their: &Run,
-    expected: &str,
-) {
-    assert_eq!(normalize_dir(&our.stderr, &ours.0), expected, "our stderr");
-    assert_eq!(
-        promote_theirs(&normalize_dir(&their.stderr, &theirs.0)),
-        expected,
-        "reference stderr (promoted)"
-    );
-}
-
-/// Asserts both stores hold the same bytes for a store-relative path.
-pub(crate) fn assert_same_file(ours: &TempDir, theirs: &TempDir, relative: &str) {
-    assert_eq!(
-        read_store_file(&ours.0, relative),
-        read_store_file(&theirs.0, relative),
-        "{relative} differs"
-    );
-}
-
-/// The reference's pretty JSON error envelope (stderr channel).
+/// Builds the pretty-printed error envelope literal our json pins
+/// compare against (two-space indent, trailing newline).
 pub(crate) fn error_envelope(command: &str, error: &str) -> String {
     format!(
         "{{\n  \"success\": false,\n  \"command\": \"{command}\",\n  \"error\": \"{}\"\n}}\n",
@@ -423,12 +289,12 @@ pub(crate) fn mask_timestamps(text: &str) -> String {
 /// all four repair passes fire in check order. Timestamps derive from
 /// the runtime clock (stale a full day past the 14-day tactical
 /// shelf; fresh a full day inside it).
-pub(crate) fn repair_fixture(dir: &Path, ml: &Path) {
+pub(crate) fn repair_fixture(dir: &Path) {
     let now = jiff::Timestamp::now();
     let stale_at = (now - jiff::Span::new().hours(40 * 24)).to_string();
     let fresh_at = (now - jiff::Span::new().hours(24)).to_string();
-    let _ = run_in(dir, ml, &["init"]);
-    let _ = run_in(dir, ml, &["add", "dev"]);
+    let _ = run_in(dir, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(dir, Path::new(mulch_bin()), &["add", "dev"]);
     let store = [
         "# archived banner".to_string(),
         format!(
@@ -458,9 +324,9 @@ pub(crate) fn repair_fixture(dir: &Path, ml: &Path) {
 /// ours/theirs fixtures must not differ by a now() race).
 static LAST_ODD_LEGACY_AT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
-pub(crate) fn odd_legacy_fixture(dir: &Path, ml: &Path) -> String {
-    let _ = run_in(dir, ml, &["init"]);
-    let _ = run_in(dir, ml, &["add", "probe"]);
+pub(crate) fn odd_legacy_fixture(dir: &Path) -> String {
+    let _ = run_in(dir, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(dir, Path::new(mulch_bin()), &["add", "probe"]);
     // fresh-side by a full day (the sprint-18 time-bomb rule: fixed
     // calendar dates cross the shelf boundary and flip the doctor
     // --fix expectation — this fixture's 2026-10-01 pin did on
@@ -512,11 +378,11 @@ pub(crate) fn odd_legacy_fixture(dir: &Path, ml: &Path) -> String {
 /// outcome) plus a pattern. Returns marker → id (ids are content
 /// hashes, identical in both stores) captured BEFORE the markers
 /// are rewritten away.
-pub(crate) fn craft_gate_store(dir: &Path, ml: &Path) -> std::collections::HashMap<String, String> {
-    let _ = run_in(dir, ml, &["init"]);
-    let _ = run_in(dir, ml, &["add", "d"]);
-    let _ = run_in(dir, ml, &["add", "d2"]);
-    let _ = run_in(dir, ml, &[
+pub(crate) fn craft_gate_store(dir: &Path) -> std::collections::HashMap<String, String> {
+    let _ = run_in(dir, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(dir, Path::new(mulch_bin()), &["add", "d"]);
+    let _ = run_in(dir, Path::new(mulch_bin()), &["add", "d2"]);
+    let _ = run_in(dir, Path::new(mulch_bin()), &[
         "record",
         "d",
         "--type",
@@ -524,7 +390,7 @@ pub(crate) fn craft_gate_store(dir: &Path, ml: &Path) -> std::collections::HashM
         "--content",
         "ok body",
     ]);
-    let _ = run_in(dir, ml, &[
+    let _ = run_in(dir, Path::new(mulch_bin()), &[
         "record",
         "d",
         "--type",
@@ -532,7 +398,7 @@ pub(crate) fn craft_gate_store(dir: &Path, ml: &Path) -> std::collections::HashM
         "--content",
         "contentless body",
     ]);
-    let _ = run_in(dir, ml, &[
+    let _ = run_in(dir, Path::new(mulch_bin()), &[
         "record",
         "d",
         "--type",
@@ -540,7 +406,7 @@ pub(crate) fn craft_gate_store(dir: &Path, ml: &Path) -> std::collections::HashM
         "--content",
         "extra body",
     ]);
-    let _ = run_in(dir, ml, &[
+    let _ = run_in(dir, Path::new(mulch_bin()), &[
         "record",
         "d",
         "--type",
@@ -548,7 +414,7 @@ pub(crate) fn craft_gate_store(dir: &Path, ml: &Path) -> std::collections::HashM
         "--content",
         "wrongtyped body",
     ]);
-    let _ = run_in(dir, ml, &[
+    let _ = run_in(dir, Path::new(mulch_bin()), &[
         "record",
         "d",
         "--type",
@@ -556,7 +422,7 @@ pub(crate) fn craft_gate_store(dir: &Path, ml: &Path) -> std::collections::HashM
         "--content",
         "legacy body",
     ]);
-    let _ = run_in(dir, ml, &[
+    let _ = run_in(dir, Path::new(mulch_bin()), &[
         "record",
         "d",
         "--type",
@@ -633,104 +499,6 @@ pub(crate) fn governance_fixture(dir: &Path, governance: &str, counts: &[(&str, 
         )
         .expect("domain store");
     }
-}
-
-/// Whether a line belongs to the reference's ENVIRONMENT channels
-/// rather than its product output.
-///
-/// Two families: the upgrade check (the reference warns "Update
-/// available" where this port passes "Native binary"), and the
-/// registry probe — `ml doctor`/`status` print `✓ Version 0.10.7
-/// (unable to check registry)` when its network lookup times out and
-/// the bare `✓ Version 0.10.7` line when it answers, so the suffix
-/// races between runs (mulch-4683: the status battery flaked on
-/// exactly that line).
-pub(crate) fn is_reference_env_line(line: &str) -> bool {
-    line.contains("Update available")
-        || line.contains("Run `mulch upgrade`")
-        || line.contains("Native binary")
-        || line.contains("unable to check registry")
-        // The registry probe's third outcome (doctor.ts `cmp >= 0`):
-        // `✓ Version <cur> is up to date` — reachable the day the
-        // installed version is the latest one.
-        || line.contains("is up to date")
-}
-
-/// Plain doctor output modulo the documented upgrade-check deviation
-/// (its lines drop; the summary counts neutralize — the reference
-/// warns "Update available", we pass "Native binary").
-pub(crate) fn strip_upgrade_and_summary(text: &str) -> String {
-    text.lines()
-        .filter(|line| !is_reference_env_line(line))
-        .map(|line| {
-            if line.contains("passed") {
-                "<SUMMARY>"
-            } else {
-                line
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Strips the reference runtime's stderr noise: the async EPIPE trace
-/// Bun 1.4.0's child-pipe teardown throws, the pino level-40 line a
-/// failed hook logs, and Bun's crash footer (probes:
-/// /tmp/sprint42/childB/probes/stab — none of it is the hook law's
-/// bytes, and the same flake flips successful reference exits to 1,
-/// which [`assert_flaked_exit`] absorbs).
-pub(crate) fn strip_reference_hook_noise(text: &str) -> String {
-    let mut out = String::new();
-    let mut in_trace = false;
-    for line in text.lines() {
-        if line.starts_with("EPIPE: broken pipe") {
-            in_trace = true;
-            continue;
-        }
-        if in_trace {
-            // The trace rows (indentation not pinned): the errno/code
-            // rows, a blank, and the stack rows, ending at the first
-            // unrelated line.
-            let trimmed = line.trim_start();
-            let trace_row = line.is_empty()
-                || trimmed.starts_with("syscall:")
-                || trimmed.starts_with("errno:")
-                || trimmed.starts_with("code:")
-                || trimmed.starts_with("at ");
-            if trace_row {
-                continue;
-            }
-            in_trace = false;
-        }
-        if line.starts_with("{\"level\":40,") || line == "Bun v1.4.0 (Linux x64)" {
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    format!("{}\n", out.trim_end_matches('\n'))
-}
-
-/// The reference's EPIPE flake can flip a successful run's exit to 1;
-/// ours must carry the law's exit, theirs may carry either — but ONLY
-/// with the trace on stderr, so a genuine exit-code divergence in a
-/// hook path still fails the assertion.
-pub(crate) fn assert_flaked_exit(
-    our: i32,
-    their: i32,
-    their_stderr: &str,
-    expected: i32,
-    tag: &str,
-) {
-    assert_eq!(our, expected, "{tag}: our exit is the law's");
-    if their == expected {
-        return;
-    }
-    assert!(
-        their == 1 && their_stderr.contains("EPIPE: broken pipe"),
-        "{tag}: reference exit {their} (law {expected}); exit 1 is allowed only \
-         as the EPIPE flake, but stderr carries no trace: {their_stderr:?}"
-    );
 }
 
 /// Redacts the parser-text tail of a hook's mutation-ignored warning

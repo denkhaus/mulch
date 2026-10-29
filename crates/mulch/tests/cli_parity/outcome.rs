@@ -1,22 +1,15 @@
-//! `mulch outcome` + duration + legacy-outcome parity probes.
-//!
-//! Moved verbatim from the one-file battery (mulch-3e7c); sprint
-//! banners stay with their probes.
+//! `mulch outcome` + duration + legacy-outcome pins (ADR-0008
+//! edition: OUR byte pins only; literals frozen from the parity
+//! era's twin runs).
 
 use std::path::Path;
 
 use super::support::*;
 
 #[test]
-fn outcome_duration_rejects_like_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn outcome_duration_rejects() {
     let ours = TempDir::new("dur-bad-ours");
-    let theirs = TempDir::new("dur-bad-theirs");
-    duration_fixture(&ours.0, &ml);
-    duration_fixture(&theirs.0, &ml);
+    duration_fixture(&ours.0);
     let cases: &[&[&str]] = &[
         // record family
         &[
@@ -79,18 +72,12 @@ fn outcome_duration_rejects_like_reference() {
     ];
     for args in cases {
         let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let theirs_run = run_in(&theirs.0, &ml, args);
-        assert_eq!(ours_run.code, theirs_run.code, "exit differs: {args:?}");
-        assert_eq!(
-            ours_run.stdout, theirs_run.stdout,
-            "stdout differs: {args:?}"
+        assert_eq!(ours_run.code, 1, "exit differs: {args:?}");
+        assert!(
+            ours_run.stderr.contains("must be a non-negative number"),
+            "{args:?}: {}",
+            ours_run.stderr
         );
-        assert_eq!(
-            ours_run.stderr, theirs_run.stderr,
-            "stderr differs: {args:?}"
-        );
-        assert_eq!(ours_run.code, 1);
-        assert!(ours_run.stderr.contains("must be a non-negative number"));
     }
     // json mode renders the error envelope on stderr (probe-pinned)
     let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &[
@@ -108,24 +95,7 @@ fn outcome_duration_rejects_like_reference() {
         "abc",
         "--json",
     ]);
-    let theirs_json = run_in(&theirs.0, &ml, &[
-        "record",
-        "dev",
-        "--type",
-        "pattern",
-        "--name",
-        "p4",
-        "--description",
-        "d4",
-        "--outcome-status",
-        "success",
-        "--outcome-duration",
-        "abc",
-        "--json",
-    ]);
-    assert_eq!(ours_json.code, theirs_json.code);
-    assert_eq!(ours_json.stdout, theirs_json.stdout);
-    assert_eq!(ours_json.stderr, theirs_json.stderr);
+    assert_eq!(ours_json.code, 1);
     assert!(ours_json.stderr.contains("--outcome-duration"));
     // rejected runs never write their record
     assert_eq!(
@@ -137,15 +107,9 @@ fn outcome_duration_rejects_like_reference() {
 }
 
 #[test]
-fn outcome_duration_decimals_canonicalize_like_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn outcome_duration_decimals_canonicalize() {
     let ours = TempDir::new("dur-ok-ours");
-    let theirs = TempDir::new("dur-ok-theirs");
-    duration_fixture(&ours.0, &ml);
-    duration_fixture(&theirs.0, &ml);
+    duration_fixture(&ours.0);
     let cases: &[&[&str]] = &[
         // "42.0" stores as the integer 42; decimals stay floats
         &[
@@ -204,7 +168,8 @@ fn outcome_duration_decimals_canonicalize_like_reference() {
             "--test-results",
             "ot",
         ],
-        // above 2^53: JS Number rounds the literal before storing
+        // above 2^53: the JS Number law rounds the literal before
+        // storing
         &[
             "outcome",
             "dev",
@@ -217,53 +182,38 @@ fn outcome_duration_decimals_canonicalize_like_reference() {
     ];
     for args in cases {
         let ours_run = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let theirs_run = run_in(&theirs.0, &ml, args);
-        assert_eq!(ours_run.code, theirs_run.code, "exit differs: {args:?}");
         assert_eq!(
-            ours_run.stdout, theirs_run.stdout,
-            "stdout differs: {args:?}"
-        );
-        assert_eq!(
-            ours_run.stderr, theirs_run.stderr,
-            "stderr differs: {args:?}"
+            ours_run.code, 0,
+            "exit differs: {args:?}: {}",
+            ours_run.stderr
         );
     }
-    assert_eq!(
-        normalize(&read_store_file(&ours.0, "expertise/dev.jsonl")),
-        normalize(&read_store_file(&theirs.0, "expertise/dev.jsonl"))
-    );
     let store = normalize(&read_store_file(&ours.0, "expertise/dev.jsonl"));
     assert!(store.contains("\"duration\":42"));
     assert!(store.contains("\"duration\":7"));
     assert!(store.contains("\"duration\":0.5"));
 }
 
-// ---- sprint 17 (mulch-8c9c): mixed-batch partial writes + the C2
-// upsert-plan seam + nested outcome/evidence subschema errors ----
+// ---- sprint 17 (mulch-8c9c) ----
 
 #[test]
-fn outcome_matches_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn outcome_success_and_unknown_id_pin_their_bytes() {
     let ours = TempDir::new("outc-ours");
-    let theirs = TempDir::new("outc-theirs");
-    for dir in [&ours.0, &theirs.0] {
-        let _ = run_in(dir, &ml, &["init"]);
-        let _ = run_in(dir, &ml, &[
-            "record",
-            "d",
-            "--type",
-            "pattern",
-            "--name",
-            "p",
-            "--description",
-            "d",
-        ]);
-    }
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "d",
+    ]);
     let id = pattern_p_id();
-    let outcome = [
+    // with agent: the attribution parens; second outcome appends
+    // without them
+    let first = run_in(&ours.0, Path::new(mulch_bin()), &[
         "outcome",
         "d",
         &id,
@@ -271,87 +221,99 @@ fn outcome_matches_reference() {
         "success",
         "--agent",
         "probe-agent",
-    ];
-    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &outcome);
-    let theirs_run = run_in(&theirs.0, &ml, &outcome);
-    assert_eq!(ours_run.code, theirs_run.code);
-    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    ]);
+    assert_eq!(first.code, 0);
     assert_eq!(
-        normalize_line(&read_store_file(&ours.0, "expertise/d.jsonl")),
-        normalize_line(&read_store_file(&theirs.0, "expertise/d.jsonl"))
+        first.stdout,
+        format!("✓ Outcome recorded: success (probe-agent) on {id}\n")
+    );
+    let second = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "outcome", "d", &id, "--status", "partial",
+    ]);
+    assert_eq!(second.code, 0);
+    assert_eq!(
+        second.stdout,
+        format!("✓ Outcome recorded: partial on {id}\n")
+    );
+    // two entries on the record
+    let store = normalize_line(&read_store_file(&ours.0, "expertise/d.jsonl"));
+    assert!(
+        store.contains(&format!("\"id\":\"{id}\",\"outcomes\":["))
+            && store.contains("\"status\":\"success\"")
+            && store.contains("\"agent\":\"probe-agent\""),
+        "{store}"
     );
 
-    // second outcome appends; no-agent form omits the parens
-    let second = ["outcome", "d", &id, "--status", "partial"];
-    let ours_second = run_in(&ours.0, Path::new(mulch_bin()), &second);
-    let theirs_second = run_in(&theirs.0, &ml, &second);
-    assert_eq!(ours_second.code, theirs_second.code);
-    assert_eq!(ours_second.stdout, theirs_second.stdout);
+    // unknown id: the query hint, plain and json
+    let missing = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "outcome",
+        "d",
+        "mx-deadbe",
+        "--status",
+        "success",
+    ]);
+    assert_eq!(missing.code, 1);
     assert_eq!(
-        normalize_line(&read_store_file(&ours.0, "expertise/d.jsonl")),
-        normalize_line(&read_store_file(&theirs.0, "expertise/d.jsonl"))
+        missing.stderr,
+        "Error: Record \"mx-deadbe\" not found. Run `mulch query` to see record IDs.\n"
     );
-
-    // unknown id
-    let missing = ["outcome", "d", "mx-deadbe", "--status", "success"];
-    let ours_missing = run_in(&ours.0, Path::new(mulch_bin()), &missing);
-    let theirs_missing = run_in(&theirs.0, &ml, &missing);
-    assert_eq!(ours_missing.code, theirs_missing.code);
-    assert_eq!(ours_missing.stderr, theirs_missing.stderr);
+    let missing_json = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json",
+        "outcome",
+        "d",
+        "mx-deadbe",
+        "--status",
+        "success",
+    ]);
+    assert_eq!(missing_json.code, 1);
+    assert_eq!(
+        missing_json.stderr,
+        error_envelope(
+            "outcome",
+            "Record \"mx-deadbe\" not found. Run `mulch query` to see record IDs."
+        )
+    );
 }
 
 // ---- sprint 5 (mulch-b88b): outcome without --status is read-only ----
 
 #[test]
-fn outcome_read_only_matches_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn outcome_read_only_pins_its_surfaces() {
     let ours = TempDir::new("outc-ro-ours");
-    let theirs = TempDir::new("outc-ro-theirs");
-    for dir in [&ours.0, &theirs.0] {
-        let _ = run_in(dir, &ml, &["init"]);
-        let _ = run_in(dir, &ml, &[
-            "record",
-            "d",
-            "--type",
-            "pattern",
-            "--name",
-            "p",
-            "--description",
-            "d",
-        ]);
-    }
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "d",
+        "--type",
+        "pattern",
+        "--name",
+        "p",
+        "--description",
+        "d",
+    ]);
     let id = pattern_p_id();
 
-    // empty listing: same notice on both sides, store untouched
+    // empty listing: the notice, store untouched
     let ours_before = read_store_file(&ours.0, "expertise/d.jsonl");
-    let theirs_before = read_store_file(&theirs.0, "expertise/d.jsonl");
     let listing = ["outcome", "d", &id];
-    let ours_empty = run_in(&ours.0, Path::new(mulch_bin()), &listing);
-    let theirs_empty = run_in(&theirs.0, &ml, &listing);
-    assert_eq!(ours_empty.code, theirs_empty.code);
-    assert_eq!(ours_empty.stdout, theirs_empty.stdout);
-    assert_eq!(ours_empty.stderr, theirs_empty.stderr);
+    let empty = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    assert_eq!(empty.code, 0);
+    assert_eq!(empty.stdout, "No outcomes recorded for this record.\n");
     assert_eq!(
         read_store_file(&ours.0, "expertise/d.jsonl"),
         ours_before,
         "read-only listing must not write"
     );
-    assert_eq!(
-        read_store_file(&theirs.0, "expertise/d.jsonl"),
-        theirs_before
-    );
 
     // json envelope of the empty listing: outcomes stays []
-    let json_empty = ["--json", "outcome", "d", &id];
-    let ours_json_empty = run_in(&ours.0, Path::new(mulch_bin()), &json_empty);
-    let theirs_json_empty = run_in(&theirs.0, &ml, &json_empty);
-    assert_eq!(ours_json_empty.code, theirs_json_empty.code);
-    assert_eq!(ours_json_empty.stdout, theirs_json_empty.stdout);
+    let json_empty = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json", "outcome", "d", &id,
+    ]);
+    assert_eq!(json_empty.code, 0);
+    assert!(json_empty.stdout.contains("\"outcomes\": []"));
 
-    // two outcomes with different field shapes, then the populated listing
+    // two outcomes with different field shapes, then the populated
+    // listing (every detail line renders, timestamps normalized)
     for outcome in [
         vec![
             "outcome",
@@ -372,40 +334,42 @@ fn outcome_read_only_matches_reference() {
             "outcome", "d", &id, "--status", "failure", "--notes", "second",
         ],
     ] {
-        let ours_add = run_in(&ours.0, Path::new(mulch_bin()), &outcome);
-        let theirs_add = run_in(&theirs.0, &ml, &outcome);
-        assert_eq!(ours_add.code, theirs_add.code);
-        assert_eq!(ours_add.stdout, theirs_add.stdout);
+        let add = run_in(&ours.0, Path::new(mulch_bin()), &outcome);
+        assert_eq!(add.code, 0);
     }
     let ours_before = read_store_file(&ours.0, "expertise/d.jsonl");
-    let ours_list = run_in(&ours.0, Path::new(mulch_bin()), &listing);
-    let theirs_list = run_in(&theirs.0, &ml, &listing);
-    assert_eq!(ours_list.code, theirs_list.code);
-    assert_eq!(
-        normalize(&ours_list.stdout),
-        normalize(&theirs_list.stdout),
-        "populated listing must render every detail line"
-    );
+    let list = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    assert_eq!(list.code, 0);
+    let listing_text = normalize(&list.stdout);
+    assert!(listing_text.starts_with(&format!("Outcomes for {id} (2):\n")));
+    assert!(listing_text.contains("  1. success (probe-agent)"));
+    assert!(listing_text.contains("     recorded: <TS>"));
+    assert!(listing_text.contains("  2. failure"));
     assert_eq!(
         read_store_file(&ours.0, "expertise/d.jsonl"),
         ours_before,
         "populated listing must not write"
     );
 
-    // json listing carries the raw outcomes array (key order preserved)
-    let json = ["--json", "outcome", "d", &id];
-    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &json);
-    let theirs_json = run_in(&theirs.0, &ml, &json);
-    assert_eq!(ours_json.code, theirs_json.code);
-    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
+    // json listing carries the raw outcomes array (key order
+    // preserved: status first, recorded_at second)
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json", "outcome", "d", &id,
+    ]);
+    assert_eq!(json.code, 0);
+    let json_text = normalize(&json.stdout);
+    assert!(json_text.contains("\"outcomes\": [\n    {\n      \"status\": \"success\""));
+    assert!(json_text.contains("\"duration\": 42"));
+    assert!(json_text.contains("\"notes\": \"went fine\""));
+    assert!(json_text.contains("\"test_results\": \"3 passed\""));
+    assert!(json_text.contains("\"status\": \"failure\""));
 
     // quiet suppresses the plain listing entirely
-    let quiet = ["--quiet", "outcome", "d", &id];
-    let ours_quiet = run_in(&ours.0, Path::new(mulch_bin()), &quiet);
-    let theirs_quiet = run_in(&theirs.0, &ml, &quiet);
-    assert_eq!(ours_quiet.code, theirs_quiet.code);
-    assert_eq!(ours_quiet.stdout, theirs_quiet.stdout);
-    assert_eq!(ours_quiet.stdout, "");
+    let quiet = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--quiet", "outcome", "d", &id,
+    ]);
+    assert_eq!(quiet.code, 0);
+    assert_eq!(quiet.stdout, "");
 
     // crafted stores pin the odd read-only surfaces: a legacy singular
     // `outcome` object (reader normalization) and a hand-corrupted
@@ -419,17 +383,17 @@ fn outcome_read_only_matches_reference() {
         "id": id.clone(),
         "outcome": {"status": "success", "agent": "legacy"}
     });
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(
-            dir.join(".mulch").join("expertise").join("d.jsonl"),
-            format!("{legacy}\n"),
-        )
-        .expect("crafted store writable");
-    }
-    let ours_legacy = run_in(&ours.0, Path::new(mulch_bin()), &listing);
-    let theirs_legacy = run_in(&theirs.0, &ml, &listing);
-    assert_eq!(ours_legacy.code, theirs_legacy.code);
-    assert_eq!(ours_legacy.stdout, theirs_legacy.stdout);
+    std::fs::write(
+        ours.0.join(".mulch").join("expertise").join("d.jsonl"),
+        format!("{legacy}\n"),
+    )
+    .expect("crafted store writable");
+    let legacy_run = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    assert_eq!(legacy_run.code, 0);
+    assert_eq!(
+        legacy_run.stdout,
+        format!("Outcomes for {id} (1):\n  1. success (legacy)\n")
+    );
     assert_eq!(
         read_store_file(&ours.0, "expertise/d.jsonl"),
         format!("{legacy}\n"),
@@ -445,28 +409,33 @@ fn outcome_read_only_matches_reference() {
         "id": id.clone(),
         "outcomes": "not-an-array"
     });
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(
-            dir.join(".mulch").join("expertise").join("d.jsonl"),
-            format!("{corrupt}\n"),
-        )
-        .expect("crafted store writable");
-    }
-    let ours_corrupt = run_in(&ours.0, Path::new(mulch_bin()), &listing);
-    let theirs_corrupt = run_in(&theirs.0, &ml, &listing);
-    assert_eq!(ours_corrupt.code, theirs_corrupt.code);
-    assert_eq!(ours_corrupt.stdout, theirs_corrupt.stdout);
-    assert_eq!(ours_corrupt.stderr, theirs_corrupt.stderr);
+    std::fs::write(
+        ours.0.join(".mulch").join("expertise").join("d.jsonl"),
+        format!("{corrupt}\n"),
+    )
+    .expect("crafted store writable");
+    let corrupt_run = run_in(&ours.0, Path::new(mulch_bin()), &listing);
+    assert_eq!(corrupt_run.code, 1);
+    assert_eq!(
+        corrupt_run.stderr,
+        "Error: outcomes.entries is not a function. (In 'outcomes.entries()', \
+         'outcomes.entries' is undefined)\n"
+    );
     assert_eq!(
         read_store_file(&ours.0, "expertise/d.jsonl"),
         format!("{corrupt}\n"),
         "corrupted-store listing must not write"
     );
-    let corrupt_json = ["--json", "outcome", "d", &id];
-    let ours_corrupt_json = run_in(&ours.0, Path::new(mulch_bin()), &corrupt_json);
-    let theirs_corrupt_json = run_in(&theirs.0, &ml, &corrupt_json);
-    assert_eq!(ours_corrupt_json.code, theirs_corrupt_json.code);
-    assert_eq!(ours_corrupt_json.stdout, theirs_corrupt_json.stdout);
+    // json mode renders the raw outcomes value verbatim and succeeds
+    let corrupt_json = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json", "outcome", "d", &id,
+    ]);
+    assert_eq!(corrupt_json.code, 0);
+    assert!(
+        corrupt_json
+            .stdout
+            .contains("\"outcomes\": \"not-an-array\"")
+    );
     assert_eq!(
         read_store_file(&ours.0, "expertise/d.jsonl"),
         format!("{corrupt}\n"),
@@ -474,25 +443,21 @@ fn outcome_read_only_matches_reference() {
     );
 
     // unknown id stays an error in read-only mode
-    let missing = ["outcome", "d", "mx-deadbe"];
-    let ours_missing = run_in(&ours.0, Path::new(mulch_bin()), &missing);
-    let theirs_missing = run_in(&theirs.0, &ml, &missing);
-    assert_eq!(ours_missing.code, theirs_missing.code);
-    assert_eq!(ours_missing.stderr, theirs_missing.stderr);
+    let missing = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "outcome",
+        "d",
+        "mx-deadbe",
+    ]);
+    assert_eq!(missing.code, 1);
+    assert!(missing.stderr.contains("not found"));
 }
 
 // ---- sprint 8 (mulch-00aa): status reads strictly, lenient seam ----
 
 #[test]
-fn legacy_outcome_odd_values_listing_matches_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn legacy_outcome_odd_values_listing_pins_its_bytes() {
     let ours = TempDir::new("odd1609-list-ours");
-    let theirs = TempDir::new("odd1609-list-theirs");
-    odd_legacy_fixture(&ours.0, &ml);
-    odd_legacy_fixture(&theirs.0, &ml);
+    odd_legacy_fixture(&ours.0);
 
     for (id, expected) in [
         // non-object values coerce to a one-element entry whose status
@@ -511,43 +476,32 @@ fn legacy_outcome_odd_values_listing_matches_reference() {
     ] {
         let listing = ["outcome", "probe", id];
         let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &listing);
-        let theirs_run = run_in(&theirs.0, &ml, &listing);
-        assert_eq!(ours_run.code, theirs_run.code, "exit codes differ for {id}");
-        assert_eq!(
-            ours_run.stdout, theirs_run.stdout,
-            "stdout differs for {id}"
-        );
+        assert_eq!(ours_run.code, 0, "exit code differs for {id}");
         assert_eq!(ours_run.stdout, expected, "listing drifted for {id}");
-        assert_eq!(
-            ours_run.stderr, theirs_run.stderr,
-            "stderr differs for {id}"
-        );
     }
     // json listing: the coerced entry serializes as [{}]
     let json = ["--json", "outcome", "probe", "mx-111111"];
     let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &json);
-    let theirs_run = run_in(&theirs.0, &ml, &json);
-    assert_eq!(ours_run.code, theirs_run.code);
-    assert_eq!(ours_run.stdout, theirs_run.stdout);
+    assert_eq!(ours_run.code, 0);
     assert!(ours_run.stdout.contains("\"outcomes\": [\n    {}\n  ]"));
     // read-only: the crafted bytes survive untouched
+    let before = read_store_file(&ours.0, "expertise/probe.jsonl");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "outcome",
+        "probe",
+        "mx-111111",
+    ]);
     assert_eq!(
         read_store_file(&ours.0, "expertise/probe.jsonl"),
-        read_store_file(&theirs.0, "expertise/probe.jsonl"),
+        before,
         "listing must not write"
     );
 }
 
 #[test]
-fn legacy_outcome_odd_values_append_matches_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn legacy_outcome_odd_values_append_pins_the_rewrite_law() {
     let ours = TempDir::new("odd1609-app-ours");
-    let theirs = TempDir::new("odd1609-app-theirs");
-    odd_legacy_fixture(&ours.0, &ml);
-    odd_legacy_fixture(&theirs.0, &ml);
+    odd_legacy_fixture(&ours.0);
 
     // one append per odd shape: number, null, array, mid-object
     for id in ["mx-111111", "mx-333333", "mx-444444", "mx-777777"] {
@@ -563,21 +517,7 @@ fn legacy_outcome_odd_values_append_matches_reference() {
             "7",
         ];
         let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &append);
-        let theirs_run = run_in(&theirs.0, &ml, &append);
-        assert_eq!(ours_run.code, theirs_run.code, "exit codes differ for {id}");
-        assert_eq!(
-            ours_run.stdout, theirs_run.stdout,
-            "stdout differs for {id}"
-        );
-        assert_eq!(
-            ours_run.stderr, theirs_run.stderr,
-            "stderr differs for {id}"
-        );
-        assert_eq!(
-            mask_timestamps(&read_store_file(&ours.0, "expertise/probe.jsonl")),
-            mask_timestamps(&read_store_file(&theirs.0, "expertise/probe.jsonl")),
-            "store bytes differ after appending to {id}"
-        );
+        assert_eq!(ours_run.code, 0, "exit code differs for {id}");
     }
     // the number record keeps its coerced empty entry first...
     let store = read_store_file(&ours.0, "expertise/probe.jsonl");

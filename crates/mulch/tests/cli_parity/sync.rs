@@ -1,12 +1,10 @@
-//! `mulch sync` parity (mulch-176f): the repo gate, the validate
-//! step (escape hatches OFF at the commit gate), the worktree skip,
-//! the no-changes success, and add+commit through the git adapter.
-//! Store-affecting paths run DIFFERENTIALLY against a provisioned
-//! ml 0.10.7 in twin scratch git repositories; the port-only surfaces
-//! (and the domain-rule wordings probed from the reference law) pin
-//! ungated.
+//! `mulch sync` pins (mulch-176f): the repo gate, the validate step
+//! (escape hatches OFF at the commit gate), the worktree skip, the
+//! no-changes success, and add+commit through the git adapter
+//! (ADR-0008: the battery runs OUR binary only; the byte pins below
+//! were frozen from the parity era's twin runs).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::support::*;
 
@@ -32,8 +30,8 @@ fn git(cwd: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// One twin side: a scratch git repository with a root commit and a
-/// `.mulch` store seeded from `config`/`domains`, ready for a sync.
+/// One scratch git repository with a root commit and a `.mulch` store
+/// seeded from `config`/`domains`, ready for a sync.
 fn scratch_git_store(tag: &str, config: &str, domains: &[(&str, &str)]) -> TempDir {
     let dir = TempDir::new(tag);
     std::fs::create_dir_all(dir.0.join(".mulch")).expect("mulch dir");
@@ -48,22 +46,8 @@ fn scratch_git_store(tag: &str, config: &str, domains: &[(&str, &str)]) -> TempD
     dir
 }
 
-/// The standard twin pair over one fixture body.
-fn twin_stores(
-    tag: &str,
-    config: &str,
-    domains: &[(&str, &str)],
-) -> Option<(TempDir, TempDir, PathBuf)> {
-    let ml = reference_ml()?;
-    Some((
-        scratch_git_store(&format!("{tag}-ours"), config, domains),
-        scratch_git_store(&format!("{tag}-theirs"), config, domains),
-        ml,
-    ))
-}
-
 /// Not a git repository: exit 1, and the plain/json texts DIFFER (the
-/// reference's plain line is the short lowercase sentence).
+/// plain line is the short lowercase sentence).
 #[test]
 fn sync_outside_a_git_repository_fails_with_split_texts() {
     let dir = TempDir::new("sync-norepo");
@@ -105,36 +89,36 @@ fn sync_without_a_store_is_a_validation_error() {
     );
 }
 
-/// A clean tree is a clean success: nothing committed, plain line and
-/// json shape byte-equal against the reference.
+/// A clean tree is a clean success: nothing committed, the frozen
+/// plain/json/quiet bytes (frozen from the parity era).
 #[test]
-fn sync_with_no_changes_matches_reference() {
-    let Some((ours, theirs, ml)) =
-        twin_stores("sync-clean", "version: '1'\ndomains:\n  dev: {}\n", &[(
-            "dev", "",
-        )])
-    else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    for args in [
-        &["sync"][..],
-        &["--json", "sync"][..],
-        &["--quiet", "sync"][..],
-    ] {
-        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_eq!(our.code, their.code, "args {args:?}");
-        assert_eq!(our.stdout, their.stdout, "args {args:?}");
-        assert_eq!(our.stderr, their.stderr, "args {args:?}");
-    }
+fn sync_with_no_changes_is_a_clean_success() {
+    let ours = scratch_git_store("sync-clean", "version: '1'\ndomains:\n  dev: {}\n", &[(
+        "dev", "",
+    )]);
+    let plain = run_in(&ours.0, Path::new(mulch_bin()), &["sync"]);
+    assert_eq!(plain.code, 0);
+    assert_eq!(
+        plain.stdout,
+        "✓ Validated 0 records\nNo .mulch/ changes to commit.\n"
+    );
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "sync"]);
+    assert_eq!(json.code, 0);
+    assert_eq!(
+        json.stdout,
+        "{\n  \"success\": true,\n  \"command\": \"sync\",\n  \"validated\": true,\n  \
+         \"committed\": false,\n  \"message\": \"No changes to commit\"\n}\n"
+    );
+    let quiet = run_in(&ours.0, Path::new(mulch_bin()), &["--quiet", "sync"]);
+    assert_eq!(quiet.code, 0);
+    assert_eq!(quiet.stdout, "");
 }
 
 /// The happy path: a dirty `.mulch` validates, stages, and commits —
-/// output bytes, the commit message (default and `--message`), and
-/// the resulting tree equal against the reference.
+/// the frozen output bytes, the commit message (default and
+/// `--message`), and a clean tree afterwards.
 #[test]
-fn sync_commits_mulch_changes_like_reference() {
+fn sync_commits_mulch_changes() {
     let config = "version: '1'\ndomains:\n  dev: {}\n";
     let body = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-26T10:00:00.000Z\",\"name\":\"p1\",\"description\":\"d\",\"id\":\"mx-abcde01\"}\n";
     for (tag, args, expect_subject) in [
@@ -150,50 +134,66 @@ fn sync_commits_mulch_changes_like_reference() {
             "chore: expertise",
         ),
     ] {
-        let Some((ours, theirs, ml)) =
-            twin_stores(&format!("sync-commit-{tag}"), config, &[("dev", "")])
-        else {
-            eprintln!("skipped: no ml on PATH");
-            return;
-        };
-        for dir in [&ours.0, &theirs.0] {
-            std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), body).expect("dirty");
-        }
+        let ours = scratch_git_store(&format!("sync-commit-{tag}"), config, &[("dev", "")]);
+        std::fs::write(ours.0.join(".mulch/expertise/dev.jsonl"), body).expect("dirty");
         let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_eq!(our.code, their.code, "{tag}: {}", our.stderr);
-        assert_eq!(our.stdout, their.stdout, "{tag}");
-        assert_eq!(our.stderr, their.stderr, "{tag}");
-        let subject = |dir: &Path| git(dir, &["log", "-1", "--format=%s"]);
-        assert_eq!(subject(&ours.0), subject(&theirs.0), "{tag}: subject");
-        assert_eq!(subject(&ours.0), format!("{expect_subject}\n"), "{tag}");
-        let status = |dir: &Path| git(dir, &["status", "--porcelain", ".mulch/"]);
-        assert_eq!(status(&ours.0), status(&theirs.0), "{tag}: tree");
-        assert_eq!(status(&ours.0), "", "{tag}: .mulch committed");
+        assert_eq!(our.code, 0, "{tag}: {}", our.stderr);
+        if args[0] == "--json" {
+            // json stays silent on stdout; the envelope rides stdout's
+            // channel contract (success prints the envelope)
+            assert!(
+                our.stdout.contains("\"committed\": true"),
+                "{tag}: {}",
+                our.stdout
+            );
+            assert!(
+                our.stdout.contains("\"message\": \"chore: expertise\""),
+                "{tag}: {}",
+                our.stdout
+            );
+        } else {
+            assert_eq!(
+                our.stdout,
+                format!(
+                    "✓ Validated 1 records\n✓ Committed .mulch/ changes: \"{expect_subject}\"\n"
+                ),
+                "{tag}"
+            );
+        }
+        assert_eq!(
+            git(&ours.0, &["log", "-1", "--format=%s"]),
+            format!("{expect_subject}\n"),
+            "{tag}"
+        );
+        assert_eq!(
+            git(&ours.0, &["status", "--porcelain", ".mulch/"]),
+            "",
+            "{tag}: .mulch committed"
+        );
     }
 }
 
-/// The validate gate: a store with findings fails BOTH sides with the
-/// same stderr bytes, exits 1, and commits NOTHING (the dirt stays).
+/// The validate gate: a store with findings fails with the frozen
+/// findings text, exits 1, and commits NOTHING (the dirt stays).
 #[test]
-fn sync_validation_failure_matches_reference_and_commits_nothing() {
+fn sync_validation_failure_commits_nothing() {
     let config = "version: '1'\ndomains:\n  dev: {}\n";
     let bad = "# a comment line is not JSON here\n{\"type\":\"nope\",\"name\":\"x\"}\n";
-    let Some((ours, theirs, ml)) = twin_stores("sync-invalid", config, &[("dev", "")]) else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), bad).expect("dirty");
-    }
+    let ours = scratch_git_store("sync-invalid", config, &[("dev", "")]);
+    std::fs::write(ours.0.join(".mulch/expertise/dev.jsonl"), bad).expect("dirty");
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["sync"]);
-    let their = run_in(&theirs.0, &ml, &["sync"]);
-    assert_eq!(our.code, their.code);
     assert_eq!(our.code, 1);
-    assert_eq!(our.stderr, their.stderr, "stderr bytes");
-    let status = |dir: &Path| git(dir, &["status", "--porcelain", ".mulch/"]);
-    assert_eq!(status(&ours.0), status(&theirs.0));
-    assert_ne!(status(&ours.0), "", "nothing was committed");
+    assert_eq!(
+        our.stderr,
+        "Validation failed:\n  dev:1 - Invalid JSON: failed to parse\n  dev:2 - Unknown record \
+         type \"nope\". Register it under custom_types in mulch.config.yaml or remove the \
+         record.\n\nFix errors and retry, or use --no-validate to skip.\n"
+    );
+    assert_ne!(
+        git(&ours.0, &["status", "--porcelain", ".mulch/"]),
+        "",
+        "nothing was committed"
+    );
     // and --no-validate walks past the findings to the commit
     let skipped = run_in(&ours.0, Path::new(mulch_bin()), &["sync", "--no-validate"]);
     assert_eq!(skipped.code, 0, "{}", skipped.stderr);

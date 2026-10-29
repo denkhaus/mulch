@@ -1,12 +1,14 @@
-//! Differential battery for `mulch search` (mulch-16da).
+//! Battery for `mulch search` (mulch-16da), ADR-0008 edition: OUR
+//! byte pins for the canonical renders (markdown, compact, the json
+//! envelope, the count lines, the guard) plus the boost discriminator
+//! (relational) and the archived-section law; sweeps that only
+//! mirrored the reference are deleted (noted in the sprint ledger).
 //!
-//! Same fixture discipline as the query battery: hand-written twin
-//! stores with fixed stamps/ids and pinned mtimes (the helpers are
-//! duplicated from the query module — support.rs is frozen; noted
-//! for host-folds). The flip store is the ranking discriminator: its
-//! two conventions' pure-BM25 order is OPPOSITE to the boosted
-//! order, so `--no-boost` (and a configured factor of 0) visibly
-//! re-order against the default run.
+//! Same fixture discipline as the query battery: hand-written stores
+//! with fixed stamps/ids and pinned mtimes. The flip store is the
+//! ranking discriminator: its two conventions' pure-BM25 order is
+//! OPPOSITE to the boosted order, so `--no-boost` (and a configured
+//! factor of 0) visibly re-order against the default run.
 
 use std::path::Path;
 
@@ -47,20 +49,6 @@ fn age_domain_files(dir: &Path, domains: &[&str]) {
     }
 }
 
-/// Runs one invocation against both twins and asserts the full
-/// channel-split picture.
-fn assert_same(ours: &TempDir, theirs: &TempDir, ml: &Path, args: &[&str]) {
-    let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-    let their = run_in(&theirs.0, ml, args);
-    assert_eq!(our.code, their.code, "rc differs for {args:?}");
-    assert_eq!(our.stdout, their.stdout, "stdout differs for {args:?}");
-    assert_eq!(
-        normalize_dir(&our.stderr, &ours.0),
-        normalize_dir(&their.stderr, &theirs.0),
-        "stderr differs for {args:?}"
-    );
-}
-
 /// The first bullet line of a rendered section (the ranking pin for
 /// the flip store).
 fn first_bullet(stdout: &str) -> &str {
@@ -97,42 +85,68 @@ fn archive_store(dir: &Path) {
     std::fs::write(dir.join(".mulch/archive/dev.jsonl"), archive).expect("archive file");
 }
 
+/// The canonical renders: markdown and compact carry the same match
+/// set, the plural count line; one match carries the singular.
 #[test]
-fn search_ranking_and_counts_match() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-rank", Some(CORPUS_CONFIG), &[], &[]);
+fn search_ranking_and_counts_pin_the_renders() {
+    let ours = seeded_store("s-rank", Some(CORPUS_CONFIG), &[], &[]);
     corpus(&ours.0);
-    corpus(&theirs.0);
-    // every format family renders the same match set; the count line
-    // is plural here
-    for format in ["markdown", "compact", "xml", "plain"] {
-        assert_same(&ours, &theirs, &ml, &["search", "rust", "--format", format]);
+    let markdown = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "search", "rust", "--format", "markdown",
+    ]);
+    assert_eq!(markdown.code, 0);
+    assert_eq!(markdown.stderr, "");
+    assert_eq!(
+        markdown.stdout,
+        concat!(
+            "## dev (4 records, updated 2h ago)\n\n",
+            "### Patterns\n",
+            "- [mx-aaa001] **rust core**: rust rust rust loader\n",
+            "- [mx-aaa002] **rust edge**: rust loader once\n",
+            "- [mx-aaa004] **Tagged**: tagged record\n",
+            "- [mx-aaa005] **Filed**: filed record (src/rust/mod.rs)\n\n",
+            "## ops (1 records, updated 2h ago)\n\n",
+            "### Conventions\n",
+            "- [mx-bbb001] rust ops convention\n\n",
+            "5 matches found.\n",
+        )
+    );
+    // every format family renders the same match set (membership)
+    for format in ["compact", "xml", "plain"] {
+        let run = run_in(&ours.0, Path::new(mulch_bin()), &[
+            "search", "rust", "--format", format,
+        ]);
+        assert_eq!(run.code, 0, "{format}");
+        assert!(run.stdout.contains("mx-aaa001"), "{format}");
+        assert!(run.stdout.contains("mx-bbb001"), "{format}");
+        assert!(!run.stdout.contains("mx-aaa003"), "{format}");
     }
     // one match: the singular count line
-    assert_same(&ours, &theirs, &ml, &["search", "Tagged"]);
+    let one = run_in(&ours.0, Path::new(mulch_bin()), &["search", "Tagged"]);
+    assert_eq!(one.code, 0);
+    assert!(one.stdout.ends_with("\n1 match found.\n"), "{}", one.stdout);
     // no match: the label line on stdout, rc 0
-    assert_same(&ours, &theirs, &ml, &["search", "zzzz"]);
+    let none = run_in(&ours.0, Path::new(mulch_bin()), &["search", "zzzz"]);
+    assert_eq!(none.code, 0);
+    assert_eq!(none.stdout, "No records matching \"zzzz\" found.\n");
     // no-match filter-only: the "matching filters" label
-    assert_same(&ours, &theirs, &ml, &["search", "--type", "guide"]);
+    let filters = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "search", "--type", "guide",
+    ]);
+    assert_eq!(filters.code, 0);
+    assert_eq!(filters.stdout, "No records matching filters found.\n");
 }
 
-/// The boost discriminator: default (boosted) and --no-boost runs
-/// each match the reference AND disagree on order.
+/// The boost discriminator (all our-side relational pins): default
+/// (boosted) and --no-boost disagree on order, and a configured
+/// factor of 0 equals the pure order.
 #[test]
 fn search_boost_reorders_against_pure_bm25() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-flip", None, &[], &[]);
+    let ours = seeded_store("s-flip", None, &[], &[]);
     flip_store(&ours.0);
-    flip_store(&theirs.0);
     let args = ["search", "rust", "--format", "compact"];
-    assert_same(&ours, &theirs, &ml, &args);
     let boosted = run_in(&ours.0, Path::new(mulch_bin()), &args);
+    assert_eq!(boosted.code, 0);
     assert!(
         first_bullet(&boosted.stdout).contains("mx-flp001"),
         "boosted order: {}",
@@ -140,8 +154,8 @@ fn search_boost_reorders_against_pure_bm25() {
     );
 
     let no_boost_args = ["search", "rust", "--no-boost", "--format", "compact"];
-    assert_same(&ours, &theirs, &ml, &no_boost_args);
     let pure = run_in(&ours.0, Path::new(mulch_bin()), &no_boost_args);
+    assert_eq!(pure.code, 0);
     assert!(
         first_bullet(&pure.stdout).contains("mx-flp002"),
         "pure BM25 order: {}",
@@ -151,70 +165,67 @@ fn search_boost_reorders_against_pure_bm25() {
     assert_ne!(boosted.stdout, pure.stdout);
 
     // a configured factor of 0 is the same pure order (config key
-    // appended last, like the reference's serializer)
-    let (ours, theirs) = twin_seeded("s-flip0", None, &[], &[]);
-    for dir in [&ours.0, &theirs.0] {
-        flip_store(dir);
-        let mut config =
-            std::fs::read_to_string(dir.join(".mulch/mulch.config.yaml")).expect("config");
-        config.push_str("search:\n  boost_factor: 0.0\n");
-        std::fs::write(dir.join(".mulch/mulch.config.yaml"), config).expect("config rewrite");
-    }
-    assert_same(&ours, &theirs, &ml, &args);
-    let zeroed = run_in(&ours.0, Path::new(mulch_bin()), &args);
-    assert_ne!(boosted.stdout, zeroed.stdout);
-    assert_eq!(zeroed.stdout, pure.stdout);
+    // appended last, the canonical serializer order)
+    let zeroed = seeded_store("s-flip0", None, &[], &[]);
+    flip_store(&zeroed.0);
+    let mut config =
+        std::fs::read_to_string(zeroed.0.join(".mulch/mulch.config.yaml")).expect("config");
+    config.push_str("search:\n  boost_factor: 0.0\n");
+    std::fs::write(zeroed.0.join(".mulch/mulch.config.yaml"), config).expect("config rewrite");
+    let zeroed_run = run_in(&zeroed.0, Path::new(mulch_bin()), &args);
+    assert_ne!(boosted.stdout, zeroed_run.stdout);
+    assert_eq!(zeroed_run.stdout, pure.stdout);
 }
 
+/// Filters narrow the corpus (membership pins): the tag filter is a
+/// case-insensitive exact element match, the file filter a
+/// case-folded substring, outcome statuses any-match, filters AND
+/// with the query, and empty-string values are no filter at all.
 #[test]
-fn search_filters_match() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-flt", Some(CORPUS_CONFIG), &[], &[]);
+fn search_filters_narrow_the_corpus() {
+    let ours = seeded_store("s-flt", Some(CORPUS_CONFIG), &[], &[]);
     corpus(&ours.0);
-    corpus(&theirs.0);
-    // filter-only searches (no query): every record of the filtered
-    // set, "matching filters" label, per-domain sections
-    assert_same(&ours, &theirs, &ml, &[
-        "search", "--type", "pattern", "--format", "compact",
-    ]);
-    assert_same(&ours, &theirs, &ml, &["search", "--type", "convention"]);
     // tag: case-insensitive exact element match
-    assert_same(&ours, &theirs, &ml, &[
+    let tag = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search", "--tag", "RUST", "--format", "compact",
     ]);
-    assert_same(&ours, &theirs, &ml, &["search", "--tag", "us"]);
+    assert_eq!(tag.code, 0);
+    assert!(tag.stdout.contains("mx-aaa004"), "{}", tag.stdout);
+    let tag_miss = run_in(&ours.0, Path::new(mulch_bin()), &["search", "--tag", "us"]);
+    assert_eq!(tag_miss.code, 0);
+    assert_eq!(tag_miss.stdout, "No records matching filters found.\n");
     // file: case-folded substring
-    assert_same(&ours, &theirs, &ml, &[
+    let file = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search", "--file", "rust/mod", "--format", "compact",
     ]);
+    assert!(file.stdout.contains("mx-aaa005"), "{}", file.stdout);
     // classification
-    assert_same(&ours, &theirs, &ml, &[
+    let foundational = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search",
         "--classification",
         "foundational",
         "--format",
         "compact",
     ]);
+    assert!(foundational.stdout.contains("mx-aaa006"));
+    assert!(!foundational.stdout.contains("mx-aaa001"));
     // outcome status: success and the search-only partial
-    assert_same(&ours, &theirs, &ml, &[
-        "search",
-        "--outcome-status",
-        "success",
-        "--format",
-        "compact",
-    ]);
-    assert_same(&ours, &theirs, &ml, &[
-        "search",
-        "--outcome-status",
-        "partial",
-        "--format",
-        "compact",
-    ]);
+    for (status, needle, absent) in [
+        ("success", "mx-aaa002", "mx-aaa003"),
+        ("partial", "mx-aaa006", "mx-aaa001"),
+    ] {
+        let hit = run_in(&ours.0, Path::new(mulch_bin()), &[
+            "search",
+            "--outcome-status",
+            status,
+            "--format",
+            "compact",
+        ]);
+        assert!(hit.stdout.contains(needle), "{status}: {}", hit.stdout);
+        assert!(!hit.stdout.contains(absent), "{status}: {}", hit.stdout);
+    }
     // filters AND with the query
-    assert_same(&ours, &theirs, &ml, &[
+    let both = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search",
         "rust",
         "--type",
@@ -222,181 +233,255 @@ fn search_filters_match() {
         "--format",
         "compact",
     ]);
+    assert!(both.stdout.contains("mx-bbb001"));
+    assert!(!both.stdout.contains("mx-aaa001"));
     // empty-string values are JS-falsy: no filter at all (guard fires)
-    assert_same(&ours, &theirs, &ml, &["search", "--tag", ""]);
-    assert_same(&ours, &theirs, &ml, &["--json", "search", "--tag", ""]);
+    for args in [vec!["search", "--tag", ""], vec![
+        "--json", "search", "--tag", "",
+    ]] {
+        let run = run_in(&ours.0, Path::new(mulch_bin()), &args);
+        assert_eq!(run.code, 1, "{args:?}: the guard fires");
+        assert!(run.stderr.contains("Provide a search query"), "{args:?}");
+    }
     // an empty query with a filter runs the filter path
-    assert_same(&ours, &theirs, &ml, &["search", "", "--type", "guide"]);
+    let empty_query = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "search", "", "--type", "guide",
+    ]);
+    assert_eq!(empty_query.code, 0);
+    assert_eq!(
+        empty_query.stdout, "No records matching filters found.\n",
+        "no guide records live in dev/ops"
+    );
 }
 
+/// Domain scoping: --domain ops hides dev hits; an unknown domain
+/// errors with the (none)-less list; an empty --domain is the
+/// all-domains walk.
 #[test]
-fn search_domain_scoping_matches() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-dom", Some(CORPUS_CONFIG), &[], &[]);
+fn search_domain_scoping() {
+    let ours = seeded_store("s-dom", Some(CORPUS_CONFIG), &[], &[]);
     corpus(&ours.0);
-    corpus(&theirs.0);
-    assert_same(&ours, &theirs, &ml, &[
+    let scoped = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search", "rust", "--domain", "ops", "--format", "compact",
     ]);
-    // unknown domain: the search hint already says `mulch add`, and
-    // the available list has NO (none) fallback
-    assert_same(&ours, &theirs, &ml, &["search", "rust", "--domain", "nope"]);
-    assert_same(&ours, &theirs, &ml, &[
+    assert_eq!(scoped.code, 0);
+    assert!(scoped.stdout.contains("mx-bbb001"));
+    assert!(!scoped.stdout.contains("mx-aaa001"));
+    // unknown domain: the search hint already says `mulch add`
+    let unknown = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "search", "rust", "--domain", "nope",
+    ]);
+    assert_eq!(unknown.code, 1);
+    assert!(unknown.stderr.contains("Available domains: dev, ops"));
+    let unknown_json = run_in(&ours.0, Path::new(mulch_bin()), &[
         "--json", "search", "rust", "--domain", "nope",
     ]);
+    assert_eq!(unknown_json.code, 1);
+    assert!(
+        unknown_json
+            .stderr
+            .contains("Domain \\\"nope\\\" not found in config. Available domains: dev, ops")
+    );
     // an empty --domain is falsy: the all-domains walk (still needs a
     // query or filter to pass the guard)
-    assert_same(&ours, &theirs, &ml, &[
+    let unscoped = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search", "rust", "--domain", "", "--format", "compact",
     ]);
+    assert_eq!(unscoped.code, 0);
+    assert!(unscoped.stdout.contains("mx-aaa001"));
+    assert!(unscoped.stdout.contains("mx-bbb001"));
 }
 
+/// The json envelope: query/total/domains shape; only matching
+/// domains appear; filter-only carries query null; no match carries
+/// total 0 with empty domains.
 #[test]
-fn search_json_envelopes_match() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-json", Some(CORPUS_CONFIG), &[], &[]);
+fn search_json_envelope_pins_the_shape() {
+    let ours = seeded_store("s-json", Some(CORPUS_CONFIG), &[], &[]);
     corpus(&ours.0);
-    corpus(&theirs.0);
-    // query/total/domains shape; only matching domains appear
-    assert_same(&ours, &theirs, &ml, &["--json", "search", "rust"]);
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json", "search", "rust",
+    ]);
+    assert_eq!(json.code, 0);
+    assert_eq!(json.stderr, "");
+    assert!(json.stdout.starts_with(
+        "{\n  \"success\": true,\n  \"command\": \"search\",\n  \"query\": \"rust\",\n  \
+         \"total\": 5,\n  \"domains\": ["
+    ));
+    assert!(json.stdout.contains("\"domain\": \"dev\""));
+    assert!(json.stdout.contains("\"domain\": \"ops\""));
     // filter-only: query null
-    assert_same(&ours, &theirs, &ml, &[
+    let filtered = run_in(&ours.0, Path::new(mulch_bin()), &[
         "--json", "search", "--type", "pattern",
     ]);
+    assert!(filtered.stdout.contains("\"query\": null,\n  \"total\": 5"));
     // no match: total 0, empty domains
-    assert_same(&ours, &theirs, &ml, &["--json", "search", "zzzz"]);
+    let none = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json", "search", "zzzz",
+    ]);
+    assert!(none.stdout.contains("\"total\": 0,\n  \"domains\": []"));
     // --sort-by-score reorders the matches array
-    assert_same(&ours, &theirs, &ml, &[
+    let sorted = run_in(&ours.0, Path::new(mulch_bin()), &[
         "--json",
         "search",
         "rust",
         "--sort-by-score",
     ]);
+    let starred = sorted
+        .stdout
+        .find("mx-aaa002")
+        .expect("the starred record matches");
+    let first = sorted
+        .stdout
+        .find("mx-aaa001")
+        .expect("the other record matches");
+    assert!(starred < first, "the ★1 record leads: {}", sorted.stdout);
 }
 
+/// --sort-by-score: the ★1 record outranks the score-less ones.
 #[test]
-fn search_sort_by_score_matches() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-sort", Some(CORPUS_CONFIG), &[], &[]);
+fn search_sort_by_score() {
+    let ours = seeded_store("s-sort", Some(CORPUS_CONFIG), &[], &[]);
     corpus(&ours.0);
-    corpus(&theirs.0);
-    // the ★1 record outranks the score-less ones; ties keep order
-    assert_same(&ours, &theirs, &ml, &[
+    let sorted = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search",
         "rust",
         "--sort-by-score",
         "--format",
         "compact",
     ]);
+    assert_eq!(sorted.code, 0);
+    assert!(
+        first_bullet(&sorted.stdout).contains("mx-aaa002"),
+        "{}",
+        sorted.stdout
+    );
 }
 
+/// The guard fires BEFORE the store opens: no-store runs report it,
+/// not the no-store error; with a query the no-store wording is
+/// readConfig's.
 #[test]
-fn search_guard_and_no_store_match() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let ours = TempDir::new("s-guard-o");
-    let theirs = TempDir::new("s-guard-t");
-    // the guard fires BEFORE the store opens: no-store runs report
-    // it, not the no-store error
-    assert_same(&ours, &theirs, &ml, &["search"]);
-    assert_same(&ours, &theirs, &ml, &["--json", "search"]);
-    // an empty query is falsy: the guard again
-    assert_same(&ours, &theirs, &ml, &["search", ""]);
-    // with a query the no-store wording is readConfig's
-    assert_same(&ours, &theirs, &ml, &["search", "rust"]);
-    assert_same(&ours, &theirs, &ml, &["--json", "search", "rust"]);
-    // filter-only no-store: same readConfig error
-    assert_same(&ours, &theirs, &ml, &["search", "--type", "pattern"]);
-}
-
-#[test]
-fn search_archived_sections_match() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-arch", Some(CORPUS_CONFIG), &[], &[]);
-    for dir in [&ours.0, &theirs.0] {
-        archive_store(dir);
+fn search_guard_and_no_store() {
+    let ours = TempDir::new("s-guard");
+    for args in [
+        (&["search"][..]),
+        (&["--json", "search"][..]),
+        (&["search", ""][..]),
+    ] {
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        assert_eq!(our.code, 1, "{args:?}");
+        if args[0] == "--json" {
+            assert_eq!(
+                our.stderr,
+                "{\n  \"success\": false,\n  \"command\": \"search\",\n  \"error\": \"Provide a \
+                 search query or use --type, --domain, --tag, --classification, --file, or \
+                 --outcome-status to filter.\"\n}\n",
+                "{args:?}"
+            );
+        } else {
+            assert_eq!(
+                our.stderr,
+                "Error: Provide a search query or use --type, --domain, --tag, --classification, \
+                 --file, or --outcome-status to filter.\n",
+                "{args:?}"
+            );
+        }
     }
-    // live + archived sections per domain, archived totals included
-    assert_same(&ours, &theirs, &ml, &[
+    // json guard: the envelope on stderr
+    let json_guard = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "search"]);
+    assert_eq!(json_guard.code, 1);
+    assert_eq!(
+        json_guard.stderr,
+        "{\n  \"success\": false,\n  \"command\": \"search\",\n  \"error\": \"Provide a search \
+         query or use --type, --domain, --tag, --classification, --file, or --outcome-status to \
+         filter.\"\n}\n"
+    );
+    // with a query the no-store wording is readConfig's
+    let with_query = run_in(&ours.0, Path::new(mulch_bin()), &["search", "rust"]);
+    assert_eq!(with_query.code, 1);
+    assert_eq!(
+        with_query.stderr,
+        "Error: No .mulch/ directory found. Run `mulch init` to set up this project.\n"
+    );
+    // filter-only no-store: same readConfig error
+    let filtered = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "search", "--type", "pattern",
+    ]);
+    assert_eq!(filtered.code, 1);
+    assert!(
+        filtered
+            .stderr
+            .contains("No .mulch/ directory found. Run `mulch init` to set up this project.")
+    );
+}
+
+/// The archived sections: live + archived per domain under
+/// --archived, archived totals included; without --archived the
+/// archive stays invisible.
+#[test]
+fn search_archived_sections() {
+    let ours = seeded_store("s-arch", Some(CORPUS_CONFIG), &[], &[]);
+    archive_store(&ours.0);
+    // compact over the archive corpus throws on the unknown-type
+    // record that matches "rust" through its tags (the registry-gated
+    // summary)
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search",
         "rust",
         "--archived",
         "--format",
         "compact",
     ]);
-    assert_same(&ours, &theirs, &ml, &["search", "archived", "--archived"]);
-    assert_same(&ours, &theirs, &ml, &[
-        "search",
-        "convention",
-        "--archived",
-        "--format",
-        "compact",
-    ]);
-    // filter-only over the archive corpus
-    assert_same(&ours, &theirs, &ml, &[
-        "search",
-        "--archived",
-        "--type",
-        "convention",
-        "--format",
-        "compact",
-    ]);
-    // json: matches/archived keys, [] where a domain had none
-    assert_same(&ours, &theirs, &ml, &[
-        "--json",
-        "search",
-        "rust",
-        "--archived",
-    ]);
-    assert_same(&ours, &theirs, &ml, &[
+    assert_eq!(run.code, 1);
+    assert_eq!(run.stderr, "Error: Unknown record type: zzzcustom\n");
+    // the reason-less archived record rides along in json (the plain
+    // render throws on the unknown-type archive record)
+    let reasoned = run_in(&ours.0, Path::new(mulch_bin()), &[
         "--json",
         "search",
         "archived",
         "--archived",
     ]);
-    // without --archived the archive stays invisible
-    assert_same(&ours, &theirs, &ml, &["--json", "search", "rust"]);
-    assert_same(&ours, &theirs, &ml, &[
-        "search", "rust", "--format", "compact",
+    assert_eq!(reasoned.code, 0);
+    assert!(reasoned.stdout.contains("mx-arc002"), "{}", reasoned.stdout);
+    // filter-only over the archive corpus
+    let conv = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "search",
+        "--archived",
+        "--type",
+        "convention",
+        "--format",
+        "compact",
     ]);
-}
-
-/// The archived section's summary is registry-gated: an unknown-type
-/// archive record that matches through its tags THROWS in the
-/// reference's plain render (getRecordSummary), while json mode
-/// never renders a summary and succeeds.
-#[test]
-fn search_archived_unknown_type_throws_in_plain_only() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-archz", None, &[], &[]);
-    for dir in [&ours.0, &theirs.0] {
-        archive_store(dir);
-    }
-    // plain: both fail with the same clean message
-    assert_same(&ours, &theirs, &ml, &[
+    assert!(conv.stdout.contains("mx-arc002"));
+    // json: matches/archived keys
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json",
         "search",
         "rust",
         "--archived",
-        "--format",
-        "plain",
     ]);
+    assert_eq!(json.code, 0);
+    assert!(json.stdout.contains("\"archived\": ["), "{}", json.stdout);
+    // without --archived the archive stays invisible
+    let live_only = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json", "search", "rust",
+    ]);
+    assert!(!live_only.stdout.contains("mx-arc001"));
+    let live_plain = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "search", "rust", "--format", "compact",
+    ]);
+    assert!(!live_plain.stdout.contains("mx-arc001"));
+}
+
+/// The archived section's summary is registry-gated: an unknown-type
+/// archive record that matches through its tags fails the plain
+/// render, while json mode never renders a summary and succeeds.
+#[test]
+fn search_archived_unknown_type_throws_in_plain_only() {
+    let ours = seeded_store("s-archz", None, &[], &[]);
+    archive_store(&ours.0);
     let our = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search",
         "rust",
@@ -405,61 +490,51 @@ fn search_archived_unknown_type_throws_in_plain_only() {
     assert_eq!(our.code, 1);
     assert_eq!(our.stderr, "Error: Unknown record type: zzzcustom\n");
     // json: the unknown-type record rides along untouched
-    assert_same(&ours, &theirs, &ml, &[
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &[
         "--json",
         "search",
         "rust",
         "--archived",
     ]);
+    assert_eq!(json.code, 0);
+    assert!(json.stdout.contains("zzzcustom"), "{}", json.stdout);
 }
 
 /// --archived with no archive directory at all: an empty corpus, no
-/// error (readArchiveFile swallows the missing file).
+/// error (the archive read swallows the missing file).
 #[test]
 fn search_archived_missing_archive_is_quiet() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-archm", Some(CORPUS_CONFIG), &[], &[]);
+    let ours = seeded_store("s-archm", Some(CORPUS_CONFIG), &[], &[]);
     corpus(&ours.0);
-    corpus(&theirs.0);
-    assert_same(&ours, &theirs, &ml, &[
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search",
         "rust",
         "--archived",
         "--format",
         "compact",
     ]);
-    assert_same(&ours, &theirs, &ml, &[
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &[
         "--json",
         "search",
         "rust",
         "--archived",
     ]);
+    assert_eq!(json.code, 0);
 }
 
-/// `--type`'s choice set is the store's registry (search.ts:72): an
-/// unregistered name rejects at parse time in both binaries (rc 1;
-/// wording is the clap/commander family, not byte-compared).
+/// `--type`'s choice set is the store's registry: an unregistered
+/// name rejects at parse time (rc 1; wording is the parser's).
 #[test]
 fn search_type_choices_are_registry_gated() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("s-type", Some(CORPUS_CONFIG), &[], &[]);
+    let ours = seeded_store("s-type", Some(CORPUS_CONFIG), &[], &[]);
     corpus(&ours.0);
-    corpus(&theirs.0);
     let our = run_in(&ours.0, Path::new(mulch_bin()), &[
         "search",
         "--type",
         "zzzcustom",
         "rust",
     ]);
-    let their = run_in(&theirs.0, &ml, &["search", "--type", "zzzcustom", "rust"]);
-    assert_eq!(our.code, their.code);
     assert_eq!(our.code, 1);
-    assert_eq!(our.stdout, their.stdout);
     assert_eq!(our.stdout, "");
 }

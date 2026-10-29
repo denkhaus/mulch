@@ -1,20 +1,21 @@
-//! `mulch prune` parity probes (mulch-7c55): the shelf-life archive
-//! path (`--hard` deletion, `--dry-run`), the supersession-demotion
-//! ladder (`--aggressive`, `--explain`, the JSON envelope), the
-//! anchor-decay demotion (`--check-anchors`), and the cycle warning
-//! — output channels plus the on-disk live and archive bytes.
+//! `mulch prune` pins (mulch-7c55), ADR-0008 edition: the shelf-life
+//! archive path (`--hard` deletion, `--dry-run`), the
+//! supersession-demotion ladder (`--aggressive`, `--explain`, the
+//! JSON envelope), the anchor-decay demotion (`--check-anchors`),
+//! and the cycle warning — output channels plus the on-disk live and
+//! archive bytes. Literals frozen from the parity era's twin runs.
 //!
 //! Every fixture stamp is clock-derived a full day away from the
-//! nearest boundary (`/tmp`-independent): a 40-day tactical is past
-//! the 14-day shelf, a 30-day anchored foundational is past the
-//! 7-day anchor grace, a 2-day record is inside every window.
+//! nearest boundary: a 40-day tactical is past the 14-day shelf, a
+//! 30-day anchored foundational is past the 7-day anchor grace, a
+//! 2-day record is inside every window.
 
 use std::path::Path;
 
 use super::support::*;
 
-/// One clock-derived stamp `days` before now, in the reference's
-/// millisecond ISO form.
+/// One clock-derived stamp `days` before now, in the millisecond ISO
+/// form.
 fn days_ago(days: i64) -> String {
     let hours = days * 24;
     (jiff::Timestamp::now() - jiff::Span::new().hours(hours)).to_string()
@@ -27,77 +28,113 @@ fn pattern(id: &str, classification: &str, recorded: &str, name: &str, extra: &s
     )
 }
 
-/// Asserts one twin-run pair: exit, both channels, live bytes, and
-/// archive bytes (timestamps masked, the reference's `ml`
-/// self-references promoted — our banner says `mulch restore`).
-fn assert_prune_parity(ours: &TempDir, theirs: &TempDir, tag: &str, args: &[&str]) {
-    let ml = reference_ml().expect("caller checked the reference");
-    let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-    let their = run_in(&theirs.0, &ml, args);
-    assert_eq!(our.code, their.code, "{tag} exit");
-    assert_eq!(our.stdout, promote_theirs(&their.stdout), "{tag} stdout");
-    assert_eq!(our.stderr, promote_theirs(&their.stderr), "{tag} stderr");
-    assert_eq!(
-        normalize(&read_store_text_or_empty(&ours.0, "expertise/dev.jsonl")),
-        promote_theirs(&normalize(&read_store_text_or_empty(
-            &theirs.0,
-            "expertise/dev.jsonl"
-        ))),
-        "{tag} live bytes"
-    );
-    assert_eq!(
-        normalize(&read_store_text_or_empty(&ours.0, "archive/dev.jsonl")),
-        promote_theirs(&normalize(&read_store_text_or_empty(
-            &theirs.0,
-            "archive/dev.jsonl"
-        ))),
-        "{tag} archive bytes"
-    );
-}
-
-/// Seeds fresh twins per call (prune mutates, so cases must not share
-/// a store) and asserts the parity of one command invocation.
-fn pruned_pair(tag: &str, body: &str, args: &[&str]) {
-    if reference_ml().is_none() {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    }
-    let (ours, theirs) = twin_seeded(tag, None, &[("dev", body)], &[]);
-    assert_prune_parity(&ours, &theirs, tag, args);
+/// Seeds a fresh store per call (prune mutates, so cases must not
+/// share one) and returns it.
+fn pruned_store(tag: &str, body: &str) -> TempDir {
+    seeded_store(tag, None, &[("dev", body)], &[])
 }
 
 #[test]
-fn prune_empty_store_matches_reference() {
-    for args in [
-        &["prune"][..],
-        &["--json", "prune"][..],
-        &["--quiet", "prune"][..],
+fn prune_empty_store_pins_the_notice() {
+    for (tag, args, expected) in [
+        (
+            "pr-empty",
+            &["prune"][..],
+            "No stale or superseded records found. All records are current.\n",
+        ),
+        (
+            "pr-empty-json",
+            &["--json", "prune"][..],
+            "{\n  \"success\": true,\n  \"command\": \"prune\",\n  \"dryRun\": false,\n  \
+             \"hard\": false,\n  \"aggressive\": false,\n  \"checkAnchors\": false,\n  \
+             \"totalPruned\": 0,\n  \"totalDemoted\": 0,\n  \"totalAnchorDemoted\": 0,\n  \
+             \"totalSupersessionDemoted\": 0,\n  \"results\": []\n}\n",
+        ),
+        ("pr-empty-quiet", &["--quiet", "prune"][..], ""),
     ] {
-        pruned_pair("pr-empty", "", args);
+        let ours = pruned_store(tag, "");
+        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
+        assert_eq!(our.code, 0, "{tag}: {}", our.stderr);
+        assert_eq!(our.stdout, expected, "{tag}");
     }
 }
 
 #[test]
-fn prune_stale_archive_delete_and_dry_run_match_reference() {
+fn prune_stale_archive_delete_and_dry_run_pin_their_bytes() {
     let body = [
         pattern("mx-old001", "tactical", &days_ago(40), "Old Tactical", ""),
         pattern("mx-fre001", "foundational", &days_ago(2), "Fresh One", ""),
     ]
     .join("\n")
         + "\n";
-    for args in [
-        &["prune", "--dry-run"][..],
-        &["prune"][..],
-        &["--json", "prune"][..],
-        &["--quiet", "prune"][..],
-    ] {
-        pruned_pair("pr-stale", &body, args);
-    }
+    // dry run: the preview, nothing written
+    let ours = pruned_store("pr-stale-dry", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["prune", "--dry-run"]);
+    assert_eq!(our.code, 0);
+    assert_eq!(
+        our.stdout,
+        "[DRY RUN] dev: Would archive 1 of 2 records (1 remaining)\n  mx-old001 [pattern]: \
+         tactical → archived (stale)\n\n[DRY RUN] Total: would archive 1 stale record.\n"
+    );
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/dev.jsonl"),
+        body,
+        "the dry run mutates nothing"
+    );
+    // the real run: notice lines + the archive side effect
+    let ours = pruned_store("pr-stale-run", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["prune"]);
+    assert_eq!(our.code, 0);
+    assert_eq!(
+        our.stdout,
+        "dev: Archived 1 of 2 records (1 remaining)\n  mx-old001 [pattern]: tactical → \
+         archived (stale)\n\nTotal: archived 1 stale record.\nRecords moved to \
+         .mulch/archive/. Restore with `mulch restore <id>` or use `--hard` next time to \
+         permanently delete.\n"
+    );
+    let survivors = read_store_file(&ours.0, "expertise/dev.jsonl");
+    assert!(survivors.contains("mx-fre001"), "{survivors}");
+    assert!(!survivors.contains("mx-old001"), "{survivors}");
+    // json: the counts envelope
+    let ours = pruned_store("pr-stale-json", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "prune"]);
+    assert_eq!(our.code, 0);
+    assert_eq!(
+        normalize(&our.stdout),
+        "{\n  \"success\": true,\n  \"command\": \"prune\",\n  \"dryRun\": false,\n  \
+         \"hard\": false,\n  \"aggressive\": false,\n  \"checkAnchors\": false,\n  \
+         \"totalPruned\": 1,\n  \"totalDemoted\": 0,\n  \"totalAnchorDemoted\": 0,\n  \
+         \"totalSupersessionDemoted\": 0,\n  \"results\": [\n    {\n      \"domain\": \"dev\",\n      \
+         \"before\": 2,\n      \"pruned\": 1,\n      \"demoted\": 0,\n      \"anchor_demoted\": 0,\n      \
+         \"supersession_demoted\": 0,\n      \"after\": 1\n    }\n  ]\n}\n"
+    );
+    // quiet: the summary line only
+    let ours = pruned_store("pr-stale-quiet", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["--quiet", "prune"]);
+    assert_eq!(our.code, 0);
+    assert_eq!(our.stdout, "Total: archived 1 stale record.\n");
     // --hard deletes instead of archiving (no archive directory at
-    // all; the dry-run pass mutates nothing either).
-    pruned_pair("pr-hard-dry", &body, &["prune", "--hard", "--dry-run"]);
-    let (ours, theirs) = twin_seeded("pr-hard", None, &[("dev", body.as_str())], &[]);
-    assert_prune_parity(&ours, &theirs, "pr-hard", &["prune", "--hard"]);
+    // all; the dry-run pass mutates nothing either)
+    let ours = pruned_store("pr-hard-dry", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "prune",
+        "--hard",
+        "--dry-run",
+    ]);
+    assert_eq!(our.code, 0);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/dev.jsonl"),
+        body,
+        "hard dry run mutates nothing"
+    );
+    let ours = pruned_store("pr-hard", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["prune", "--hard"]);
+    assert_eq!(our.code, 0);
+    assert_eq!(
+        our.stdout,
+        "dev: Deleted 1 of 2 records (1 remaining)\n  mx-old001 [pattern]: tactical → \
+         archived (stale)\n\nTotal: deleted 1 stale record.\n"
+    );
     assert!(
         !ours.0.join(".mulch/archive").exists(),
         "hard leaves no archive"
@@ -105,7 +142,7 @@ fn prune_stale_archive_delete_and_dry_run_match_reference() {
 }
 
 #[test]
-fn prune_supersession_ladder_matches_reference() {
+fn prune_supersession_ladder_pins_its_bytes() {
     let body = [
         pattern("mx-old001", "foundational", &days_ago(3), "Old One", ""),
         pattern(
@@ -126,25 +163,53 @@ fn prune_supersession_ladder_matches_reference() {
     ]
     .join("\n")
         + "\n";
-    for args in [
-        &["prune", "--dry-run"][..],
-        &["prune"][..],
-        &["--json", "prune", "--explain"][..],
-        &["prune", "--aggressive", "--dry-run"][..],
-        &["prune", "--aggressive"][..],
-    ] {
-        pruned_pair("pr-sup", &body, args);
-    }
-    // One tier per pass: the second run demotes the next tier.
-    if reference_ml().is_some() {
-        let (ours, theirs) = twin_seeded("pr-sup2", None, &[("dev", body.as_str())], &[]);
-        assert_prune_parity(&ours, &theirs, "pr-sup2-1", &["prune"]);
-        assert_prune_parity(&ours, &theirs, "pr-sup2-2", &["prune"]);
-    }
+    // dry run: one tier demotes, the next archives
+    let ours = pruned_store("pr-sup-dry", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["prune", "--dry-run"]);
+    assert_eq!(our.code, 0);
+    assert_eq!(
+        our.stdout,
+        "[DRY RUN] dev: Would archive 1, demoted 1 of 4 records (3 remaining)\n  mx-old001 \
+         [pattern]: foundational → tactical (superseded)\n  mx-mid001 [pattern]: observational \
+         → archived (superseded)\n\n[DRY RUN] Total: would archive 1 stale record; would demote \
+         1 superseded record.\n"
+    );
+    // the real run says the same without the preview brackets
+    let ours = pruned_store("pr-sup-run", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["prune"]);
+    assert_eq!(our.code, 0);
+    assert!(
+        our.stdout
+            .starts_with("dev: Archived 1, demoted 1 of 4 records (3 remaining)")
+    );
+    assert!(our.stdout.contains("foundational → tactical (superseded)"));
+    assert!(our.stdout.contains("observational → archived (superseded)"));
+    // json + --explain: the explanations array rides the envelope
+    let ours = pruned_store("pr-sup-json", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json",
+        "prune",
+        "--explain",
+    ]);
+    assert_eq!(our.code, 0);
+    assert!(normalize(&our.stdout).contains("\"totalSupersessionDemoted\": 1"));
+    assert!(normalize(&our.stdout).contains("\"id\": \"mx-old001\""));
+    assert!(normalize(&our.stdout).contains("\"from\": \"foundational\""));
+    assert!(normalize(&our.stdout).contains("\"to\": \"tactical\""));
+    assert!(normalize(&our.stdout).contains("\"to\": \"archived\""));
+    // aggressive: both superseded records archive at once
+    let ours = pruned_store("pr-sup-aggr", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["prune", "--aggressive"]);
+    assert_eq!(our.code, 0);
+    assert!(
+        our.stdout
+            .starts_with("dev: Archived 2 of 4 records (2 remaining)")
+    );
+    assert!(our.stdout.contains("foundational → archived (superseded)"));
 }
 
 #[test]
-fn prune_anchor_decay_matches_reference() {
+fn prune_anchor_decay_pins_its_bytes() {
     let body = [
         pattern(
             "mx-anc001",
@@ -157,17 +222,44 @@ fn prune_anchor_decay_matches_reference() {
     ]
     .join("\n")
         + "\n";
-    for args in [
-        &["prune", "--check-anchors", "--explain"][..],
-        &["--json", "prune", "--check-anchors"][..],
-        &["prune", "--check-anchors", "--dry-run"][..],
-    ] {
-        pruned_pair("pr-anchor", &body, args);
-    }
+    let ours = pruned_store("pr-anchor", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "prune",
+        "--check-anchors",
+        "--explain",
+    ]);
+    assert_eq!(our.code, 0);
+    assert_eq!(
+        our.stdout,
+        "dev: Demoted 1 of 2 records (2 remaining)\n  mx-anc001 [pattern]: foundational → \
+         tactical (anchor_decay)\n      anchors: 0/1 valid (0%)\n        ✗ file: \
+         src/missing.rs\n\nTotal: demoted 1 anchor-decayed record.\n"
+    );
+    let ours = pruned_store("pr-anchor-json", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "--json",
+        "prune",
+        "--check-anchors",
+    ]);
+    assert_eq!(our.code, 0);
+    assert!(normalize(&our.stdout).contains("\"totalAnchorDemoted\": 1"));
+    // dry-run mutates nothing
+    let ours = pruned_store("pr-anchor-dry", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "prune",
+        "--check-anchors",
+        "--dry-run",
+    ]);
+    assert_eq!(our.code, 0);
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/dev.jsonl"),
+        body,
+        "anchor dry run mutates nothing"
+    );
 }
 
 #[test]
-fn prune_cycle_warning_matches_reference() {
+fn prune_cycle_warning_pins_its_bytes() {
     let body = [
         pattern(
             "mx-aaa001",
@@ -186,17 +278,31 @@ fn prune_cycle_warning_matches_reference() {
     ]
     .join("\n")
         + "\n";
-    for args in [
-        &["prune"][..],
-        &["--json", "prune"][..],
-        &["--quiet", "prune"][..],
-    ] {
-        pruned_pair("pr-cycle", &body, args);
-    }
+    let ours = pruned_store("pr-cycle", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["prune"]);
+    assert_eq!(our.code, 0);
+    assert_eq!(
+        our.stdout,
+        "No stale or superseded records found. All records are current.\n"
+    );
+    assert_eq!(
+        our.stderr,
+        "Warning: supersession cycle detected for 2 record(s); cycle members will not be \
+         demoted. Run `mulch doctor` for details.\n"
+    );
+    // json carries no warning channel; the run stays a no-op
+    let ours = pruned_store("pr-cycle-json", &body);
+    let our = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "prune"]);
+    assert_eq!(our.code, 0);
+    assert!(normalize(&our.stdout).contains("\"results\": []"));
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/dev.jsonl"),
+        body,
+        "cycle members never move"
+    );
 }
 
-// ---- pre-prune hooks (mulch-7f49; probed live 2026-10-25,
-// /tmp/sprint42/childB/probes/prune) ----
+// ---- pre-prune hooks (mulch-7f49) ----
 
 /// The mixed-bucket fixture: two stale records (one also a
 /// supersession target), a plain supersession hit, an anchor-decay
@@ -234,14 +340,14 @@ fn hook_fixture_body() -> String {
         + "\n"
 }
 
-/// Twin stores over the mixed fixture with the given hooks body (the
+/// A store over the mixed fixture with the given hooks body (the
 /// config carries the canonical tail plus a calm second domain).
-fn prune_hook_twins(tag: &str, hook_yaml: &str) -> (TempDir, TempDir) {
+fn prune_hook_store(tag: &str, hook_yaml: &str) -> TempDir {
     let calm = pattern("mx-calm001", "tactical", &days_ago(2), "Calm One", "");
     let config =
         format!("version: '1'\ndomains:\n  dev: {{}}\n  calm: {{}}\n{hook_yaml}{CONFIG_TAIL}");
     let body = hook_fixture_body();
-    twin_seeded(
+    seeded_store(
         tag,
         Some(config.as_str()),
         &[("dev", body.as_str()), ("calm", calm.as_str())],
@@ -249,59 +355,26 @@ fn prune_hook_twins(tag: &str, hook_yaml: &str) -> (TempDir, TempDir) {
     )
 }
 
-/// The payload law (probe PR-A): `{"event":"pre-prune","payload":\
-/// {"candidates":[{"domain":…,"stale":[…],"demote":[…],
-/// "anchor_decay":[…]}]}}` — only candidate domains, raw records per
-/// bucket in file order, a both-hits record riding demote AND
-/// anchor_decay, staleness excluding a record from the other buckets.
-/// Byte-compared against the reference's capture (timestamps
-/// normalized), with the run's own output/store parity.
+/// The payload law: `{"event":"pre-prune","payload":{"candidates":
+/// [...]}}` — only candidate domains, raw records per bucket in file
+/// order, a both-hits record riding demote AND anchor_decay,
+/// staleness excluding a record from the other buckets (all parsed
+/// and asserted on OUR capture).
 #[test]
-fn prune_pre_prune_payload_matches_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn prune_pre_prune_payload_law() {
     for (tag, args) in [
         ("prh-pay-anchors", &["prune", "--check-anchors"][..]),
         ("prh-pay-json", &["--json", "prune", "--check-anchors"][..]),
         ("prh-pay-plain", &["prune"][..]),
     ] {
-        let (ours, theirs) =
-            prune_hook_twins(tag, "hooks:\n  pre-prune:\n    - 'cat > hook-stdin.txt'\n");
+        let ours = prune_hook_store(tag, "hooks:\n  pre-prune:\n    - 'cat > hook-stdin.txt'\n");
         let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_eq!(our.code, their.code, "{tag} exit");
-        assert_eq!(our.stdout, promote_theirs(&their.stdout), "{tag} stdout");
-        assert_eq!(our.stderr, their.stderr, "{tag} stderr");
-        assert_eq!(
-            normalize(&read_store_text_or_empty(&ours.0, "expertise/dev.jsonl")),
-            promote_theirs(&normalize(&read_store_text_or_empty(
-                &theirs.0,
-                "expertise/dev.jsonl"
-            ))),
-            "{tag} live bytes"
-        );
-        assert_eq!(
-            normalize(&read_store_text_or_empty(&ours.0, "archive/dev.jsonl")),
-            promote_theirs(&normalize(&read_store_text_or_empty(
-                &theirs.0,
-                "archive/dev.jsonl"
-            ))),
-            "{tag} archive bytes"
-        );
-        let (our_stdin, their_stdin) = (hook_stdin(&ours.0), hook_stdin(&theirs.0));
+        assert_eq!(our.code, 0, "{tag}: {}", our.stderr);
+        let our_stdin = hook_stdin(&ours.0);
         assert!(our_stdin.is_some(), "{tag}: our hook fired");
-        assert!(their_stdin.is_some(), "{tag}: reference hook fired");
-        assert_eq!(
-            normalize(our_stdin.as_deref().unwrap_or_default()),
-            normalize(their_stdin.as_deref().unwrap_or_default()),
-            "{tag}: hook stdin payload bytes"
-        );
-        // Bucket law (probe PR-A), asserted on the parsed capture:
-        // file-order ids per bucket, staleness excluding a record
-        // from demote/anchor_decay, the both-hits record riding
-        // demote AND anchor_decay, calm absent.
+        // Bucket law: file-order ids per bucket, staleness excluding
+        // a record from demote/anchor_decay, the both-hits record
+        // riding demote AND anchor_decay, calm absent.
         let payload: serde_json::Value =
             serde_json::from_str(our_stdin.as_deref().unwrap_or_default())
                 .expect("hook stdin parses");
@@ -349,21 +422,28 @@ fn prune_pre_prune_payload_matches_reference() {
     }
 }
 
-/// The gate law: no candidates or --dry-run fire NO hooks (probe
-/// PR-B/PR-C) — the preview must not trigger side-effecting hooks.
+/// The gate law: no candidates or --dry-run fire NO hooks — the
+/// preview must not trigger side-effecting hooks.
 #[test]
-fn prune_pre_prune_gates_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn prune_pre_prune_gates() {
     // Nothing to do anywhere: no hook, the all-current notice.
     let calm = pattern("mx-fresh01", "foundational", &days_ago(2), "Fresh One", "");
-    for (tag, args, body) in [
-        ("prh-none", &["prune"][..], calm.clone()),
-        ("prh-none-json", &["--json", "prune"][..], calm),
+    for (tag, args, expected) in [
+        (
+            "prh-none",
+            &["prune"][..],
+            "No stale or superseded records found. All records are current.\n",
+        ),
+        (
+            "prh-none-json",
+            &["--json", "prune"][..],
+            "{\n  \"success\": true,\n  \"command\": \"prune\",\n  \"dryRun\": false,\n  \
+             \"hard\": false,\n  \"aggressive\": false,\n  \"checkAnchors\": false,\n  \
+             \"totalPruned\": 0,\n  \"totalDemoted\": 0,\n  \"totalAnchorDemoted\": 0,\n  \
+             \"totalSupersessionDemoted\": 0,\n  \"results\": []\n}\n",
+        ),
     ] {
-        let (ours, theirs) = twin_seeded(
+        let ours = seeded_store(
             tag,
             Some(
                 format!(
@@ -372,53 +452,37 @@ fn prune_pre_prune_gates_match_reference() {
                 )
                 .as_str(),
             ),
-            &[("dev", body.as_str())],
+            &[("dev", calm.as_str())],
             &[],
         );
         let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_eq!(our.code, their.code, "{tag} exit");
-        assert_eq!(our.stdout, promote_theirs(&their.stdout), "{tag} stdout");
-        assert_eq!(our.stderr, their.stderr, "{tag} stderr");
+        assert_eq!(our.code, 0, "{tag}: {}", our.stderr);
+        assert_eq!(our.stdout, expected, "{tag}");
         assert!(hook_stdin(&ours.0).is_none(), "{tag}: our hook stayed cold");
-        assert!(
-            hook_stdin(&theirs.0).is_none(),
-            "{tag}: reference hook stayed cold"
-        );
     }
 
     // Candidates present but --dry-run: still no hook, nothing
     // written.
-    let (ours, theirs) = prune_hook_twins(
+    let ours = prune_hook_store(
         "prh-dry",
         "hooks:\n  pre-prune:\n    - 'cat > hook-stdin.txt'\n",
     );
+    let before = read_store_file(&ours.0, "expertise/dev.jsonl");
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["prune", "--dry-run"]);
-    let their = run_in(&theirs.0, &ml, &["prune", "--dry-run"]);
-    assert_eq!(our.code, their.code, "dry exit");
-    assert_eq!(our.stdout, promote_theirs(&their.stdout), "dry stdout");
-    assert_eq!(our.stderr, their.stderr, "dry stderr");
+    assert_eq!(our.code, 0, "dry: {}", our.stderr);
     assert!(hook_stdin(&ours.0).is_none(), "our hook stayed cold");
-    assert!(
-        hook_stdin(&theirs.0).is_none(),
-        "reference hook stayed cold"
-    );
     assert_eq!(
-        read_store_text_or_empty(&ours.0, "expertise/dev.jsonl"),
-        read_store_text_or_empty(&theirs.0, "expertise/dev.jsonl"),
+        read_store_file(&ours.0, "expertise/dev.jsonl"),
+        before,
         "dry run left the live bytes"
     );
 }
 
-/// Blocking (probe PR-D/PR-E): a non-zero exit or a timeout aborts
-/// between preview and write — plain `Error: …` stderr / the json
-/// envelope, exit 1, and NOTHING written to the store.
+/// Blocking: a non-zero exit or a timeout aborts between preview and
+/// write — plain `Error: …` stderr / the json envelope, exit 1, and
+/// NOTHING written to the store.
 #[test]
-fn prune_pre_prune_blocking_matches_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn prune_pre_prune_blocking_pins_the_bytes() {
     for (tag, args, hook_yaml, json_mode, reason) in [
         (
             "prh-block-plain",
@@ -443,121 +507,82 @@ fn prune_pre_prune_blocking_matches_reference() {
             "hook `sleep 30 & wait` timed out after 150ms",
         ),
     ] {
-        let (ours, theirs) = prune_hook_twins(tag, hook_yaml);
+        let ours = prune_hook_store(tag, hook_yaml);
+        let before = read_store_file(&ours.0, "expertise/dev.jsonl");
         let started = std::time::Instant::now();
         let our = run_in(&ours.0, Path::new(mulch_bin()), args);
         let our_elapsed = started.elapsed();
-        let their = run_in(&theirs.0, &ml, args);
-        assert_eq!(our.code, their.code, "{tag} exit");
         assert_eq!(our.code, 1, "{tag}: blocked exits 1");
         assert!(our.stdout.is_empty(), "{tag}: no stdout when blocked");
-        assert!(their.stdout.is_empty(), "{tag}: reference no stdout");
-        let expected = if json_mode {
-            // The forwarded hook stderr precedes the envelope.
-            format!(
-                "prune-pfx\n{}",
-                error_envelope("prune", reason).trim_end_matches('\n')
-            ) + "\n"
-        } else {
-            format!("prune-pfx\nError: {reason}\n")
-        };
+        // The forwarded hook stderr precedes the envelope (the
+        // timeout variant has no stderr prefix).
         if tag == "prh-block-timeout" {
-            // No stderr prefix on the timeout variant.
             assert_eq!(
                 our.stderr,
                 format!("Error: {reason}\n"),
                 "{tag}: our stderr"
             );
-        } else {
-            assert_eq!(our.stderr, expected, "{tag}: our stderr");
-        }
-        assert_eq!(
-            strip_reference_hook_noise(&their.stderr),
-            if tag == "prh-block-timeout" {
-                format!("Error: {reason}\n")
-            } else {
-                expected.clone()
-            },
-            "{tag}: reference stderr (noise stripped)"
-        );
-        if tag.contains("timeout") {
             assert!(
                 our_elapsed.as_secs() < 10,
                 "{tag}: group kill returned promptly"
             );
+        } else {
+            let expected = if json_mode {
+                format!(
+                    "prune-pfx\n{}",
+                    error_envelope("prune", reason).trim_end_matches('\n')
+                ) + "\n"
+            } else {
+                format!("prune-pfx\nError: {reason}\n")
+            };
+            assert_eq!(our.stderr, expected, "{tag}: our stderr");
         }
         // The write phase never ran: live intact, no archive.
         assert_eq!(
-            normalize(&read_store_text_or_empty(&ours.0, "expertise/dev.jsonl")),
-            promote_theirs(&normalize(&read_store_text_or_empty(
-                &theirs.0,
-                "expertise/dev.jsonl"
-            ))),
+            read_store_file(&ours.0, "expertise/dev.jsonl"),
+            before,
             "{tag} live bytes (untouched)"
         );
         assert!(
             read_store_text_or_empty(&ours.0, "archive/dev.jsonl").is_empty(),
             "{tag}: no archive written"
         );
-        assert!(
-            read_store_text_or_empty(&theirs.0, "archive/dev.jsonl").is_empty(),
-            "{tag}: reference wrote no archive"
-        );
     }
 }
 
 /// A successful hook's stderr forwards verbatim in both modes, and a
 /// hook's STDOUT is ignored — block-or-allow, no mutation even though
-/// pre-prune is a `pre-*` event (probe PR-F: candidate-reshaping JSON
-/// changes nothing; the run matches a hookless baseline byte for
-/// byte).
+/// pre-prune is a `pre-*` event (candidate-reshaping JSON changes
+/// nothing; the run matches a hookless baseline byte for byte).
 #[test]
-fn prune_hook_stderr_forward_and_stdout_ignored_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn prune_hook_stderr_forward_and_stdout_ignored() {
     // Stderr forwarding on a successful run, plain and json.
     for (tag, args) in [
         ("prh-fwd-plain", &["prune", "--check-anchors"][..]),
         ("prh-fwd-json", &["--json", "prune", "--check-anchors"][..]),
     ] {
-        let (ours, theirs) =
-            prune_hook_twins(tag, "hooks:\n  pre-prune:\n    - 'printf side-noise >&2'\n");
+        let ours = prune_hook_store(tag, "hooks:\n  pre-prune:\n    - 'printf side-noise >&2'\n");
         let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_flaked_exit(our.code, their.code, &their.stderr, 0, tag);
-        assert_eq!(our.stdout, promote_theirs(&their.stdout), "{tag} stdout");
+        assert_eq!(our.code, 0, "{tag}: {}", our.stderr);
         assert_eq!(our.stderr, "side-noise\n", "{tag}: forwarded verbatim");
-        assert_eq!(
-            strip_reference_hook_noise(&their.stderr),
-            "side-noise\n",
-            "{tag}: reference forwarded the same bytes"
-        );
-        assert_eq!(
-            normalize(&read_store_text_or_empty(&ours.0, "expertise/dev.jsonl")),
-            promote_theirs(&normalize(&read_store_text_or_empty(
-                &theirs.0,
-                "expertise/dev.jsonl"
-            ))),
-            "{tag} live bytes"
+        assert!(
+            normalize(&read_store_text_or_empty(&ours.0, "expertise/dev.jsonl"))
+                .contains("\"id\":\"mx-keep001\""),
+            "{tag} live bytes survived the prune"
         );
     }
 
-    // Stdout ignored: the same seed bytes go through a hookless and a
-    // hooked run in two stores — the resulting files must match
+    // Stdout ignored: the same seed bytes go through a hooked and a
+    // hookless run in two stores — the resulting files must match
     // (normalize masks the demotion stamps the run itself writes).
-    let (hooked, baseline) = (
-        prune_hook_twins(
-            "prh-stdout",
-            "hooks:\n  pre-prune:\n    - 'printf %s \"{\\\"candidates\\\":[]}\"'\n",
-        ),
-        prune_hook_twins("prh-stdout-base", ""),
+    let hooked = prune_hook_store(
+        "prh-stdout",
+        "hooks:\n  pre-prune:\n    - 'printf %s \"{\\\"candidates\\\":[]}\"'\n",
     );
-    let seed_bytes = read_store_text_or_empty(&hooked.0.0, "expertise/dev.jsonl");
+    let baseline = prune_hook_store("prh-stdout-base", "");
+    let seed_bytes = read_store_text_or_empty(&hooked.0, "expertise/dev.jsonl");
     std::fs::write(
         baseline
-            .0
             .0
             .join(".mulch")
             .join("expertise")
@@ -565,36 +590,22 @@ fn prune_hook_stderr_forward_and_stdout_ignored_match_reference() {
         &seed_bytes,
     )
     .expect("baseline seed overwritten");
-    let our = run_in(&hooked.0.0, Path::new(mulch_bin()), &[
+    let our = run_in(&hooked.0, Path::new(mulch_bin()), &[
         "prune",
         "--check-anchors",
     ]);
-    let their = run_in(&hooked.1.0, &ml, &["prune", "--check-anchors"]);
-    assert_flaked_exit(our.code, their.code, &their.stderr, 0, "prh-stdout");
-    assert_eq!(
-        our.stdout,
-        promote_theirs(&their.stdout),
-        "stdout-ignored stdout"
-    );
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert!(our.stderr.is_empty(), "stdout-ignored: our stderr clean");
-    assert_eq!(
-        strip_reference_hook_noise(&their.stderr),
-        "\n",
-        "stdout-ignored: reference stderr is pure flake noise"
-    );
-    let base = run_in(&baseline.0.0, Path::new(mulch_bin()), &[
+    let base = run_in(&baseline.0, Path::new(mulch_bin()), &[
         "prune",
         "--check-anchors",
     ]);
     assert_eq!(our.code, base.code, "hook stdout changed no exit");
     assert_eq!(our.stdout, base.stdout, "hook stdout changed no output");
     assert_eq!(
+        normalize(&read_store_text_or_empty(&hooked.0, "expertise/dev.jsonl")),
         normalize(&read_store_text_or_empty(
-            &hooked.0.0,
-            "expertise/dev.jsonl"
-        )),
-        normalize(&read_store_text_or_empty(
-            &baseline.0.0,
+            &baseline.0,
             "expertise/dev.jsonl"
         )),
         "hook stdout changed no bytes (same seed, hooked vs hookless run)"

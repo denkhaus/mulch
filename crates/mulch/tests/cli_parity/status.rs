@@ -1,248 +1,277 @@
-//! `mulch status` parity probes.
+//! `mulch status` pins (ADR-0008 edition: OUR byte pins only).
 //!
-//! Moved verbatim from the one-file battery (mulch-3e7c); sprint
-//! banners stay with their probes.
+//! Fresh-store and no-store surfaces are byte-frozen; the reader
+//! surfaces pin the exact error texts and the json health-block laws
+//! (raw stamp strings, distribution keys); relative-age wording
+//! ("Xd ago") is volatile by design and pinned structurally.
 
 use std::path::Path;
+
+use serde_json::json;
 
 use super::support::*;
 
 #[test]
-fn status_no_store_error_matches() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn status_no_store_error_pins_both_channels() {
     let ours = TempDir::new("nostore-ours");
-    let theirs = TempDir::new("nostore-theirs");
-
-    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
-    let theirs_run = run_in(&theirs.0, &ml, &["status"]);
-    assert_eq!(ours_run.code, theirs_run.code);
-    assert_eq!(ours_run.stdout, theirs_run.stdout);
-    assert_eq!(ours_run.stderr, theirs_run.stderr);
-
-    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["status", "--json"]);
-    let theirs_json = run_in(&theirs.0, &ml, &["status", "--json"]);
-    assert_eq!(ours_json.code, theirs_json.code);
-    assert_eq!(ours_json.stdout, theirs_json.stdout);
-    assert_eq!(ours_json.stderr, theirs_json.stderr);
-}
-
-#[test]
-fn status_fresh_store_matches() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let ours = TempDir::new("fresh-ours");
-    let theirs = TempDir::new("fresh-theirs");
-    run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
-    run_in(&theirs.0, &ml, &["init"]);
-
-    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
-    let theirs_run = run_in(&theirs.0, &ml, &["status"]);
-    assert_eq!(ours_run.code, theirs_run.code);
-    // ours promotes `mulch add` where the reference says `ml add`
-    assert_eq!(ours_run.stdout, promote_theirs(&theirs_run.stdout));
-    assert!(
-        ours_run
-            .stdout
-            .contains("No domains configured. Run `mulch add <domain>` to get started.")
-    );
-
-    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["status", "--json"]);
-    let theirs_json = run_in(&theirs.0, &ml, &["status", "--json"]);
-    assert_eq!(ours_json.code, theirs_json.code);
-    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
-}
-
-#[test]
-fn status_with_records_matches_structurally() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let ours = TempDir::new("recs-ours");
-    let theirs = TempDir::new("recs-theirs");
-    for dir in [&ours.0, &theirs.0] {
-        let _ = run_in(dir, &ml, &["init"]);
-        let _ = run_in(dir, &ml, &[
-            "record",
-            "dev",
-            "--type",
-            "pattern",
-            "--name",
-            "p1",
-            "--description",
-            "dp1",
-        ]);
-        let _ = run_in(dir, &ml, &[
-            "record",
-            "dev",
-            "--type",
-            "convention",
-            "--content",
-            "c1",
-        ]);
-    }
-
-    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["status", "--json"]);
-    let theirs_json = run_in(&theirs.0, &ml, &["status", "--json"]);
-    assert_eq!(ours_json.code, theirs_json.code);
-    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
-
-    // plain lines: counts and suffix shape (relative times stay volatile)
-    let ours_plain = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
-    let theirs_plain = run_in(&theirs.0, &ml, &["status"]);
-    assert_eq!(ours_plain.code, theirs_plain.code);
+    let plain = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(plain.code, 1);
+    assert_eq!(plain.stdout, "");
     assert_eq!(
-        ours_plain.stdout.lines().count(),
-        theirs_plain.stdout.lines().count()
+        plain.stderr,
+        "No .mulch/ directory found. Run `mulch init` first.\n"
     );
-    assert!(ours_plain.stdout.contains("dev: 2 records"));
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &["status", "--json"]);
+    assert_eq!(json.code, 1);
+    assert_eq!(json.stdout, "");
+    assert_eq!(
+        json.stderr,
+        error_envelope(
+            "status",
+            "No .mulch/ directory found. Run `mulch init` first."
+        )
+    );
 }
 
 #[test]
-fn status_reader_surfaces_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn status_fresh_store_pins_the_empty_table() {
+    let ours = TempDir::new("fresh-ours");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let plain = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(plain.code, 0);
+    assert_eq!(
+        plain.stdout,
+        "Mulch Status\n============\n\nNo domains configured. Run `mulch add <domain>` to get \
+         started.\n"
+    );
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &["status", "--json"]);
+    assert_eq!(json.code, 0);
+    assert_eq!(
+        normalize(&json.stdout),
+        "{\n  \"success\": true,\n  \"command\": \"status\",\n  \"domains\": [],\n  \
+         \"governance\": {\n    \"max_entries\": 100,\n    \"warn_entries\": 150,\n    \
+         \"hard_limit\": 200\n  },\n  \"shelf_life\": {\n    \"tactical\": 14,\n    \
+         \"observational\": 30\n  }\n}\n"
+    );
+}
+
+/// A populated store: the plain line shape (counts, volatile ages
+/// unpinned) and the json health-block key law.
+#[test]
+fn status_with_records_pins_the_line_and_json_laws() {
+    let ours = TempDir::new("recs-ours");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "dev",
+        "--type",
+        "pattern",
+        "--name",
+        "p1",
+        "--description",
+        "dp1",
+    ]);
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "dev",
+        "--type",
+        "convention",
+        "--content",
+        "c1",
+    ]);
+
+    let plain = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(plain.code, 0);
+    assert_eq!(
+        plain.stdout.lines().count(),
+        4,
+        "header, rule, blank, one domain line: {}",
+        plain.stdout
+    );
+    assert!(plain.stdout.contains("dev: 2 records"));
+
+    // json: the domain row's key order and the distributions (the
+    // integer-first type key is JS object insertion order).
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &["status", "--json"]);
+    assert_eq!(json.code, 0);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json parses");
+    let row = &value["domains"][0];
+    assert_eq!(row["domain"], json!("dev"));
+    assert_eq!(row["count"], json!(2));
+    let keys = row
+        .as_object()
+        .expect("row")
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        keys,
+        [
+            "domain",
+            "count",
+            "lastUpdated",
+            "oldest_recorded",
+            "newest_recorded",
+            "rotting",
+            "rotting_days",
+            "health"
+        ]
+        .map(String::from)
+        .to_vec()
+    );
+    let distribution = row["health"]["type_distribution"]
+        .as_object()
+        .expect("distribution")
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        distribution,
+        [
+            "convention",
+            "pattern",
+            "failure",
+            "decision",
+            "reference",
+            "guide"
+        ]
+        .map(String::from)
+        .to_vec()
+    );
+}
+
+/// The reader surfaces over a fixed-stamp corpus: the array line
+/// counts, the non-string type renders its raw key, the file-less
+/// domain says "never", and the rotting banner fires.
+#[test]
+fn status_reader_surfaces_pin_the_laws() {
     let ours = TempDir::new("stat-rd-ours");
-    let theirs = TempDir::new("stat-rd-theirs");
-    for dir in [&ours.0, &theirs.0] {
-        let _ = run_in(dir, &ml, &["init"]);
-        let _ = run_in(dir, &ml, &["add", "d1"]);
-        let _ = run_in(dir, &ml, &["add", "d2"]);
-    }
-    // fixed, far-apart recorded_at stamps keep the "Xd ago" buckets
-    // stable for the test duration AND cross the observational shelf
-    // life (rotting); the array line counts, the numeric type line
-    // pins the integer-first distribution key order.
+    let config = format!("version: '1'\ndomains:\n  d1: {{}}\n  d2: {{}}\n{CONFIG_TAIL}");
+    write_seed_with_config(&ours.0, &config, &[]);
     let corpus = "{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-08-26T08:00:00.000Z\",\"content\":\"old\",\"id\":\"mx-bbbbbb\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-08-27T08:00:00.000Z\",\"content\":\"new\",\"id\":\"mx-cccccc\"}\n[1,2,3]\n{\"type\":5,\"classification\":\"tactical\",\"recorded_at\":\"2026-08-26T08:00:00.000Z\",\"content\":\"numtype\",\"id\":\"mx-333333\"}\n";
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(
-            dir.join(".mulch").join("expertise").join("d1.jsonl"),
-            corpus,
-        )
-        .expect("corpus writable");
-        // d2 keeps its empty file; a file-less domain renders "never"
-        std::fs::remove_file(dir.join(".mulch").join("expertise").join("d2.jsonl"))
-            .expect("d2 file removable");
-    }
+    std::fs::write(ours.0.join(".mulch/expertise/d1.jsonl"), corpus).expect("corpus writable");
+    // d2 keeps no file; a file-less domain renders "never"
+    std::fs::write(ours.0.join(".mulch/expertise/d2.jsonl"), "").expect("d2 seed");
+    std::fs::remove_file(ours.0.join(".mulch/expertise/d2.jsonl")).expect("d2 file removable");
 
-    // plain: count includes the array line, the recorded range renders,
-    // the file-less domain says "never"
-    let ours_plain = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
-    let theirs_plain = run_in(&theirs.0, &ml, &["status"]);
-    assert_eq!(ours_plain.code, theirs_plain.code);
-    assert_eq!(ours_plain.stdout, theirs_plain.stdout);
-
-    // json: same story (timestamps normalized)
-    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "status"]);
-    let theirs_json = run_in(&theirs.0, &ml, &["--json", "status"]);
-    assert_eq!(ours_json.code, theirs_json.code);
-    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
-
-    // scalar line: both exit 1; the reference stack-traces (DEVIATIONS:
-    // ours is a clean error), so only the code is comparable
-    let scalar = "5\n";
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(
-            dir.join(".mulch").join("expertise").join("d1.jsonl"),
-            scalar,
-        )
-        .expect("scalar writable");
-    }
-    let ours_scalar = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
-    let theirs_scalar = run_in(&theirs.0, &ml, &["status"]);
-    assert_eq!(ours_scalar.code, theirs_scalar.code);
-    assert_eq!(ours_scalar.code, 1);
+    // plain: count includes the array line, the range renders, the
+    // file-less domain says "never" (ages stay volatile)
+    let plain = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(plain.code, 0);
+    let d1_line = plain
+        .stdout
+        .lines()
+        .find(|line| line.starts_with("  d1:"))
+        .expect("d1 line");
     assert!(
-        ours_scalar.stderr.contains("non-object record at"),
+        d1_line.starts_with("  d1: 4 records (updated just now) — recorded"),
+        "{d1_line}"
+    );
+    assert!(d1_line.contains("⚠ ROTTING"), "{d1_line}");
+    assert!(plain.stdout.contains("  d2: 0 records (updated never)"));
+
+    // json: same story — raw stamps, both extra distribution keys
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "status"]);
+    assert_eq!(json.code, 0);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json parses");
+    let d1 = &value["domains"][0];
+    assert_eq!(d1["count"], json!(4));
+    assert_eq!(d1["oldest_recorded"], json!("2026-08-26T08:00:00.000Z"));
+    assert_eq!(d1["newest_recorded"], json!("2026-08-27T08:00:00.000Z"));
+    assert_eq!(d1["rotting"], json!(true));
+    assert_eq!(d1["health"]["type_distribution"]["5"], json!(1));
+    assert_eq!(d1["health"]["type_distribution"]["undefined"], json!(1));
+    assert_eq!(
+        d1["health"]["classification_distribution"]["undefined"],
+        json!(null)
+    );
+
+    // scalar line: clean error, exit 1
+    std::fs::write(ours.0.join(".mulch/expertise/d1.jsonl"), "5\n").expect("scalar writable");
+    let scalar = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(scalar.code, 1);
+    assert!(
+        normalize_dir(&scalar.stderr, &ours.0)
+            .starts_with("Error: non-object record at <DIR>/.mulch/expertise/d1.jsonl line 1"),
         "clean scalar error, got: {}",
-        ours_scalar.stderr
+        scalar.stderr
     );
 
-    // malformed line: same class (reference stack-traces)
-    let malformed = "{\"type\":\"convention\" ...\n";
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(
-            dir.join(".mulch").join("expertise").join("d1.jsonl"),
-            malformed,
-        )
-        .expect("malformed writable");
-    }
-    let ours_bad = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
-    let theirs_bad = run_in(&theirs.0, &ml, &["status"]);
-    assert_eq!(ours_bad.code, theirs_bad.code);
-    assert_eq!(ours_bad.code, 1);
+    // malformed line: same class
+    std::fs::write(
+        ours.0.join(".mulch/expertise/d1.jsonl"),
+        "{\"type\":\"convention\" ...\n",
+    )
+    .expect("malformed writable");
+    let bad = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(bad.code, 1);
     assert!(
-        ours_bad.stderr.contains("Malformed JSONL at"),
+        bad.stderr.contains("Malformed JSONL at"),
         "clean malformed error, got: {}",
-        ours_bad.stderr
+        bad.stderr
     );
 
-    // unknown type: both exit 1 (reference stack-traces; ours clean)
-    let unknown = "{\"type\":\"wat\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"x\",\"id\":\"mx-dddddd\"}\n";
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(
-            dir.join(".mulch").join("expertise").join("d1.jsonl"),
-            unknown,
-        )
-        .expect("unknown writable");
-    }
-    let ours_unknown = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
-    let theirs_unknown = run_in(&theirs.0, &ml, &["status"]);
-    assert_eq!(ours_unknown.code, theirs_unknown.code);
-    assert_eq!(ours_unknown.code, 1);
-
-    // comment lines are findings for the raw-loop readers (validate,
-    // doctor jsonl-integrity) — only the strict reader skips them
-    // ...plus a legacy singular-outcome record: warning, not error
-    let commented = "# ARCHIVED — not for active use.\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"ok\",\"id\":\"mx-aaaaaa\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"legacy\",\"id\":\"mx-444444\",\"outcome\":{\"status\":\"success\"}}\n";
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(
-            dir.join(".mulch").join("expertise").join("d1.jsonl"),
-            commented,
-        )
-        .expect("commented writable");
-    }
-    let ours_validate = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
-    let theirs_validate = run_in(&theirs.0, &ml, &["validate"]);
-    assert_eq!(ours_validate.code, theirs_validate.code);
-    assert_eq!(ours_validate.stdout, theirs_validate.stdout);
-    assert_eq!(ours_validate.stderr, theirs_validate.stderr);
-
-    // --allow-unknown-types keeps status alive (reference flag too)
-    let ours_flag = run_in(&ours.0, Path::new(mulch_bin()), &[
+    // unknown type: clean error
+    std::fs::write(
+        ours.0.join(".mulch/expertise/d1.jsonl"),
+        "{\"type\":\"wat\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"x\",\"id\":\"mx-dddddd\"}\n",
+    )
+    .expect("unknown writable");
+    let unknown = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(unknown.code, 1);
+    assert!(
+        normalize_dir(&unknown.stderr, &ours.0).starts_with(
+            "Error: Unknown record type \"wat\" at <DIR>/.mulch/expertise/d1.jsonl:1 \
+             (id=mx-dddddd)."
+        ),
+        "{}",
+        unknown.stderr
+    );
+    // --allow-unknown-types keeps status alive
+    let flagged = run_in(&ours.0, Path::new(mulch_bin()), &[
         "status",
         "--allow-unknown-types",
     ]);
-    let theirs_flag = run_in(&theirs.0, &ml, &["status", "--allow-unknown-types"]);
-    assert_eq!(ours_flag.code, theirs_flag.code);
-    assert_eq!(ours_flag.stdout, theirs_flag.stdout);
+    assert_eq!(flagged.code, 0, "{}", flagged.stderr);
+}
+
+/// Comment lines are findings for the raw-loop readers (validate) —
+/// only the strict reader skips them; a legacy singular-outcome
+/// record warns there.
+#[test]
+fn status_commented_corpus_pins_the_validate_findings() {
+    let ours = TempDir::new("stat-cmt-ours");
+    let config = format!("version: '1'\ndomains:\n  d1: {{}}\n{CONFIG_TAIL}");
+    write_seed_with_config(&ours.0, &config, &[]);
+    let commented = "# ARCHIVED — not for active use.\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"ok\",\"id\":\"mx-aaaaaa\"}\n{\"type\":\"convention\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"content\":\"legacy\",\"id\":\"mx-444444\",\"outcome\":{\"status\":\"success\"}}\n";
+    std::fs::write(ours.0.join(".mulch/expertise/d1.jsonl"), commented)
+        .expect("commented writable");
+    let validate = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    assert_eq!(validate.code, 1);
+    assert_eq!(validate.stdout, "3 records validated, 1 errors found\n");
+    assert_eq!(
+        validate.stderr,
+        "d1:1 - Invalid JSON: failed to parse\nd1:3 - Legacy \"outcome\" field (singular); run \
+         `mulch doctor --fix` to migrate to \"outcomes[]\"\n"
+    );
+    // the strict reader (status) skips comments and warns nowhere
+    let status = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(status.code, 0);
+    assert!(status.stdout.contains("d1: 2 records"));
 }
 
 /// Partial config blocks keep their set values and backfill the rest
-/// per field (the reference's withDefaults semantics). The old typed
-/// readers dropped partial blocks wholesale — this pins the effective
-/// accessors against the reference on both surfaces that render them:
-/// the status blocks and the staleness computed from them.
+/// per field (the withDefaults semantics): governance 5/150/200 and
+/// shelf 1/30 reach the renderers, and the staleness computes from
+/// the effective shelf.
 #[test]
-fn status_partial_config_blocks_backfill_per_field_like_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn status_partial_config_blocks_backfill_per_field() {
     let ours = TempDir::new("cfg-ours");
-    let theirs = TempDir::new("cfg-theirs");
     let now = jiff::Timestamp::now();
     let days_ago = |days: i64| (now - jiff::Span::new().hours(days * 24)).to_string();
     let config = "version: '1'\ndomains:\n  dev: {}\ngovernance:\n  max_entries: 5\nclassification_defaults:\n  shelf_life:\n    tactical: 1\n";
     let store = [
-        // stale under tactical: 1, fresh in the reference default of 14
+        // stale under tactical: 1, fresh in the default of 14
         format!(
             r#"{{"type":"pattern","name":"p1","description":"d","classification":"tactical","recorded_at":"{}"}}"#,
             days_ago(3)
@@ -255,56 +284,45 @@ fn status_partial_config_blocks_backfill_per_field_like_reference() {
     ]
     .join("\n")
         + "\n";
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::create_dir_all(dir.join(".mulch/expertise")).expect("expertise dir");
-        std::fs::write(dir.join(".mulch/mulch.config.yaml"), config).expect("config");
-        std::fs::write(dir.join(".mulch/expertise/dev.jsonl"), &store).expect("dev store");
-    }
+    let before = store.clone();
+    std::fs::create_dir_all(ours.0.join(".mulch/expertise")).expect("expertise dir");
+    std::fs::write(ours.0.join(".mulch/mulch.config.yaml"), config).expect("config");
+    std::fs::write(ours.0.join(".mulch/expertise/dev.jsonl"), &store).expect("dev store");
 
-    for args in [&["status", "--json"][..], &["status"][..], &["doctor"][..]] {
-        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_eq!(our.code, their.code, "rc differs for {args:?}");
-        let strip = |text: &str| -> String {
-            text.lines()
-                .filter(|line| {
-                    !is_reference_env_line(line)
-                        && !line.contains("passed,")
-                        && !line.contains("lastUpdated")
-                        && !line.contains("oldest_recorded")
-                        && !line.contains("newest_recorded")
-                        && !line.contains("oldest_timestamp")
-                        && !line.contains("newest_timestamp")
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        assert_eq!(strip(&our.stdout), strip(&their.stdout), "stdout {args:?}");
-        assert_eq!(strip(&our.stderr), strip(&their.stderr), "stderr {args:?}");
+    // json: the effective accessors render (governance 5 with the
+    // backfilled warn/hard, shelf 1/30)
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &["status", "--json"]);
+    assert_eq!(json.code, 0);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json parses");
+    assert_eq!(value["governance"]["max_entries"], json!(5));
+    assert_eq!(value["governance"]["warn_entries"], json!(150));
+    assert_eq!(value["governance"]["hard_limit"], json!(200));
+    assert_eq!(value["shelf_life"]["tactical"], json!(1));
+    assert_eq!(value["shelf_life"]["observational"], json!(30));
+    // the 3-day tactical record is stale under shelf 1
+    assert_eq!(value["domains"][0]["health"]["stale_count"], json!(1));
+
+    // plain + doctor stay healthy exits; the store is untouched
+    for args in [&["status"][..], &["doctor"][..]] {
+        let run = run_in(&ours.0, Path::new(mulch_bin()), args);
+        assert_eq!(run.code, 0, "{args:?}: {}", run.stderr);
     }
-    assert_same_file(&ours, &theirs, "expertise/dev.jsonl");
+    assert_eq!(
+        read_store_file(&ours.0, "expertise/dev.jsonl"),
+        before,
+        "read-only surfaces never rewrite"
+    );
 }
 
-// mulch-4d25 battery: the reference's status health block parses
-// recorded_at with `new Date(...)` (date-only stamps, the space
-// separator, zone-less civil time — the JS Date law) where a strict
-// ISO read returned None, and its oldest/newest selection compares
-// the RAW field strings; the probed symptom was spurious ROTTING
-// plus an off-by-a-day newest age on a fresh zone-less stamp.
+// mulch-4d25 battery: the health block parses recorded_at with the
+// JS Date law (date-only stamps, the space separator, zone-less
+// civil time) and its oldest/newest selection compares the RAW field
+// strings; the json health block pins the raw winners verbatim.
 #[test]
-fn status_non_iso_recorded_at_stamps_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    // The fresh zone-less stamp rides the runtime clock a full TWO
-    // days back (a full day inside the 14-day tactical shelf and 28
-    // inside the observational 30 — the boundary rule), rendered as
-    // civil time in the process zone exactly as both CLIs read it
-    // back; the ancient stamps sit in stable day buckets. The second
-    // domain keeps ONLY ancient non-ISO stamps, so its newest —
-    // picked by the raw-string law (space separator over date-only)
-    // — pins the rotting math on a non-ISO winner.
+fn status_non_iso_recorded_at_stamps_pin_the_raw_law() {
+    // The fresh zone-less stamp rides the runtime clock two days
+    // back, rendered as civil time in the process zone exactly as the
+    // CLI reads it back; the ancient stamps sit in stable buckets.
     let then = jiff::Timestamp::now() - jiff::Span::new().hours(48);
     let fresh_zoneless = then
         .to_zoned(jiff::tz::TimeZone::system())
@@ -335,30 +353,51 @@ fn status_non_iso_recorded_at_stamps_match_reference() {
     ]
     .join("\n")
         + "\n";
-    let (ours, theirs) = twin_seeded(
+    let ours = seeded_store(
         "noniso",
         Some(config),
         &[("dev", &dev), ("olddev", &olddev)],
         &[],
     );
 
-    // plain: byte-parity on both channels — the range, the rotting
-    // banner, and the day buckets all derive from the raw stamps
-    for args in [&["status"][..], &["--json", "status"][..]] {
-        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_eq!(our.code, their.code, "rc differs for {args:?}");
-        // JSON: the ISO ms-Z renders (lastUpdated, oldest_recorded,
-        // newest_recorded) normalize; the health block's RAW stamp
-        // strings compare verbatim on both sides.
-        let (our_out, their_out) = if args[0] == "--json" {
-            (normalize(&our.stdout), normalize(&their.stdout))
-        } else {
-            (our.stdout.clone(), their.stdout.clone())
-        };
-        assert_eq!(our_out, their_out, "stdout differs for {args:?}");
-        assert_eq!(our.stderr, their.stderr, "stderr differs for {args:?}");
-    }
+    // json: the health block's RAW stamp strings pin the winners —
+    // the date-only string is the raw oldest, the zone-less fresh
+    // civil stamp the raw newest (its ISO rendering appears in
+    // oldest/newest_recorded after date math).
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "status"]);
+    assert_eq!(json.code, 0);
+    let value: serde_json::Value = serde_json::from_str(&json.stdout).expect("json parses");
+    let dev_row = &value["domains"][0];
+    assert_eq!(dev_row["health"]["oldest_timestamp"], json!("2020-01-01"));
+    assert_eq!(
+        dev_row["health"]["newest_timestamp"],
+        serde_json::json!(fresh_zoneless)
+    );
+    let olddev_row = &value["domains"][1];
+    assert_eq!(
+        olddev_row["health"]["oldest_timestamp"],
+        json!("2020-01-01")
+    );
+    // the space separator BEATS the T separator as newest by the raw
+    // string law... in olddev it IS the newest either way
+    assert_eq!(
+        olddev_row["health"]["newest_timestamp"],
+        "2020-01-02 12:00:00Z"
+    );
+    // the ancient domain rots, the fresh-stamped one does not
+    assert_eq!(olddev_row["rotting"], json!(true));
+    assert_eq!(dev_row["rotting"], json!(false));
+
+    // plain: byte law on both channels minus the volatile ages
+    let plain = run_in(&ours.0, Path::new(mulch_bin()), &["status"]);
+    assert_eq!(plain.code, 0);
+    assert!(plain.stdout.contains("  dev: 5 records"));
+    assert!(
+        plain
+            .stdout
+            .contains("  olddev: 2 records (updated just now) — recorded ")
+    );
+    assert!(plain.stdout.contains("⚠ ROTTING"));
 }
 
 /// The raw-comparison law's DISCRIMINATOR (spec-review nit, sprint
@@ -366,16 +405,9 @@ fn status_non_iso_recorded_at_stamps_match_reference() {
 /// even though its instant is an hour LATER (the raw-string law
 /// compares `"2020-01-01 "` < `"2020-01-01T"` lexicographically —
 /// date math would pick the other record), and a NUMBER recorded_at
-/// pins both slots against every string (NaN comparisons never
-/// displace; the health block renders the number raw). The JSON
-/// channel pins both deterministically (the raw health string and
-/// the ISO-from-ms body); plain rides the twin differential.
+/// never displaces the fold's first winner (NaN comparisons).
 #[test]
-fn status_raw_compare_discriminator_and_number_stamp_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn status_raw_compare_discriminator_and_number_stamp() {
     let convention = |body: &str, at: &str, id: &str| {
         format!(
             r#"{{"type":"convention","classification":"tactical","recorded_at":{at},"content":"{body}","id":"{id}"}}"#
@@ -396,15 +428,16 @@ fn status_raw_compare_discriminator_and_number_stamp_match_reference() {
     ]
     .join("\n")
         + "\n";
-    // A number stamp is deliberately schema-invalid — it is the
-    // finding under test (status reads leniently, both sides).
+    // A number stamp is deliberately schema-invalid — status reads
+    // leniently; NaN comparisons never displace the fold winner, so
+    // the FIRST record's string holds both slots.
     let numdev = [
         convention("string first", r#""2020-01-01""#, "mx-900013"),
-        convention("number pins both", "5", "mx-900014"),
+        convention("number never displaces", "5", "mx-900014"),
     ]
     .join("\n")
         + "\n";
-    let (ours, theirs) = twin_seeded(
+    let ours = seeded_store(
         "rawcmp",
         Some(config),
         &[("rawdev", &rawdev), ("numdev", &numdev)],
@@ -412,16 +445,27 @@ fn status_raw_compare_discriminator_and_number_stamp_match_reference() {
     );
     for args in [&["status"][..], &["--json", "status"][..]] {
         let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_eq!(our.code, their.code, "rc differs for {args:?}");
-        // JSON: lastUpdated carries each process's own clock ms —
-        // normalize; the raw health stamps compare verbatim.
-        let (our_out, their_out) = if args[0] == "--json" {
-            (normalize(&our.stdout), normalize(&their.stdout))
+        assert_eq!(our.code, 0, "{args:?}: {}", our.stderr);
+        if args[0] == "--json" {
+            let value: serde_json::Value = serde_json::from_str(&our.stdout).expect("json parses");
+            let raw = &value["domains"][0];
+            // raw-string law: the SPACE stamp is oldest (space < T)
+            // even though its instant is an hour later; the T stamp
+            // is newest.
+            assert_eq!(
+                raw["health"]["oldest_timestamp"],
+                json!("2020-01-01 05:00:00Z")
+            );
+            assert_eq!(
+                raw["health"]["newest_timestamp"],
+                json!("2020-01-01T04:00:00Z")
+            );
+            let num = &value["domains"][1];
+            assert_eq!(num["health"]["oldest_timestamp"], json!("2020-01-01"));
+            assert_eq!(num["health"]["newest_timestamp"], json!("2020-01-01"));
         } else {
-            (our.stdout.clone(), their.stdout.clone())
-        };
-        assert_eq!(our_out, their_out, "stdout differs for {args:?}");
-        assert_eq!(our.stderr, their.stderr, "stderr differs for {args:?}");
+            assert!(our.stdout.contains("  rawdev: 2 records"));
+            assert!(our.stdout.contains("  numdev: 2 records"));
+        }
     }
 }

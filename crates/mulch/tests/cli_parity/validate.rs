@@ -1,70 +1,72 @@
-//! `mulch validate` + schema/parse-layer parity probes.
+//! `mulch validate` + schema/parse-layer pins (ADR-0008 edition: OUR
+//! byte pins only; literals frozen from the parity era's twin runs).
 //!
-//! Moved verbatim from the one-file battery (mulch-3e7c); sprint
-//! banners stay with their probes.
+//! The suberror table pins the full joined oneOf blob per case; the
+//! common-fields and json-doctor arms pin exit codes plus structural
+//! facts (the wording law is the same one the suberror table pins).
 
 use std::path::Path;
 
+use serde_json::json;
+
 use super::support::*;
 
-#[test]
-fn validate_clean_and_broken_match() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let ours = TempDir::new("val-ours");
-    let theirs = TempDir::new("val-theirs");
-    for dir in [&ours.0, &theirs.0] {
-        let _ = run_in(dir, &ml, &["init"]);
-        let _ = run_in(dir, &ml, &[
-            "record",
-            "dev",
-            "--type",
-            "pattern",
-            "--name",
-            "p1",
-            "--description",
-            "dp1",
-        ]);
+/// The joined-message law: plain stderr renders `domain:line - Schema
+/// validation failed:` then one indented item per line; the json
+/// envelope joins the same items with `; ` into `errors[0].message`.
+fn schema_items(domain: &str, line: usize, items: &[&str]) -> (String, String) {
+    let mut plain = format!("{domain}:{line} - Schema validation failed:\n");
+    for item in items {
+        plain.push_str("  ");
+        plain.push_str(item);
+        plain.push('\n');
     }
+    let joined = items.join("; ");
+    let message = format!("Schema validation failed: {joined}");
+    (plain, message)
+}
+
+#[test]
+fn validate_clean_and_broken_pin_their_bytes() {
+    let ours = TempDir::new("val-ours");
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &[
+        "record",
+        "dev",
+        "--type",
+        "pattern",
+        "--name",
+        "p1",
+        "--description",
+        "dp1",
+    ]);
 
     // clean
-    let ours_clean = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
-    let theirs_clean = run_in(&theirs.0, &ml, &["validate"]);
-    assert_eq!(ours_clean.code, theirs_clean.code);
-    assert_eq!(ours_clean.stdout, theirs_clean.stdout);
+    let clean = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    assert_eq!(clean.code, 0);
+    assert_eq!(clean.stderr, "");
+    assert_eq!(clean.stdout, "1 records validated, 0 errors found\n");
 
-    // broken: convention record missing --content + garbage line
-    for dir in [&ours.0, &theirs.0] {
-        let _ = run_in(dir, &ml, &[
-            "record",
-            "dev",
-            "--type",
-            "convention",
-            "--name",
-            "t1",
-            "--description",
-            "d",
-        ]);
-        let file = dir.join(".mulch/expertise/dev.jsonl");
-        let mut text = std::fs::read_to_string(&file).expect("domain file");
-        // remove the just-added invalid line? no — the reference wrote it and
-        // kept it; we only append garbage below (probe scenario B)
-        text.push_str("this line is not json\n");
-        std::fs::write(&file, text).expect("append garbage");
-    }
+    // broken: an invalid convention line the writer rejects stays off
+    // disk, appended garbage makes line 2 invalid
+    let file = ours.0.join(".mulch/expertise/dev.jsonl");
+    let mut text = std::fs::read_to_string(&file).expect("domain file");
+    text.push_str("this line is not json\n");
+    std::fs::write(&file, text).expect("append garbage");
 
-    let ours_broken = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
-    let theirs_broken = run_in(&theirs.0, &ml, &["validate"]);
-    assert_eq!(ours_broken.code, theirs_broken.code);
-    assert_eq!(ours_broken.stdout, theirs_broken.stdout);
-    assert_eq!(ours_broken.stderr, theirs_broken.stderr);
-
-    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["validate", "--json"]);
-    let theirs_json = run_in(&theirs.0, &ml, &["validate", "--json"]);
-    assert_eq!(ours_json.code, theirs_json.code);
-    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
+    let broken = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    assert_eq!(broken.code, 1);
+    assert_eq!(broken.stdout, "2 records validated, 1 errors found\n");
+    assert_eq!(broken.stderr, "dev:2 - Invalid JSON: failed to parse\n");
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &["validate", "--json"]);
+    assert_eq!(json.code, 1);
+    assert_eq!(
+        normalize(&json.stdout),
+        "{\n  \"success\": false,\n  \"command\": \"validate\",\n  \"valid\": false,\n  \
+         \"totalRecords\": 2,\n  \"totalErrors\": 1,\n  \"totalWarnings\": 0,\n  \"errors\": [\n    \
+         {\n      \"domain\": \"dev\",\n      \"line\": 2,\n      \"message\": \"Invalid JSON: \
+         failed to parse\"\n    }\n  ],\n  \"warnings\": []\n}\n"
+    );
 }
 
 #[test]
@@ -95,102 +97,94 @@ fn parse_layer_contract() {
     );
 }
 
+/// A pattern record missing its payload: the full oneOf blob, plain
+/// and json, plus the doctor detail line.
 #[test]
-fn schema_invalid_strings_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn schema_invalid_strings_pin_the_full_blob() {
     let ours = TempDir::new("schemainv-ours");
-    let theirs = TempDir::new("schemainv-theirs");
     let record = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T10:00:00.000Z\",\"name\":\"x\"}";
-    for dir in [&ours.0, &theirs.0] {
-        let _ = run_in(dir, &ml, &["init"]);
-        let file = dir.join(".mulch/expertise/dev.jsonl");
-        std::fs::write(file, format!("{record}\n")).expect("write record");
-        let cfg = dir.join(".mulch/mulch.config.yaml");
-        let text = std::fs::read_to_string(&cfg).expect("config");
-        std::fs::write(cfg, text.replace("domains: {}", "domains:\n  dev: {}"))
-            .expect("register domain");
-    }
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    std::fs::write(
+        ours.0.join(".mulch/expertise/dev.jsonl"),
+        format!("{record}\n"),
+    )
+    .expect("write record");
+    let cfg = ours.0.join(".mulch/mulch.config.yaml");
+    let text = std::fs::read_to_string(&cfg).expect("config");
+    std::fs::write(cfg, text.replace("domains: {}", "domains:\n  dev: {}"))
+        .expect("register domain");
 
-    // validate plain: summary on stdout, multi-line details on stderr
-    let ours_plain = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
-    let theirs_plain = run_in(&theirs.0, &ml, &["validate"]);
-    assert_eq!(ours_plain.code, theirs_plain.code);
-    assert_eq!(ours_plain.stdout, theirs_plain.stdout);
-    assert_eq!(ours_plain.stderr, theirs_plain.stderr);
+    let items = [
+        " must have required property 'content'",
+        " must have required property 'description'",
+        " must have required property 'description'",
+        " must have required property 'title'",
+        " must have required property 'description'",
+        " must have required property 'description'",
+        " must match exactly one schema in oneOf",
+    ];
+    let (plain_expected, message) = schema_items("dev", 1, &items);
 
-    // validate json: envelope on stdout, message strings pinned
-    let ours_json = run_in(&ours.0, Path::new(mulch_bin()), &["validate", "--json"]);
-    let theirs_json = run_in(&theirs.0, &ml, &["validate", "--json"]);
-    assert_eq!(ours_json.code, theirs_json.code);
-    assert_eq!(normalize(&ours_json.stdout), normalize(&theirs_json.stdout));
+    // validate plain: summary on stdout, details on stderr
+    let plain = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    assert_eq!(plain.code, 1);
+    assert_eq!(plain.stdout, "1 records validated, 1 errors found\n");
+    assert_eq!(plain.stderr, plain_expected);
 
-    // doctor plain: the schema-validation detail line matches modulo
-    // the upgrade check
-    let ours_doc = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
-    let theirs_doc = run_in(&theirs.0, &ml, &["doctor"]);
-    assert_eq!(ours_doc.code, theirs_doc.code);
+    // validate json: envelope on stdout
+    let json = run_in(&ours.0, Path::new(mulch_bin()), &["validate", "--json"]);
+    assert_eq!(json.code, 1);
+    assert_eq!(
+        normalize(&json.stdout),
+        format!(
+            "{{\n  \"success\": false,\n  \"command\": \"validate\",\n  \"valid\": false,\n  \
+             \"totalRecords\": 1,\n  \"totalErrors\": 1,\n  \"totalWarnings\": 0,\n  \
+             \"errors\": [\n    {{\n      \"domain\": \"dev\",\n      \"line\": 1,\n      \
+             \"message\": \"{}\"\n    }}\n  ],\n  \"warnings\": []\n}}\n",
+            message.replace('"', "\\\"")
+        )
+    );
+
+    // doctor plain: the schema-validation detail line
+    let doc = run_in(&ours.0, Path::new(mulch_bin()), &["doctor"]);
     assert!(
-        ours_doc
-            .stdout
+        doc.stdout
             .contains("must have required property 'description'")
     );
-    assert_eq!(
-        ours_doc
-            .stdout
-            .lines()
-            .filter(|l| l.contains("must have required property"))
-            .collect::<Vec<_>>(),
-        theirs_doc
-            .stdout
-            .lines()
-            .filter(|l| l.contains("must have required property"))
-            .collect::<Vec<_>>()
-    );
 }
 
+/// Blank lines keep physical line numbers: findings at lines 3 and 4,
+/// not 2 and 3.
 #[test]
 fn blank_lines_keep_physical_line_numbers() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
     let ours = TempDir::new("blank-ours");
-    let theirs = TempDir::new("blank-theirs");
     let valid = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T10:00:00.000Z\",\"name\":\"p\",\"description\":\"d\"}";
     let invalid = "{\"type\":\"pattern\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T10:00:00.000Z\",\"name\":\"x\"}";
-    for dir in [&ours.0, &theirs.0] {
-        let _ = run_in(dir, &ml, &["init"]);
-        let file = dir.join(".mulch/expertise/dev.jsonl");
-        std::fs::write(file, format!("\n{valid}\n{invalid}\nnot json\n")).expect("write lines");
-        let cfg = dir.join(".mulch/mulch.config.yaml");
-        let text = std::fs::read_to_string(&cfg).expect("config");
-        std::fs::write(cfg, text.replace("domains: {}", "domains:\n  dev: {}"))
-            .expect("register domain");
-    }
+    let _ = run_in(&ours.0, Path::new(mulch_bin()), &["init"]);
+    std::fs::write(
+        ours.0.join(".mulch/expertise/dev.jsonl"),
+        format!("\n{valid}\n{invalid}\nnot json\n"),
+    )
+    .expect("write lines");
+    let cfg = ours.0.join(".mulch/mulch.config.yaml");
+    let text = std::fs::read_to_string(&cfg).expect("config");
+    std::fs::write(cfg, text.replace("domains: {}", "domains:\n  dev: {}"))
+        .expect("register domain");
 
-    let ours_run = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
-    let theirs_run = run_in(&theirs.0, &ml, &["validate"]);
-    assert_eq!(ours_run.code, theirs_run.code);
-    assert_eq!(ours_run.stdout, theirs_run.stdout);
-    assert_eq!(ours_run.stderr, theirs_run.stderr);
+    let run = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
+    assert_eq!(run.code, 1);
+    assert_eq!(run.stdout, "3 records validated, 2 errors found\n");
     // physical addressing: findings at lines 3 and 4, not 2 and 3
+    assert!(run.stderr.contains("dev:3 - Schema validation failed:"));
+    assert!(run.stderr.contains("dev:4 - Invalid JSON"));
     assert!(
-        ours_run
-            .stderr
-            .contains("dev:3 - Schema validation failed:")
+        run.stderr
+            .ends_with("dev:4 - Invalid JSON: failed to parse\n")
     );
-    assert!(ours_run.stderr.contains("dev:4 - Invalid JSON"));
 }
 
 #[test]
-fn unknown_record_type_errors_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn unknown_record_type_errors_pin_the_registry_text() {
     let seed = format!("{ALPHA_ONE}\n{UNKNOWN_TYPE_LINE}\n");
     let expected = "Error: Unknown record type \"zzzcustom\" at <DIR>/.mulch/expertise/alpha.jsonl:2 (id=mx-zzz111). Register it under custom_types in mulch.config.yaml, remove the record, or pass --allow-unknown-types to bypass.\n";
     let commands: [&[&str]; 3] = [
@@ -199,7 +193,7 @@ fn unknown_record_type_errors_match_reference() {
         &["move", "alpha", "mx-1bb21d", "beta"],
     ];
     for (index, args) in commands.iter().enumerate() {
-        let (ours, theirs) = twin_seeded(
+        let ours = seeded_store(
             &format!("unk{index}"),
             None,
             &[
@@ -209,47 +203,60 @@ fn unknown_record_type_errors_match_reference() {
             &[],
         );
         let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
         assert_eq!(our.code, 1, "{args:?} aborts");
         assert_eq!(our.stdout, "", "{args:?} nothing on stdout");
-        assert_same_stderr(&ours, &our, &theirs, &their, expected);
+        assert_eq!(normalize_dir(&our.stderr, &ours.0), expected, "our stderr");
         assert_eq!(read_store_file(&ours.0, "expertise/alpha.jsonl"), seed);
-        assert_eq!(read_store_file(&theirs.0, "expertise/alpha.jsonl"), seed);
     }
 
     // Without an id the `(id=…)` part is omitted.
     let id_less = "{\"type\":\"zzzcustom\",\"name\":\"Odd\"}";
     let expected = "Error: Unknown record type \"zzzcustom\" at <DIR>/.mulch/expertise/alpha.jsonl:1. Register it under custom_types in mulch.config.yaml, remove the record, or pass --allow-unknown-types to bypass.\n";
-    let (ours, theirs) = twin_seeded("unknoid", None, &[("alpha", id_less)], &[]);
+    let ours = seeded_store("unknoid", None, &[("alpha", id_less)], &[]);
     let args = ["delete", "alpha", "mx-1bb21d"];
     let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
-    let their = run_in(&theirs.0, &ml, &args);
     assert_eq!(our.code, 1);
-    assert_same_stderr(&ours, &our, &theirs, &their, expected);
+    assert_eq!(normalize_dir(&our.stderr, &ours.0), expected, "our stderr");
 
     // `--allow-unknown-types` reads through the unknown line; a KNOWN
-    // record can then be removed while the unknown record survives.
-    for (index, args) in [
-        &["delete", "alpha", "mx-1bb21d", "--allow-unknown-types"] as &[&str],
-        &[
-            "move",
-            "alpha",
-            "mx-1bb21d",
-            "beta",
-            "--allow-unknown-types",
-        ],
-        &[
-            "delete",
-            "alpha",
-            "--all-except",
-            "mx-zzz111",
-            "--allow-unknown-types",
-        ],
+    // record can then be removed / moved while the unknown record
+    // survives (stores and messages frozen).
+    for (index, (args, stdout, alpha_after, beta_after)) in [
+        (
+            &["delete", "alpha", "mx-1bb21d", "--allow-unknown-types"] as &[&str],
+            "✓ Deleted pattern mx-1bb21d from alpha: Alpha One\n",
+            format!("{UNKNOWN_TYPE_LINE}\n"),
+            format!("{BETA_ONE_LINE}\n"),
+        ),
+        (
+            &[
+                "move",
+                "alpha",
+                "mx-1bb21d",
+                "beta",
+                "--allow-unknown-types",
+            ],
+            "✓ Moved pattern mx-1bb21d from alpha → beta: Alpha One\n",
+            format!("{UNKNOWN_TYPE_LINE}\n"),
+            format!("{BETA_ONE_LINE}\n{ALPHA_ONE}\n"),
+        ),
+        (
+            &[
+                "delete",
+                "alpha",
+                "--all-except",
+                "mx-zzz111",
+                "--allow-unknown-types",
+            ],
+            "Deleted pattern mx-1bb21d from alpha: Alpha One\n",
+            format!("{UNKNOWN_TYPE_LINE}\n"),
+            format!("{BETA_ONE_LINE}\n"),
+        ),
     ]
     .into_iter()
     .enumerate()
     {
-        let (ours, theirs) = twin_seeded(
+        let ours = seeded_store(
             &format!("unkallow{index}"),
             None,
             &[
@@ -259,23 +266,22 @@ fn unknown_record_type_errors_match_reference() {
             &[],
         );
         let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, &ml, args);
-        assert_eq!(our.code, their.code, "{args:?} exit");
-        assert_eq!(our.stdout, their.stdout, "{args:?} stdout");
-        assert_eq!(our.stderr, their.stderr, "{args:?} stderr");
-        assert_same_file(&ours, &theirs, "expertise/alpha.jsonl");
-        assert_same_file(&ours, &theirs, "expertise/beta.jsonl");
+        assert_eq!(our.code, 0, "{args:?}: {}", our.stderr);
+        assert_eq!(our.stdout, stdout, "{args:?}");
+        assert_eq!(
+            read_store_file(&ours.0, "expertise/alpha.jsonl"),
+            alpha_after
+        );
+        assert_eq!(read_store_file(&ours.0, "expertise/beta.jsonl"), beta_after);
     }
 }
 
+/// Missing common fields fail every surface (hand-written stores: the
+/// `record` fixture would always carry classification + recorded_at).
+/// The wording law is the suberror table's; these pin the codes, the
+/// doctor failure line, and the batch enrichment behavior.
 #[test]
-fn required_common_fields_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    // Hand-written stores (the `ml record` fixture would always carry
-    // classification + recorded_at, which hid this gap for 9 sprints).
+fn required_common_fields_fail_every_surface() {
     let stores: [(&str, &str); 4] = [
         (
             "missing-both",
@@ -295,10 +301,7 @@ fn required_common_fields_match_reference() {
         ),
     ];
     for (index, (tag, corpus)) in stores.iter().enumerate() {
-        // Plain `doctor` also runs the network update check (a known
-        // deviation), so it is compared by exit code only; the json
-        // shape is byte-comparable.
-        let (ours, theirs) = twin_seeded(&format!("req{index}"), None, &[("alpha", *corpus)], &[]);
+        let ours = seeded_store(&format!("req{index}"), None, &[("alpha", *corpus)], &[]);
         for args in [
             &["validate"] as &[&str],
             &["--json", "validate"],
@@ -306,151 +309,134 @@ fn required_common_fields_match_reference() {
             &["doctor"],
         ] {
             let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-            let their = run_in(&theirs.0, &ml, args);
-            assert_eq!(our.code, their.code, "{tag} {args:?} exit code");
-            assert_eq!(our.code, 1, "{tag} {args:?} must fail like the reference");
+            assert_eq!(our.code, 1, "{tag} {args:?} must fail");
             if args.contains(&"doctor") && !args.contains(&"--json") {
-                // doctor also runs the network update check (known
-                // deviation): compare only the failure line
                 assert!(
                     our.stdout.contains("failed schema validation"),
                     "{tag} plain doctor reports the failure"
                 );
             } else if args.contains(&"doctor") {
-                // json doctor: compare the schema-validation check and
-                // the fail count (the upgrade check is network-bound)
-                let ours_json: serde_json::Value =
-                    serde_json::from_str(&our.stdout).expect("our json");
-                let theirs_json: serde_json::Value =
-                    serde_json::from_str(&their.stdout).expect("their json");
-                let pick = |value: &serde_json::Value| {
-                    value["checks"]
-                        .as_array()
-                        .expect("checks")
-                        .iter()
-                        .find(|check| check["name"] == "schema-validation")
-                        .cloned()
-                        .expect("schema-validation check")
-                };
-                assert_eq!(
-                    pick(&ours_json),
-                    pick(&theirs_json),
-                    "{tag} schema-validation check"
-                );
-                assert_eq!(
-                    ours_json["summary"]["fail"], theirs_json["summary"]["fail"],
-                    "{tag} fail count"
-                );
+                // json doctor: the schema-validation check fails
+                let value: serde_json::Value = serde_json::from_str(&our.stdout).expect("our json");
+                let check = value["checks"]
+                    .as_array()
+                    .expect("checks")
+                    .iter()
+                    .find(|check| check["name"] == "schema-validation")
+                    .expect("schema-validation check");
+                assert_eq!(check["status"], json!("fail"), "{tag}");
+                assert!(value["summary"]["fail"].as_u64().unwrap_or(0) >= 1, "{tag}");
+            } else if args.contains(&"--json") {
+                let value: serde_json::Value = serde_json::from_str(&our.stdout).expect("our json");
+                assert_eq!(value["valid"], json!(false), "{tag}");
+                assert_eq!(value["totalErrors"], json!(1), "{tag}");
             } else {
-                assert_eq!(
-                    normalize_dir(&our.stdout, &ours.0),
-                    normalize_dir(&their.stdout, &theirs.0),
-                    "{tag} {args:?} stdout"
-                );
-                // plain validate renders the details on STDERR — the
-                // gap that hid the const-mix spacing regression
-                assert_eq!(
-                    normalize_dir(&our.stderr, &ours.0),
-                    normalize_dir(&their.stderr, &theirs.0),
-                    "{tag} {args:?} stderr"
+                assert!(
+                    our.stderr.contains("alpha:1 - Schema validation failed:"),
+                    "{tag} plain validate details: {}",
+                    our.stderr
                 );
             }
         }
     }
 
     // A batch record without the common fields is ENRICHED before
-    // validation (reference `processStdinRecords`), so it is accepted.
+    // validation, so it is accepted.
     let batch = "[{\"type\":\"guide\",\"name\":\"g\",\"description\":\"gd\"}]";
-    let (ours, theirs) = twin_seeded("reqbatch", None, &[("alpha", "")], &[]);
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(dir.join("batch.json"), batch).expect("batch file");
-    }
+    let ours = seeded_store("reqbatch", None, &[("alpha", "")], &[]);
+    std::fs::write(ours.0.join("batch.json"), batch).expect("batch file");
     let args = ["record", "alpha", "--batch", "batch.json", "--json"];
     let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
-    let their = run_in(&theirs.0, &ml, &args);
-    assert_eq!(our.code, their.code);
-    assert_eq!(normalize(&our.stdout), normalize(&their.stdout));
-    let ours_store = read_store_file(&ours.0, "expertise/alpha.jsonl");
-    let theirs_store = read_store_file(&theirs.0, "expertise/alpha.jsonl");
-    assert_eq!(normalize_line(&ours_store), normalize_line(&theirs_store));
+    assert_eq!(our.code, 0, "{}", our.stderr);
+    let store = read_store_file(&ours.0, "expertise/alpha.jsonl");
     assert!(
-        ours_store.contains("\"classification\":\"tactical\""),
-        "batch enrichment fills classification: {ours_store}"
+        store.contains("\"classification\":\"tactical\""),
+        "batch enrichment fills classification: {store}"
     );
 
     // an explicit recorded_at/classification survive the enrichment
-    // (`if (!("recorded_at" in record))` — the values must not be
-    // overwritten; timestamps are masked by normalize, so assert the
-    // literal string survives on BOTH sides)
     let fixed = "2019-01-02T03:04:05.678Z";
     let batch_kept = format!(
         "[{{\"type\":\"guide\",\"name\":\"g2\",\"description\":\"gd2\",\"recorded_at\":\"{fixed}\",\"classification\":\"foundational\"}}]"
     );
-    let (ours, theirs) = twin_seeded("reqbatch2", None, &[("alpha", "")], &[]);
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(dir.join("batch.json"), &batch_kept).expect("batch file");
-    }
+    let ours = seeded_store("reqbatch2", None, &[("alpha", "")], &[]);
+    std::fs::write(ours.0.join("batch.json"), &batch_kept).expect("batch file");
     let args = ["record", "alpha", "--batch", "batch.json", "--json"];
     let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
-    let their = run_in(&theirs.0, &ml, &args);
-    assert_eq!(our.code, their.code);
-    assert_eq!(normalize(&our.stdout), normalize(&their.stdout));
-    let ours_store = read_store_file(&ours.0, "expertise/alpha.jsonl");
-    let theirs_store = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+    assert_eq!(our.code, 0, "{}", our.stderr);
+    let store = read_store_file(&ours.0, "expertise/alpha.jsonl");
     assert!(
-        ours_store.contains(fixed),
-        "our enrichment must keep the explicit recorded_at: {ours_store}"
+        store.contains(fixed),
+        "enrichment must keep the explicit recorded_at: {store}"
     );
     assert!(
-        theirs_store.contains(fixed),
-        "reference keeps the explicit recorded_at: {theirs_store}"
+        store.contains("\"classification\":\"foundational\""),
+        "enrichment must keep the explicit classification: {store}"
     );
-    assert!(
-        ours_store.contains("\"classification\":\"foundational\""),
-        "our enrichment must keep the explicit classification: {ours_store}"
-    );
-    assert_eq!(normalize_line(&ours_store), normalize_line(&theirs_store));
 
-    // Batch FAILURE surfaces: the entry carries the sub-errors without
-    // a prefix, a type hint only for registered types, and non-object
-    // items read `must be object`.
+    // Batch FAILURE surfaces: the entry carries the sub-errors
+    // without a prefix, a type hint only for registered types, and
+    // non-object items read `must be object` (frozen).
     let failing = [
-        ("notype", "[{\"name\":\"n\",\"description\":\"d\"}]"),
-        ("typed", "[{\"type\":\"pattern\",\"name\":\"n\"}]"),
-        ("notobj", "[\"oops\"]"),
+        (
+            "notype",
+            "[{\"name\":\"n\",\"description\":\"d\"}]",
+            concat!(
+                "Validation errors:\n",
+                "  Record 0:  must have required property 'type';  must have required property \
+                 'type';  must have required property 'type';  must have required property \
+                 'type';  must have required property 'type';  must have required property \
+                 'type';  must match exactly one schema in oneOf\n",
+            ),
+        ),
+        (
+            "typed",
+            "[{\"type\":\"pattern\",\"name\":\"n\"}]",
+            concat!(
+                "Validation errors:\n",
+                "  Record 0:  must have required property 'content';  must have required \
+                 property 'description';  must have required property 'description';  must \
+                 have required property 'title';  must have required property 'description';  \
+                 must have required property 'description';  must match exactly one schema in \
+                 oneOf. Hint: pattern records require: name, description\n",
+            ),
+        ),
+        (
+            "notobj",
+            "[\"oops\"]",
+            "Validation errors:\n  Record 0:  must be object\n",
+        ),
     ];
-    for (index, (tag, batch)) in failing.iter().enumerate() {
-        let (ours, theirs) = twin_seeded(&format!("reqfail{index}"), None, &[("alpha", "")], &[]);
-        for dir in [&ours.0, &theirs.0] {
-            std::fs::write(dir.join("batch.json"), batch).expect("batch file");
-        }
-        for args in [&["record", "alpha", "--batch", "batch.json"] as &[&str], &[
+    for (index, (tag, batch, expected)) in failing.iter().enumerate() {
+        let ours = seeded_store(&format!("reqfail{index}"), None, &[("alpha", "")], &[]);
+        std::fs::write(ours.0.join("batch.json"), batch).expect("batch file");
+        let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+            "record",
+            "alpha",
+            "--batch",
+            "batch.json",
+        ]);
+        assert_eq!(our.code, 1, "{tag}");
+        assert_eq!(our.stderr, *expected, "{tag}");
+        let json = run_in(&ours.0, Path::new(mulch_bin()), &[
             "--json",
             "record",
             "alpha",
             "--batch",
             "batch.json",
-        ]] {
-            let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-            let their = run_in(&theirs.0, &ml, args);
-            assert_eq!(our.code, their.code, "{tag} {args:?} exit");
-            assert_eq!(
-                normalize_dir(&our.stdout, &ours.0),
-                normalize_dir(&their.stdout, &theirs.0),
-                "{tag} {args:?} stdout"
-            );
-            assert_eq!(
-                normalize_dir(&our.stderr, &ours.0),
-                normalize_dir(&their.stderr, &theirs.0),
-                "{tag} {args:?} stderr"
-            );
-        }
+        ]);
+        assert_eq!(json.code, 1, "{tag}");
+        assert!(
+            json.stderr.contains("Validation errors: Record 0:"),
+            "{tag}: {}",
+            json.stderr
+        );
     }
 
     // `--files` on a type that does not declare it is DROPPED (the
-    // reference collects required ∪ optional fields only)
+    // writer collects required ∪ optional fields only)
     for (index, kind) in ["guide", "failure", "decision"].iter().enumerate() {
-        let (ours, theirs) = twin_seeded(&format!("b8cafiles{index}"), None, &[("alpha", "")], &[]);
+        let ours = seeded_store(&format!("b8cafiles{index}"), None, &[("alpha", "")], &[]);
         let payload = match *kind {
             "guide" => vec!["guide", "--name", "g", "--description", "d"],
             "failure" => vec!["failure", "--description", "d", "--resolution", "r"],
@@ -460,22 +446,17 @@ fn required_common_fields_match_reference() {
         args.extend(payload);
         args.extend(["--files", "a.ts"]);
         let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
-        let their = run_in(&theirs.0, &ml, &args);
-        assert_eq!(our.code, their.code, "{kind} --files exit");
         assert_eq!(our.code, 0, "{kind} --files must succeed");
-        assert_eq!(our.stdout, their.stdout, "{kind} --files stdout");
-        let ours_store = read_store_file(&ours.0, "expertise/alpha.jsonl");
-        let theirs_store = read_store_file(&theirs.0, "expertise/alpha.jsonl");
+        let store = read_store_file(&ours.0, "expertise/alpha.jsonl");
         assert!(
-            !ours_store.contains("files"),
-            "{kind} must drop --files: {ours_store}"
+            !store.contains("files"),
+            "{kind} must drop --files: {store}"
         );
-        assert_eq!(normalize_line(&ours_store), normalize_line(&theirs_store));
     }
 
     // Flag-path json failure: the envelope carries the validate-style
     // text (not the plain rendering).
-    let (ours, theirs) = twin_seeded("reqflagjson", None, &[("alpha", "")], &[]);
+    let ours = seeded_store("reqflagjson", None, &[("alpha", "")], &[]);
     let args = [
         "--json",
         "record",
@@ -490,82 +471,154 @@ fn required_common_fields_match_reference() {
         "bogus",
     ];
     let our = run_in(&ours.0, Path::new(mulch_bin()), &args);
-    let their = run_in(&theirs.0, &ml, &args);
-    assert_eq!(our.code, their.code);
-    assert_eq!(our.stderr, their.stderr, "flag-path json envelope");
+    assert_eq!(our.code, 1);
+    assert!(
+        normalize(&our.stderr).contains("/relates_to/0 must match pattern"),
+        "{}",
+        our.stderr
+    );
 }
 
 // ---- sprint 14 (mulch-b8ca): full subschema model ----
 
+/// The full subschema table: each case's joined oneOf blob, frozen.
 #[test]
-fn schema_suberrors_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    // Each case was probe-fitted against ml 0.10.7: the branch reports
-    // its FIRST failure in required -> additionalProperties ->
-    // properties(declaration order) order.
-    let cases: [(&str, &str); 9] = [
+fn schema_suberrors_pin_the_full_blobs() {
+    let cases: [(&str, &str, [&str; 7]); 9] = [
         (
             "additional",
             "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"bogus\":1}\n",
+            [
+                " must have required property 'content'",
+                " must NOT have additional properties",
+                " must have required property 'resolution'",
+                " must have required property 'title'",
+                " must NOT have additional properties",
+                " must NOT have additional properties",
+                " must match exactly one schema in oneOf",
+            ],
         ),
         (
             "files-on-guide",
             "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"files\":[]}\n",
+            [
+                " must have required property 'content'",
+                "/type must be equal to constant",
+                " must have required property 'resolution'",
+                " must have required property 'title'",
+                "/type must be equal to constant",
+                " must NOT have additional properties",
+                " must match exactly one schema in oneOf",
+            ],
         ),
         (
             "classification-enum",
             "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"weird\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\"}\n",
+            [
+                " must have required property 'content'",
+                "/classification must be equal to one of the allowed values",
+                " must have required property 'resolution'",
+                " must have required property 'title'",
+                "/classification must be equal to one of the allowed values",
+                "/classification must be equal to one of the allowed values",
+                " must match exactly one schema in oneOf",
+            ],
         ),
         (
             "description-type",
             "{\"type\":\"guide\",\"name\":\"g\",\"description\":123,\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\"}\n",
+            [
+                " must have required property 'content'",
+                "/type must be equal to constant",
+                " must have required property 'resolution'",
+                " must have required property 'title'",
+                "/type must be equal to constant",
+                "/description must be string",
+                " must match exactly one schema in oneOf",
+            ],
         ),
         (
             "name-null",
             "{\"type\":\"guide\",\"name\":null,\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\"}\n",
+            [
+                " must have required property 'content'",
+                "/type must be equal to constant",
+                " must have required property 'resolution'",
+                " must have required property 'title'",
+                "/type must be equal to constant",
+                "/name must be string",
+                " must match exactly one schema in oneOf",
+            ],
         ),
         (
             "id-pattern",
             "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"id\":\"XX-bad\"}\n",
+            [
+                " must have required property 'content'",
+                "/id must match pattern \"^mx-[0-9a-f]{4,8}$\"",
+                " must have required property 'resolution'",
+                " must have required property 'title'",
+                "/id must match pattern \"^mx-[0-9a-f]{4,8}$\"",
+                "/id must match pattern \"^mx-[0-9a-f]{4,8}$\"",
+                " must match exactly one schema in oneOf",
+            ],
         ),
         (
             "tags-type",
             "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"tags\":\"nope\"}\n",
+            [
+                " must have required property 'content'",
+                "/tags must be array",
+                " must have required property 'resolution'",
+                " must have required property 'title'",
+                "/tags must be array",
+                "/tags must be array",
+                " must match exactly one schema in oneOf",
+            ],
         ),
         (
             "relates-to-item",
             "{\"type\":\"pattern\",\"name\":\"p\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"relates_to\":[\"ok:mx-abcd12\",\"bad\"]}\n",
+            [
+                " must have required property 'content'",
+                "/relates_to/1 must match pattern \"^([a-z0-9-]+:)?mx-[0-9a-f]{4,8}$\"",
+                " must have required property 'resolution'",
+                " must have required property 'title'",
+                "/relates_to/1 must match pattern \"^([a-z0-9-]+:)?mx-[0-9a-f]{4,8}$\"",
+                "/relates_to/1 must match pattern \"^([a-z0-9-]+:)?mx-[0-9a-f]{4,8}$\"",
+                " must match exactly one schema in oneOf",
+            ],
         ),
         (
             "status-enum",
             "{\"type\":\"guide\",\"name\":\"g\",\"description\":\"d\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-04T08:00:00.000Z\",\"status\":\"weird\"}\n",
+            [
+                " must have required property 'content'",
+                "/status must be equal to one of the allowed values",
+                " must have required property 'resolution'",
+                " must have required property 'title'",
+                "/status must be equal to one of the allowed values",
+                "/status must be equal to one of the allowed values",
+                " must match exactly one schema in oneOf",
+            ],
         ),
     ];
-    for (index, (tag, corpus)) in cases.iter().enumerate() {
+    for (index, (tag, corpus, items)) in cases.iter().enumerate() {
+        let (plain_expected, message) = schema_items("d", 1, items);
         for args in [&["validate"] as &[&str], &["--json", "validate"]] {
-            let (ours, theirs) = twin_seeded(&format!("b8ca{index}"), None, &[("d", *corpus)], &[]);
+            let ours = seeded_store(&format!("b8ca{index}"), None, &[("d", corpus)], &[]);
             let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-            let their = run_in(&theirs.0, &ml, args);
-            assert_eq!(our.code, their.code, "{tag} {args:?} exit");
-            assert_eq!(our.code, 1, "{tag} {args:?} must fail like the reference");
-            assert_eq!(
-                normalize_dir(&our.stdout, &ours.0),
-                normalize_dir(&their.stdout, &theirs.0),
-                "{tag} {args:?} stdout"
-            );
-            assert_eq!(
-                normalize_dir(&our.stderr, &ours.0),
-                normalize_dir(&their.stderr, &theirs.0),
-                "{tag} {args:?} stderr"
-            );
+            assert_eq!(our.code, 1, "{tag} {args:?} must fail");
+            if args[0] == "--json" {
+                let value: serde_json::Value = serde_json::from_str(&our.stdout).expect("json");
+                assert_eq!(value["errors"][0]["message"], json!(message), "{tag}");
+            } else {
+                assert_eq!(our.stdout, "1 records validated, 1 errors found\n", "{tag}");
+                assert_eq!(our.stderr, plain_expected, "{tag}");
+            }
         }
     }
 }
-
-// ---- sprint 11 (mulch-ca49): batch summary surfaces + compact rewrite ----
 
 // ---- sprint 36 (mulch-230b): unknown-type validate surfaces ----
 
@@ -584,20 +637,12 @@ const UNK_TYPES_CORPUS: &str = concat!(
 );
 
 #[test]
-fn validate_unknown_type_message_and_id_corners_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("unk230v", None, &[("dev", UNK_TYPES_CORPUS)], &[]);
+fn validate_unknown_type_message_and_id_corners() {
+    let ours = seeded_store("unk230v", None, &[("dev", UNK_TYPES_CORPUS)], &[]);
 
     // plain: summary on stdout, the targeted details on stderr, rc 1
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
-    let their = run_in(&theirs.0, &ml, &["validate"]);
-    assert_eq!(our.code, their.code, "plain exit");
     assert_eq!(our.code, 1, "unknown types fail validate");
-    assert_eq!(our.stdout, their.stdout, "plain stdout");
-    assert_eq!(our.stderr, their.stderr, "plain stderr");
     // the law itself: string id carries (id=…), the empty string
     // carries (id=), a missing id carries no part
     assert_eq!(
@@ -612,35 +657,29 @@ fn validate_unknown_type_message_and_id_corners_match_reference() {
 
     // json: the envelope carries the same messages in errors[]
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "validate"]);
-    let their = run_in(&theirs.0, &ml, &["--json", "validate"]);
-    assert_eq!(our.code, their.code, "json exit");
     assert_eq!(our.code, 1, "json envelope fails");
+    let value: serde_json::Value = serde_json::from_str(&our.stdout).expect("json");
+    assert_eq!(value["totalErrors"], json!(3));
+    assert_eq!(value["totalRecords"], json!(4));
     assert_eq!(
-        normalize(&our.stdout),
-        normalize(&their.stdout),
-        "json envelope"
+        value["errors"][0]["message"],
+        "Unknown record type \"zzzcustom\" (id=mx-bbbb02). Register it under custom_types in \
+         mulch.config.yaml or remove the record."
     );
 }
 
 #[test]
 fn validate_allow_unknown_types_skips_unknown_records_entirely() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_seeded("unk230a", None, &[("dev", UNK_TYPES_CORPUS)], &[]);
+    let ours = seeded_store("unk230a", None, &[("dev", UNK_TYPES_CORPUS)], &[]);
 
     // plain: rc 0, records still counted, zero errors, nothing on stderr
     let our = run_in(&ours.0, Path::new(mulch_bin()), &[
         "validate",
         "--allow-unknown-types",
     ]);
-    let their = run_in(&theirs.0, &ml, &["validate", "--allow-unknown-types"]);
-    assert_eq!(our.code, their.code, "plain exit");
     assert_eq!(our.code, 0, "the flag reads through unknown types");
-    assert_eq!(our.stdout, their.stdout, "plain stdout");
     assert_eq!(our.stdout, "4 records validated, 0 errors found\n");
-    assert_eq!(our.stderr, their.stderr, "plain stderr");
+    assert_eq!(our.stderr, "");
 
     // json: the success envelope, empty errors array
     let our = run_in(&ours.0, Path::new(mulch_bin()), &[
@@ -648,42 +687,26 @@ fn validate_allow_unknown_types_skips_unknown_records_entirely() {
         "validate",
         "--allow-unknown-types",
     ]);
-    let their = run_in(&theirs.0, &ml, &[
-        "--json",
-        "validate",
-        "--allow-unknown-types",
-    ]);
-    assert_eq!(our.code, their.code, "json exit");
     assert_eq!(our.code, 0, "json envelope succeeds");
-    assert_eq!(
-        normalize(&our.stdout),
-        normalize(&their.stdout),
-        "json envelope"
-    );
+    let value: serde_json::Value = serde_json::from_str(&our.stdout).expect("json");
+    assert_eq!(value["valid"], json!(true));
+    assert_eq!(value["errors"], serde_json::json!([]));
 }
 
 #[test]
 fn validate_unknown_record_with_legacy_outcome_reports_only_unknown() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    // The unknown check runs FIRST and continues (reference
-    // validate.ts): a legacy singular outcome on an unknown-type
-    // record never reaches the legacy warning.
+    // The unknown check runs FIRST and continues: a legacy singular
+    // outcome on an unknown-type record never reaches the legacy
+    // warning.
     let corpus = concat!(
         r#"{"type":"wtf","content":"x","outcome":{"status":"success"}}"#,
         '\n',
         r#"{"type":"pattern","name":"ok","description":"d","classification":"foundational","recorded_at":"2020-01-01T00:00:00Z"}"#,
         '\n',
     );
-    let (ours, theirs) = twin_seeded("unk230l", None, &[("dev", corpus)], &[]);
+    let ours = seeded_store("unk230l", None, &[("dev", corpus)], &[]);
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["validate"]);
-    let their = run_in(&theirs.0, &ml, &["validate"]);
-    assert_eq!(our.code, their.code, "exit");
     assert_eq!(our.code, 1, "the unknown record still errors");
-    assert_eq!(our.stdout, their.stdout, "stdout");
-    assert_eq!(our.stderr, their.stderr, "stderr");
     assert_eq!(
         our.stderr,
         "dev:1 - Unknown record type \"wtf\". Register it under custom_types in mulch.config.yaml or remove the record.\n",

@@ -1,15 +1,16 @@
-//! Differential battery for `mulch learn` (mulch-16da): twin GIT
-//! repos with mirrored stores and commits — ours vs the reference
-//! `ml` — across the changed-file mixes (committed/staged/unstaged,
+//! Battery for `mulch learn` (mulch-16da) — OUR byte pins
+//! (ADR-0008: the differential battery is dissolved; our bytes are
+//! the regression memory): a GIT repo with a store and commits —
+//! across the changed-file mixes (committed/staged/unstaged,
 //! untracked never appears), --since variants, the suggestion sort,
 //! and the no-git / no-store / no-changes / strict-read surfaces.
 //! Probed live 2026-10-23 (/tmp/opencode/childC).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::support::{
-    TempDir, error_envelope, mulch_bin, normalize_dir, reference_ml, run_in, twin_seeded,
+    TempDir, error_envelope, mulch_bin, normalize_dir, run_in, seeded_store, write_seed_with_config,
 };
 
 /// The matching fixture: zeta owns `src/a.rs` (one file), mid owns
@@ -43,63 +44,33 @@ fn run_git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// Twin git repos with a mirrored seed store committed as the first
-/// commit: `git diff HEAD~1` fails (first commit), staged/unstaged
-/// still collect.
-fn twin_git(tag: &str, config: Option<&str>, domains: &[(&str, &str)]) -> (TempDir, TempDir) {
-    let (ours, theirs) = twin_seeded(tag, config, domains, &[]);
-    for dir in [&ours.0, &theirs.0] {
-        run_git(dir, &["init", "-q"]);
-        run_git(dir, &["config", "user.email", "t@example.io"]);
-        run_git(dir, &["config", "user.name", "Twin"]);
-        run_git(dir, &["add", "-A"]);
-        run_git(dir, &["commit", "-qm", "c0"]);
+/// A git repo with the seed store committed as the first commit:
+/// `git diff HEAD~1` fails (first commit), staged/unstaged still
+/// collect. The TempDir guard rides along.
+fn git_repo(tag: &str, config: Option<&str>, domains: &[(&str, &str)]) -> (TempDir, PathBuf) {
+    let ours = seeded_store(tag, config, domains, &[]);
+    run_git(&ours.0, &["init", "-q"]);
+    run_git(&ours.0, &["config", "user.email", "t@example.io"]);
+    run_git(&ours.0, &["config", "user.name", "Twin"]);
+    run_git(&ours.0, &["add", "-A"]);
+    run_git(&ours.0, &["commit", "-qm", "c0"]);
+    let path = ours.0.clone();
+    (ours, path)
+}
+
+/// Commits the current tree.
+fn commit(dir: &Path, message: &str) {
+    run_git(dir, &["add", "-A"]);
+    run_git(dir, &["commit", "-qm", message]);
+}
+
+/// Writes file bytes into the repo.
+fn write_file(dir: &Path, relative: &str, body: &str) {
+    let path = dir.join(relative);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("dirs");
     }
-    (ours, theirs)
-}
-
-/// Commits files in BOTH twins (content mirrored).
-fn twin_commit(dirs: [&TempDir; 2], message: &str) {
-    for dir in dirs {
-        run_git(&dir.0, &["add", "-A"]);
-        run_git(&dir.0, &["commit", "-qm", message]);
-    }
-}
-
-/// Writes the same file bytes in both twins.
-fn twin_write(dirs: [&TempDir; 2], relative: &str, body: &str) {
-    for dir in dirs {
-        let path = dir.0.join(relative);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).expect("dirs");
-        }
-        std::fs::write(path, body).expect("write");
-    }
-}
-
-/// Our record hint names THIS binary (promote law, user directive
-/// 2026-10-13); byte comparisons normalize the name (the hint line
-/// carries no backticks — plain `mulch record` → `ml record`).
-fn promote_ours(text: &str) -> String {
-    text.replace("mulch record", "ml record")
-}
-
-/// Runs `learn` in both twins and asserts channel-split byte equality
-/// (our stdout promoted back to the reference's binary name).
-fn assert_learn_parity(ml: &Path, ours: &TempDir, theirs: &TempDir, args: &[&str]) {
-    let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-    let their = run_in(&theirs.0, ml, args);
-    assert_eq!(our.code, their.code, "{args:?} exit code");
-    assert_eq!(
-        promote_ours(&our.stdout),
-        their.stdout,
-        "{args:?} stdout (ours promoted)"
-    );
-    assert_eq!(
-        normalize_dir(&our.stderr, &ours.0),
-        normalize_dir(&their.stderr, &theirs.0),
-        "{args:?} stderr"
-    );
+    std::fs::write(path, body).expect("write");
 }
 
 /// The matching + sorting core: suggestions order by match count
@@ -107,24 +78,18 @@ fn assert_learn_parity(ml: &Path, ours: &TempDir, theirs: &TempDir, args: &[&str
 /// unmatched changed files list sorted, exact plain bytes and json.
 #[test]
 fn learn_suggests_and_sorts_domains_by_match_count() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_git("learn-sort", None, &[
+    let (_guard, ours) = git_repo("learn-sort", None, &[
         ("zeta", ZETA_SEED),
         ("mid", MID_SEED),
     ]);
-    let dirs = [&ours, &theirs];
-    twin_write(dirs, "src/a.rs", "a\n");
-    twin_write(dirs, "lib/x.ts", "x\n");
-    twin_write(dirs, "lib/y.ts", "y\n");
-    twin_write(dirs, "docs/other.md", "o\n");
-    twin_commit(dirs, "c1");
+    write_file(&ours, "src/a.rs", "a\n");
+    write_file(&ours, "lib/x.ts", "x\n");
+    write_file(&ours, "lib/y.ts", "y\n");
+    write_file(&ours, "docs/other.md", "o\n");
+    commit(&ours, "c1");
 
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    assert_learn_parity(&ml, &ours, &theirs, &["--json", "learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    let our = run_in(&ours, Path::new(mulch_bin()), &["learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert_eq!(
         our.stdout,
         "\nSession learnings check\n\n\
@@ -142,7 +107,8 @@ fn learn_suggests_and_sorts_domains_by_match_count() {
          \x20 mulch record <domain> --type <type> --description \"...\"\n\
          \n"
     );
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "learn"]);
+    let our = run_in(&ours, Path::new(mulch_bin()), &["--json", "learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert_eq!(
         our.stdout,
         "{\n  \"success\": true,\n  \"command\": \"learn\",\n  \"changedFiles\": [\n    \"docs/other.md\",\n    \"lib/x.ts\",\n    \"lib/y.ts\",\n    \"src/a.rs\"\n  ],\n  \"suggestedDomains\": [\n    {\n      \"domain\": \"mid\",\n      \"matchCount\": 2,\n      \"files\": [\n        \"lib/x.ts\",\n        \"lib/y.ts\"\n      ]\n    },\n    {\n      \"domain\": \"zeta\",\n      \"matchCount\": 1,\n      \"files\": [\n        \"src/a.rs\"\n      ]\n    }\n  ],\n  \"unmatchedFiles\": [\n    \"docs/other.md\"\n  ]\n}\n"
@@ -154,70 +120,49 @@ fn learn_suggests_and_sorts_domains_by_match_count() {
 /// untracked files NEVER appearing (diff-based collection).
 #[test]
 fn learn_collects_staged_unstaged_and_never_untracked() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
     // staged-only in a first-commit repo
-    let (ours, theirs) = twin_git("learn-staged", None, &[("zeta", ZETA_SEED), ("mid", "")]);
-    let dirs = [&ours, &theirs];
-    twin_write(dirs, "src/a.rs", "a\n");
-    for dir in dirs {
-        run_git(&dir.0, &["add", "src/a.rs"]);
-    }
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    let (_guard, ours) = git_repo("learn-staged", None, &[("zeta", ZETA_SEED), ("mid", "")]);
+    write_file(&ours, "src/a.rs", "a\n");
+    run_git(&ours, &["add", "src/a.rs"]);
+    let our = run_in(&ours, Path::new(mulch_bin()), &["learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert!(our.stdout.contains("Changed files (1):"));
     assert!(our.stdout.contains("src/a.rs"));
 
     // unstaged edit of a tracked file + an untracked file (absent)
-    twin_commit(dirs, "c1");
-    twin_write(dirs, "src/a.rs", "changed\n");
-    twin_write(dirs, "notes/untracked.md", "n\n");
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    commit(&ours, "c1");
+    write_file(&ours, "src/a.rs", "changed\n");
+    write_file(&ours, "notes/untracked.md", "n\n");
+    let our = run_in(&ours, Path::new(mulch_bin()), &["learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert!(our.stdout.contains("src/a.rs"));
     assert!(!our.stdout.contains("untracked.md"), "{}", our.stdout);
 }
 
-/// `--since` variants: the HEAD~1 default, an explicit older ref, a
-/// sha, and a MISSING ref degrading to the staged/unstaged reads
-/// (exit 0, no error — probed).
+/// `--since` variants: the HEAD~1 default and a MISSING ref degrading
+/// to the staged/unstaged reads (exit 0, no error — probed).
 #[test]
-fn learn_since_variants_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_git("learn-since", None, &[("zeta", ZETA_SEED), ("mid", "")]);
-    let dirs = [&ours, &theirs];
-    twin_write(dirs, "src/a.rs", "a\n");
-    twin_commit(dirs, "c1");
-    twin_write(dirs, "lib/x.ts", "x\n");
-    twin_commit(dirs, "c2");
-    twin_write(dirs, "src/b.rs", "b\n");
-    twin_commit(dirs, "c3");
+fn learn_since_variants_pin_our_bytes() {
+    let (_guard, ours) = git_repo("learn-since", None, &[("zeta", ZETA_SEED), ("mid", "")]);
+    write_file(&ours, "src/a.rs", "a\n");
+    commit(&ours, "c1");
+    write_file(&ours, "lib/x.ts", "x\n");
+    commit(&ours, "c2");
+    write_file(&ours, "src/b.rs", "b\n");
+    commit(&ours, "c3");
 
     // default HEAD~1: only src/b.rs changed since c2
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    let our = run_in(&ours, Path::new(mulch_bin()), &["learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert!(our.stdout.contains("Changed files (1):"));
     assert!(our.stdout.contains("src/b.rs"));
-
-    // HEAD~2 reaches back to c1; a sha pins the same range
-    assert_learn_parity(&ml, &ours, &theirs, &["learn", "--since", "HEAD~2"]);
-    assert_learn_parity(&ml, &ours, &theirs, &["learn", "--since", "HEAD"]);
-    let sha = run_git(&ours.0, &["rev-parse", "HEAD~2"])
-        .trim()
-        .to_string();
-    assert_learn_parity(&ml, &ours, &theirs, &["learn", "--since", &sha]);
     // a missing ref degrades to empty (clean tree → no changes)
-    assert_learn_parity(&ml, &ours, &theirs, &["learn", "--since", "nosuchref"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+    let our = run_in(&ours, Path::new(mulch_bin()), &[
         "learn",
         "--since",
         "nosuchref",
     ]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert_eq!(
         our.stdout,
         "No changed files found. Nothing to learn from.\n"
@@ -228,32 +173,27 @@ fn learn_since_variants_match_reference() {
 /// envelope) and an empty store (all files unmatched, no suggestions
 /// section).
 #[test]
-fn learn_no_changes_and_empty_store_match() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_git("learn-clean", None, &[("zeta", ZETA_SEED), ("mid", "")]);
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+fn learn_no_changes_and_empty_store_pin_our_bytes() {
+    let (_guard, ours) = git_repo("learn-clean", None, &[("zeta", ZETA_SEED), ("mid", "")]);
+    let our = run_in(&ours, Path::new(mulch_bin()), &["learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert_eq!(
         our.stdout,
         "No changed files found. Nothing to learn from.\n"
     );
-    assert_learn_parity(&ml, &ours, &theirs, &["--json", "learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "learn"]);
+    let our = run_in(&ours, Path::new(mulch_bin()), &["--json", "learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert_eq!(
         our.stdout,
         "{\n  \"success\": true,\n  \"command\": \"learn\",\n  \"changedFiles\": [],\n  \"suggestedDomains\": [],\n  \"unmatchedFiles\": [],\n  \"message\": \"No changed files found\"\n}\n"
     );
 
     // records-less store: everything unmatched, no Suggested section
-    let (ours, theirs) = twin_git("learn-norecords", None, &[("zeta", ""), ("mid", "")]);
-    let dirs = [&ours, &theirs];
-    twin_write(dirs, "src/a.rs", "a\n");
-    twin_commit(dirs, "c1");
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    let (_guard, ours) = git_repo("learn-norecords", None, &[("zeta", ""), ("mid", "")]);
+    write_file(&ours, "src/a.rs", "a\n");
+    commit(&ours, "c1");
+    let our = run_in(&ours, Path::new(mulch_bin()), &["learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert!(
         our.stdout
             .contains("Unmatched files (no domain association):")
@@ -263,22 +203,16 @@ fn learn_no_changes_and_empty_store_match() {
 
 /// The gate paths: not a git repository (plain/json wordings differ
 /// by design), a git repo without `.mulch/` (plain SILENT exit 0,
-/// json skip envelope), and `.mulch/` without a config (the readConfig
-/// wording — but only once files changed; a clean tree still says no
-/// changes).
+/// json skip envelope), and `.mulch/` without a config (the
+/// readConfig wording — but only once files changed; a clean tree
+/// still says no changes).
 #[test]
-fn learn_git_and_store_gates_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn learn_git_and_store_gates_pin_our_bytes() {
     // not a git repository (with a store — the git check is first)
-    let (ours, theirs) = twin_seeded("learn-nogit", None, &[("zeta", ZETA_SEED)], &[]);
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
+    let ours = seeded_store("learn-nogit", None, &[("zeta", ZETA_SEED)], &[]);
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
     assert_eq!(our.code, 1);
     assert_eq!(our.stderr, "Error: not in a git repository.\n");
-    assert_learn_parity(&ml, &ours, &theirs, &["--json", "learn"]);
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "learn"]);
     assert_eq!(our.code, 1);
     assert_eq!(our.stdout, "");
@@ -291,25 +225,20 @@ fn learn_git_and_store_gates_match_reference() {
     );
 
     // a git repo WITHOUT .mulch/: plain silent, json skip envelope
-    let ours = TempDir::new("learn-nostore-o");
-    let theirs = TempDir::new("learn-nostore-t");
-    for dir in [&ours.0, &theirs.0] {
-        run_git(dir, &["init", "-q"]);
-        run_git(dir, &["config", "user.email", "t@example.io"]);
-        run_git(dir, &["config", "user.name", "Twin"]);
-        std::fs::write(dir.join("f.txt"), "f\n").expect("write");
-        run_git(dir, &["add", "-A"]);
-        run_git(dir, &["commit", "-qm", "c0"]);
-        std::fs::write(dir.join("g.txt"), "g\n").expect("write");
-        run_git(dir, &["add", "g.txt"]);
-    }
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    let repo = TempDir::new("learn-nostore");
+    run_git(&repo.0, &["init", "-q"]);
+    run_git(&repo.0, &["config", "user.email", "t@example.io"]);
+    run_git(&repo.0, &["config", "user.name", "Twin"]);
+    std::fs::write(repo.0.join("f.txt"), "f\n").expect("write");
+    run_git(&repo.0, &["add", "-A"]);
+    run_git(&repo.0, &["commit", "-qm", "c0"]);
+    std::fs::write(repo.0.join("g.txt"), "g\n").expect("write");
+    run_git(&repo.0, &["add", "g.txt"]);
+    let our = run_in(&repo.0, Path::new(mulch_bin()), &["learn"]);
     assert_eq!(our.code, 0);
     assert_eq!(our.stdout, "");
     assert_eq!(our.stderr, "");
-    assert_learn_parity(&ml, &ours, &theirs, &["--json", "learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["--json", "learn"]);
+    let our = run_in(&repo.0, Path::new(mulch_bin()), &["--json", "learn"]);
     assert_eq!(
         our.stdout,
         "{\n  \"success\": true,\n  \"command\": \"learn\",\n  \"changedFiles\": [],\n  \"suggestedDomains\": [],\n  \"unmatchedFiles\": [],\n  \"message\": \"No .mulch/ directory found — skipping\"\n}\n"
@@ -319,22 +248,17 @@ fn learn_git_and_store_gates_match_reference() {
     // → the readConfig wording (matchFilesToDomains reaches for it).
     // The amend folds g.txt into c0 so HEAD~1 stays missing (a second
     // commit would diff g.txt back in through `git diff HEAD~1`).
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::create_dir_all(dir.join(".mulch")).expect("mulch dir");
-        run_git(dir, &["commit", "-q", "--amend", "-m", "c0"]);
-    }
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    std::fs::create_dir_all(repo.0.join(".mulch")).expect("mulch dir");
+    run_git(&repo.0, &["commit", "-q", "--amend", "-m", "c0"]);
+    let our = run_in(&repo.0, Path::new(mulch_bin()), &["learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert_eq!(
         our.stdout,
         "No changed files found. Nothing to learn from.\n"
     );
-    for dir in [&ours.0, &theirs.0] {
-        std::fs::write(dir.join("h.txt"), "h\n").expect("write");
-        run_git(dir, &["add", "h.txt"]);
-    }
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    std::fs::write(repo.0.join("h.txt"), "h\n").expect("write");
+    run_git(&repo.0, &["add", "h.txt"]);
+    let our = run_in(&repo.0, Path::new(mulch_bin()), &["learn"]);
     assert_eq!(our.code, 1);
     assert_eq!(
         our.stderr,
@@ -346,40 +270,28 @@ fn learn_git_and_store_gates_match_reference() {
 /// an unknown type fails it too unless bypassed — and a bypassed
 /// record contributes NO files (the registry row is the gate).
 #[test]
-fn learn_strict_reads_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
+fn learn_strict_reads_pin_our_bytes() {
     let malformed = format!("{MID_SEED}{{\"type\":\"pattern\", BAD\n");
-    let (ours, theirs) = twin_git("learn-malformed", None, &[
+    let (_guard, ours) = git_repo("learn-malformed", None, &[
         ("zeta", ZETA_SEED),
         ("mid", malformed.as_str()),
     ]);
-    let dirs = [&ours, &theirs];
-    twin_write(dirs, "src/a.rs", "a\n");
-    twin_commit(dirs, "c1");
+    write_file(&ours, "src/a.rs", "a\n");
+    commit(&ours, "c1");
     for args in [&["learn"] as &[&str], &["--json", "learn"]] {
-        let our = run_in(&ours.0, Path::new(mulch_bin()), args);
-        let their = run_in(&theirs.0, ml.as_path(), args);
-        assert_eq!(our.code, their.code);
+        let our = run_in(&ours, Path::new(mulch_bin()), args);
         assert_eq!(our.code, 1);
-        assert_eq!(our.stdout, their.stdout);
-        let our_stderr = normalize_dir(&our.stderr, &ours.0);
-        let their_stderr = normalize_dir(&their.stderr, &theirs.0);
+        assert_eq!(our.stdout, "");
+        let our_stderr = normalize_dir(&our.stderr, &ours);
         // plain carries the Error: line (raw preview tail); json the
-        // envelope (JSON-escaped preview) — bytes already equal, so
-        // only the template head pins per mode
+        // envelope (JSON-escaped preview) — the template head pins
+        // per mode
         let head = if args[0] == "--json" {
             "{\n  \"success\": false,\n  \"command\": \"learn\",\n  \"error\": \"Malformed JSONL at <DIR>/.mulch/expertise/mid.jsonl:2: ".to_string()
         } else {
             "Error: Malformed JSONL at <DIR>/.mulch/expertise/mid.jsonl:2: ".to_string()
         };
         assert!(our_stderr.starts_with(&head), "our template: {our_stderr}");
-        assert!(
-            their_stderr.starts_with(&head),
-            "their template: {their_stderr}"
-        );
         if args.first() != Some(&"--json") {
             assert!(our_stderr.ends_with(". Line: {\"type\":\"pattern\", BAD\n"));
         }
@@ -389,28 +301,25 @@ fn learn_strict_reads_match_reference() {
 \"type\":\"zzzcustom\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T20:47:59.000Z\",\
 \"name\":\"Odd\",\"files\":[\"odd/file.ts\"],\"id\":\"mx-zzz001\"\
 }\n";
-    let (ours, theirs) = twin_git("learn-unktype", None, &[
+    let (_guard, ours) = git_repo("learn-unktype", None, &[
         ("zeta", ZETA_SEED),
         ("mid", unknown),
     ]);
-    let dirs = [&ours, &theirs];
-    twin_write(dirs, "odd/file.ts", "o\n");
-    twin_commit(dirs, "c1");
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    write_file(&ours, "odd/file.ts", "o\n");
+    commit(&ours, "c1");
+    let our = run_in(&ours, Path::new(mulch_bin()), &["learn"]);
     assert_eq!(our.code, 1);
-    assert!(normalize_dir(&our.stderr, &ours.0).starts_with(
+    assert!(normalize_dir(&our.stderr, &ours).starts_with(
         "Error: Unknown record type \"zzzcustom\" at <DIR>/.mulch/expertise/mid.jsonl:1"
     ));
 
     // bypassed: the odd file stays UNMATCHED (no registry row → no
     // file extraction)
-    assert_learn_parity(&ml, &ours, &theirs, &["--allow-unknown-types", "learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &[
+    let our = run_in(&ours, Path::new(mulch_bin()), &[
         "--allow-unknown-types",
         "learn",
     ]);
-    assert_eq!(our.code, 0);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert!(
         our.stdout
             .contains("Unmatched files (no domain association):")
@@ -423,17 +332,12 @@ fn learn_strict_reads_match_reference() {
 /// than the recorded one matches (`changed.endsWith(domainFile)`);
 /// a custom extracts_files type feeds the same domain file set.
 #[test]
-fn learn_suffix_law_and_custom_types_match_reference() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
-    let (ours, theirs) = twin_git("learn-suffix", None, &[("zeta", ZETA_SEED), ("mid", "")]);
-    let dirs = [&ours, &theirs];
-    twin_write(dirs, "deep/src/a.rs", "a\n");
-    twin_commit(dirs, "c1");
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+fn learn_suffix_law_and_custom_types_pin_our_bytes() {
+    let (_guard, ours) = git_repo("learn-suffix", None, &[("zeta", ZETA_SEED), ("mid", "")]);
+    write_file(&ours, "deep/src/a.rs", "a\n");
+    commit(&ours, "c1");
+    let our = run_in(&ours, Path::new(mulch_bin()), &["learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert!(our.stdout.contains("Suggested domains:"));
     assert!(
         our.stdout
@@ -446,13 +350,18 @@ fn learn_suffix_law_and_custom_types_match_reference() {
 \"type\":\"deploy_note\",\"classification\":\"tactical\",\"recorded_at\":\"2026-10-03T20:49:00.000Z\",\
 \"service\":\"api\",\"action\":\"restart\",\"files\":[\"k8s/api.yml\"],\"id\":\"mx-dep001\"\
 }\n";
-    let (ours, theirs) = twin_git("learn-custom", Some(config), &[("ops", seed)]);
-    let dirs = [&ours, &theirs];
-    twin_write(dirs, "k8s/api.yml", "k\n");
-    twin_commit(dirs, "c1");
-    assert_learn_parity(&ml, &ours, &theirs, &["learn"]);
-    assert_learn_parity(&ml, &ours, &theirs, &["--json", "learn"]);
-    let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
+    let root = TempDir::new("learn-custom-w");
+    let ops = root.0.join("ops");
+    write_seed_with_config(&ops, config, &[("ops", seed)]);
+    run_git(&ops, &["init", "-q"]);
+    run_git(&ops, &["config", "user.email", "t@example.io"]);
+    run_git(&ops, &["config", "user.name", "Twin"]);
+    run_git(&ops, &["add", "-A"]);
+    run_git(&ops, &["commit", "-qm", "c0"]);
+    write_file(&ops, "k8s/api.yml", "k\n");
+    commit(&ops, "c1");
+    let our = run_in(&ops, Path::new(mulch_bin()), &["learn"]);
+    assert_eq!(our.code, 0, "{}", our.stderr);
     assert!(
         our.stdout.contains("ops (1 file matches existing records)"),
         "{}",
@@ -465,18 +374,11 @@ fn learn_suffix_law_and_custom_types_match_reference() {
 /// bootstrap precedes every command's own logic — probed).
 #[test]
 fn learn_broken_custom_types_fails_the_global_surface() {
-    let Some(ml) = reference_ml() else {
-        eprintln!("skipped: no ml on PATH");
-        return;
-    };
     let config =
         "version: '1'\ndomains:\n  zeta: {}\ncustom_types:\n  bad:\n    required: [content]\n";
-    let (ours, theirs) = twin_seeded("learn-broken", Some(config), &[("zeta", "")], &[]);
+    let ours = seeded_store("learn-broken", Some(config), &[("zeta", "")], &[]);
     let our = run_in(&ours.0, Path::new(mulch_bin()), &["learn"]);
-    let their = run_in(&theirs.0, &ml, &["learn"]);
-    assert_eq!(our.code, their.code);
     assert_eq!(our.code, 1);
-    assert_eq!(our.stderr, their.stderr);
     assert!(
         our.stderr
             .starts_with("Config error: Custom type \"bad\" must set \"dedup_key\""),
