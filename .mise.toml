@@ -12,6 +12,12 @@ just = "1.58.0"
 bun = "1.4.0"
 "aqua:nushell/nushell" = "0.115.0"
 "aqua:BurntSushi/ripgrep" = "15.2.0"
+# Self-hosting, the strict form (ADR-0007/0008): the repo pins its OWN
+# crates.io release — the session's everyday `mulch` is the published
+# binary, not the working tree. Dev changes surface after the next
+# v* tag (push fires publish.yml); probing work-in-progress goes
+# through target/debug/mulch or `cargo run`.
+"cargo:mulch" = "0.1.0"
 # The pre-push gate's activator (lefthook.yml is repo config, so the
 # binary is repo-pinned too — keeps `just bootstrap` self-contained).
 # The binary alone installs no hooks; the operator opt-in stays the

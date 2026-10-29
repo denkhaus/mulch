@@ -54,7 +54,11 @@ not GitHub Issues. Seed ids carry the prefix `mulch-`.
 ## Expertise (Mulch)
 
 - **Self-hosting (ADR-0007/0008): this repo runs on ITS OWN `mulch`
-  binary** (`just install` puts it on PATH); the retired `ml` CLI has
+  binary** — pinned to its crates.io release in `.mise.toml`
+  (`cargo:mulch`, the strict dogfood: the session's everyday `mulch`
+  is the PUBLISHED binary; dev changes surface after the next `v*`
+  tag push, which fires `publish.yml`; work-in-progress probing goes
+  through `target/debug/mulch`). The retired `ml` CLI has
   no role — parity with it is dissolved, the format contract (ml-
   readable stores, additive changes only) is pinned by our own
   schema tests.
